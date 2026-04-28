@@ -1,0 +1,112 @@
+// ourcordd — OurCord VPN daemon
+// Manages WireGuard VPN, hole punching, DERP relay client, and IPC for UI.
+package main
+
+import (
+	"context"
+	"flag"
+	"fmt"
+	"log"
+	"os"
+	"os/signal"
+	"syscall"
+
+	"github.com/ourcord/ourcord/daemon/pkg/ipc"
+	"github.com/ourcord/ourcord/daemon/pkg/wg"
+)
+
+func main() {
+	var (
+		controlURL = flag.String("control-url", "https://control.ourcord.app", "Control plane URL")
+		socketPath = flag.String("socket", ipc.DefaultSocketPath(), "Unix socket path for IPC")
+		logLevel   = flag.String("log-level", "info", "Log level: debug, info, error")
+	)
+	flag.Parse()
+
+	log.SetFlags(log.LstdFlags | log.Lmsgprefix)
+	log.SetPrefix("[ourcordd] ")
+
+	_ = logLevel
+
+	// Load or generate WireGuard key pair
+	kp, err := wg.GenerateKeyPair()
+	if err != nil {
+		log.Fatalf("Failed to generate WireGuard key pair: %v", err)
+	}
+	log.Printf("VPN public key: %s", kp.PublicKeyBase64())
+
+	// Build daemon
+	d := &daemon{
+		controlURL: *controlURL,
+		keyPair:    kp,
+		socketPath: *socketPath,
+	}
+
+	// IPC server
+	ipcSrv := ipc.NewServer(*socketPath, d)
+	if err := ipcSrv.Listen(); err != nil {
+		log.Fatalf("IPC listen: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Graceful shutdown
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		<-quit
+		log.Println("Shutting down...")
+		cancel()
+		ipcSrv.Close()
+	}()
+
+	log.Printf("IPC socket: %s", *socketPath)
+	log.Printf("Control plane: %s", *controlURL)
+	log.Println("Daemon ready. Waiting for IPC commands.")
+
+	if err := ipcSrv.Serve(ctx); err != nil {
+		log.Printf("IPC server error: %v", err)
+	}
+}
+
+// daemon implements ipc.Handler and coordinates VPN subsystems.
+type daemon struct {
+	controlURL string
+	keyPair    *wg.KeyPair
+	socketPath string
+	vpnActive  bool
+}
+
+func (d *daemon) HandleIPC(ctx context.Context, req ipc.IPCRequest) ipc.IPCResponse {
+	switch req.Cmd {
+	case ipc.CmdStatus:
+		return ipc.IPCResponse{
+			OK: true,
+			Data: ipc.DaemonStatus{
+				Running:   true,
+				VPNActive: d.vpnActive,
+			},
+		}
+	case ipc.CmdConnect:
+		if err := d.connect(ctx); err != nil {
+			return ipc.IPCResponse{OK: false, Error: err.Error()}
+		}
+		return ipc.IPCResponse{OK: true}
+	case ipc.CmdDisconnect:
+		d.vpnActive = false
+		return ipc.IPCResponse{OK: true}
+	case ipc.CmdPing:
+		return ipc.IPCResponse{OK: true, Data: map[string]string{"pong": "ok"}}
+	default:
+		return ipc.IPCResponse{OK: false, Error: fmt.Sprintf("unknown command: %s", req.Cmd)}
+	}
+}
+
+func (d *daemon) connect(ctx context.Context) error {
+	// TODO Phase 1: register peer with control plane, get config,
+	// start ICE + DERP, configure WireGuard tun interface
+	d.vpnActive = true
+	log.Printf("VPN connect requested (control: %s)", d.controlURL)
+	return nil
+}

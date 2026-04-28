@@ -1,0 +1,20 @@
+name = "ourcord-service"
+main = "src/index.ts"
+compatibility_date = "2024-01-01"
+compatibility_flags = ["nodejs_compat"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "ourcord-service"
+database_id = "placeholder-replace-on-deploy"
+
+[[kv_namespaces]]
+binding = "KV"
+id = "placeholder-replace-on-deploy"
+
+[[r2_buckets]]
+binding = "FILES"
+bucket_name = "ourcord-files"
+
+[vars]
+ENVIRONMENT = "development"

@@ -1,0 +1,94 @@
+import { Env } from "./types";
+import { SCHEMA_SQL } from "./schema";
+import { createLobby, getLobby, joinLobby, listMembers, updateMemberRole } from "./lobby";
+import { getMessages, sendMessage, deleteMessage } from "./messages";
+import { initiateUpload, uploadToR2, listFiles, getDownloadUrl, getFilePolicy, updateFilePolicy } from "./files";
+import { json } from "./auth";
+
+export default {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    if (request.method === "OPTIONS") {
+      return new Response(null, {
+        headers: {
+          "Access-Control-Allow-Origin": "*",
+          "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+          "Access-Control-Allow-Headers": "Content-Type, Authorization",
+          "Access-Control-Max-Age": "86400",
+        },
+      });
+    }
+
+    const url = new URL(request.url);
+    const path = url.pathname;
+    const method = request.method;
+
+    // Parse path segments
+    const parts = path.split("/").filter(Boolean); // ["api","lobbies","<id>","rooms",...]
+
+    try {
+      // ── Lobbies ────────────────────────────────────────────────────────────
+      if (method === "POST" && path === "/api/lobbies") return createLobby(request, env);
+      if (method === "GET" && parts[0] === "api" && parts[1] === "lobbies" && parts[2] && !parts[3]) {
+        return getLobby(request, env, parts[2]);
+      }
+      if (method === "POST" && parts[1] === "lobbies" && parts[3] === "join") {
+        return joinLobby(request, env, parts[2]);
+      }
+      if (method === "GET" && parts[1] === "lobbies" && parts[3] === "members") {
+        return listMembers(request, env, parts[2]);
+      }
+      if (method === "PUT" && parts[1] === "lobbies" && parts[3] === "members" && parts[4]) {
+        return updateMemberRole(request, env, parts[2], parts[4]);
+      }
+
+      // ── File policies ──────────────────────────────────────────────────────
+      if (method === "GET" && parts[1] === "lobbies" && parts[3] === "file-policy") {
+        return getFilePolicy(request, env, parts[2]);
+      }
+      if (method === "PUT" && parts[1] === "lobbies" && parts[3] === "file-policy") {
+        return updateFilePolicy(request, env, parts[2]);
+      }
+
+      // ── Messages ───────────────────────────────────────────────────────────
+      if (method === "GET" && parts[1] === "rooms" && parts[3] === "messages") {
+        return getMessages(request, env, parts[2]);
+      }
+      if (method === "POST" && parts[1] === "rooms" && parts[3] === "messages") {
+        return sendMessage(request, env, parts[2]);
+      }
+      if (method === "DELETE" && parts[1] === "rooms" && parts[3] === "messages" && parts[4]) {
+        return deleteMessage(request, env, parts[2], parts[4]);
+      }
+
+      // ── Files ──────────────────────────────────────────────────────────────
+      if (method === "POST" && parts[1] === "rooms" && parts[3] === "files" && !parts[4]) {
+        return initiateUpload(request, env, parts[2]);
+      }
+      if (method === "PUT" && parts[1] === "rooms" && parts[3] === "files" && parts[5] === "upload") {
+        return uploadToR2(request, env, parts[2], parts[4]);
+      }
+      if (method === "GET" && parts[1] === "rooms" && parts[3] === "files" && !parts[4]) {
+        return listFiles(request, env, parts[2]);
+      }
+      if (method === "GET" && parts[1] === "rooms" && parts[3] === "files" && parts[5] === "download") {
+        return getDownloadUrl(request, env, parts[2], parts[4]);
+      }
+
+      // ── Admin ──────────────────────────────────────────────────────────────
+      if (method === "POST" && path === "/api/admin/init-db") {
+        if (env.ENVIRONMENT !== "development") return json({ error: "Dev only" }, 403);
+        await env.DB.exec(SCHEMA_SQL);
+        return json({ message: "Schema initialized" });
+      }
+
+      if (path === "/health" || path === "/") {
+        return json({ status: "ok", service: "ourcord-service", ts: Date.now() });
+      }
+
+      return json({ error: "Not found" }, 404);
+    } catch (e) {
+      console.error("Unhandled error:", e);
+      return json({ error: "Internal server error" }, 500);
+    }
+  },
+} satisfies ExportedHandler<Env>;

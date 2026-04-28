@@ -1,0 +1,25 @@
+# Dependencies
+node_modules/
+dist/
+.wrangler/
+
+# Go
+relay/ourcord-relay
+daemon/ourcordd
+daemon/ourcord-cli
+
+# Keys / secrets
+*.pem
+*.key
+*.env
+.env.*
+!.env.example
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp

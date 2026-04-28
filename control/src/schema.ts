@@ -1,0 +1,62 @@
+// D1 schema initialization SQL for the control layer
+export const SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS users (
+  id TEXT PRIMARY KEY,
+  email TEXT UNIQUE NOT NULL,
+  display_name TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL,
+  banned_at INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS peers (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  public_key TEXT UNIQUE NOT NULL,
+  name TEXT NOT NULL DEFAULT '',
+  platform TEXT NOT NULL DEFAULT 'unknown',
+  last_seen INTEGER NOT NULL DEFAULT 0,
+  ip4 TEXT NOT NULL DEFAULT '',
+  ip6 TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS relay_servers (
+  id TEXT PRIMARY KEY,
+  owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  region TEXT NOT NULL DEFAULT 'unknown',
+  hostname TEXT NOT NULL,
+  port INTEGER NOT NULL DEFAULT 443,
+  mode TEXT NOT NULL DEFAULT 'personal' CHECK(mode IN ('personal','lobby','rental')),
+  capacity_kbps INTEGER NOT NULL DEFAULT 10000,
+  active INTEGER NOT NULL DEFAULT 1,
+  registered_at INTEGER NOT NULL,
+  last_heartbeat INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS relay_lobby_bindings (
+  relay_id TEXT NOT NULL REFERENCES relay_servers(id) ON DELETE CASCADE,
+  lobby_id TEXT NOT NULL,
+  PRIMARY KEY (relay_id, lobby_id)
+);
+
+CREATE TABLE IF NOT EXISTS bans (
+  id TEXT PRIMARY KEY,
+  target_type TEXT NOT NULL CHECK(target_type IN ('user','peer','relay')),
+  target_id TEXT NOT NULL,
+  reason TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL,
+  expires_at INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS stun_servers (
+  id TEXT PRIMARY KEY,
+  host TEXT NOT NULL,
+  port INTEGER NOT NULL DEFAULT 3478,
+  region TEXT NOT NULL DEFAULT 'global',
+  active INTEGER NOT NULL DEFAULT 1
+);
+
+CREATE INDEX IF NOT EXISTS idx_peers_user_id ON peers(user_id);
+CREATE INDEX IF NOT EXISTS idx_peers_public_key ON peers(public_key);
+CREATE INDEX IF NOT EXISTS idx_bans_target ON bans(target_type, target_id);
+CREATE INDEX IF NOT EXISTS idx_relay_servers_owner ON relay_servers(owner_id);
+`;

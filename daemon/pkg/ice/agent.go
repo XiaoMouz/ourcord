@@ -1,0 +1,143 @@
+// Package ice implements ICE-based hole punching for direct P2P connections.
+// Supports both IPv4 NAT traversal and IPv6 direct connection attempts.
+// Uses the pion/ice library for standards-compliant ICE.
+package ice
+
+import (
+	"context"
+	"fmt"
+	"net"
+	"strings"
+	"time"
+
+	pionice "github.com/pion/ice/v4"
+)
+
+// CandidateType mirrors pion ICE candidate types.
+type CandidateType = pionice.CandidateType
+
+// HolePunchResult is the outcome of a hole punching attempt.
+type HolePunchResult struct {
+	Success      bool
+	LocalAddr    net.Addr
+	RemoteAddr   net.Addr
+	RTTMs        float64 // round-trip time in milliseconds
+	Method       string  // "direct-ipv6", "nat-ipv4", "derp-relay"
+}
+
+// Agent manages ICE for a single peer connection.
+type Agent struct {
+	agent      *pionice.Agent
+	cancelFunc context.CancelFunc
+}
+
+// Config holds ICE agent configuration.
+type Config struct {
+	STUNServers []string // STUN server URLs (stun:host:port)
+	// Called when gathering is complete; send these candidates to peer via signaling
+	OnCandidates func(candidates []string)
+}
+
+// NewAgent creates a new ICE agent for hole punching with a specific peer.
+func NewAgent(cfg Config) (*Agent, error) {
+	// Build STUN URL list
+	urls := make([]*pionice.URL, 0, len(cfg.STUNServers))
+	for _, s := range cfg.STUNServers {
+		u, err := pionice.ParseURL(s)
+		if err != nil {
+			return nil, fmt.Errorf("parse STUN URL %q: %w", s, err)
+		}
+		urls = append(urls, u)
+	}
+
+	iceAgent, err := pionice.NewAgent(&pionice.AgentConfig{
+		Urls:             urls,
+		NetworkTypes:     []pionice.NetworkType{
+			pionice.NetworkTypeUDP4,
+			pionice.NetworkTypeUDP6,
+			pionice.NetworkTypeTCP4,
+			pionice.NetworkTypeTCP6,
+		},
+		CandidateTypes:   []pionice.CandidateType{
+			pionice.CandidateTypeHost,
+			pionice.CandidateTypeServerReflexive,
+			pionice.CandidateTypePeerReflexive,
+		},
+		// Prefer IPv6 host candidates
+		InsecureSkipVerify: false,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create ICE agent: %w", err)
+	}
+
+	a := &Agent{agent: iceAgent}
+
+	// Gather candidates and collect them
+	var gathered []string
+	if err := iceAgent.OnCandidate(func(c pionice.Candidate) {
+		if c == nil {
+			// nil means gathering complete
+			if cfg.OnCandidates != nil {
+				cfg.OnCandidates(gathered)
+			}
+			return
+		}
+		gathered = append(gathered, c.Marshal())
+	}); err != nil {
+		return nil, fmt.Errorf("set candidate handler: %w", err)
+	}
+
+	return a, nil
+}
+
+// GatherCandidates starts candidate gathering. Candidates are delivered via OnCandidates callback.
+func (a *Agent) GatherCandidates() error {
+	return a.agent.GatherCandidates()
+}
+
+// AddRemoteCandidate adds a remote ICE candidate received via signaling.
+func (a *Agent) AddRemoteCandidate(candidateStr string) error {
+	c, err := pionice.UnmarshalCandidate(candidateStr)
+	if err != nil {
+		return fmt.Errorf("unmarshal candidate: %w", err)
+	}
+	return a.agent.AddRemoteCandidate(c)
+}
+
+// Dial performs the ICE connection handshake as the controlling agent.
+// Returns a Conn on success that wraps the ICE transport.
+func (a *Agent) Dial(ctx context.Context, ufrag, pwd string) (*pionice.Conn, error) {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	return a.agent.Dial(ctx, ufrag, pwd)
+}
+
+// Accept performs the ICE connection handshake as the controlled agent.
+func (a *Agent) Accept(ctx context.Context, ufrag, pwd string) (*pionice.Conn, error) {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	return a.agent.Accept(ctx, ufrag, pwd)
+}
+
+// Credentials returns the local ICE ufrag and password.
+func (a *Agent) Credentials() (ufrag, pwd string, err error) {
+	return a.agent.GetLocalUserCredentials()
+}
+
+// Close tears down the ICE agent.
+func (a *Agent) Close() error {
+	return a.agent.Close()
+}
+
+// ParseSTUNURLs converts a list of host:port strings into stun: URLs.
+func ParseSTUNURLs(servers []string) []string {
+	result := make([]string, 0, len(servers))
+	for _, s := range servers {
+		if strings.HasPrefix(s, "stun:") {
+			result = append(result, s)
+		} else {
+			result = append(result, "stun:"+s)
+		}
+	}
+	return result
+}

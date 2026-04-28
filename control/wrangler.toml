@@ -1,0 +1,25 @@
+name = "ourcord-control"
+main = "src/index.ts"
+compatibility_date = "2024-01-01"
+compatibility_flags = ["nodejs_compat"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "ourcord-control"
+database_id = "placeholder-replace-on-deploy"
+
+[[kv_namespaces]]
+binding = "KV"
+id = "placeholder-replace-on-deploy"
+
+[durable_objects]
+bindings = [
+  { name = "SIGNAL", class_name = "SignalDO" }
+]
+
+[[migrations]]
+tag = "v1"
+new_classes = ["SignalDO"]
+
+[vars]
+ENVIRONMENT = "development"
