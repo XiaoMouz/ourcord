@@ -59,6 +59,17 @@ export async function sendMessage(request: Request, env: Env, roomId: string): P
   if (!isMember) return err("Not a member", 403);
 
   const body = await request.json<{ content: string; attachments?: string[] }>();
+
+  const MAX_CONTENT_BYTES = 8 * 1024;
+  const MAX_ATTACHMENTS = 10;
+  if (typeof body.content === "string" &&
+      new TextEncoder().encode(body.content).byteLength > MAX_CONTENT_BYTES) {
+    return err("content too large", 413);
+  }
+  if (Array.isArray(body.attachments) && body.attachments.length > MAX_ATTACHMENTS) {
+    return err("too many attachments", 400);
+  }
+
   if (!body.content?.trim() && !body.attachments?.length) return err("content required");
 
   const id = generateId();

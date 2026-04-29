@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -120,6 +121,11 @@ func main() {
 		cc.OnRegister(func(id string) {
 			if err := state.SaveRelayID(relayIDPath, id); err != nil {
 				log.Printf("Warning: persist relay-id %s: %v", relayIDPath, err)
+			}
+		})
+		cc.OnReset(func() {
+			if err := state.ClearRelayID(relayIDPath); err != nil {
+				log.Printf("Warning: clear relay-id %s: %v", relayIDPath, err)
 			}
 		})
 		go cc.Run(rootCtx, 5*time.Minute, 30*time.Second)
@@ -303,5 +309,5 @@ func loadOptionalFile(path string) string {
 		log.Printf("Warning: could not read %s: %v", path, err)
 		return ""
 	}
-	return string(data)
+	return strings.TrimSpace(string(data))
 }

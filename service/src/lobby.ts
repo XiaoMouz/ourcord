@@ -200,6 +200,21 @@ export async function updateMemberRole(
   const body = await request.json<{ role: "admin" | "member" | "guest" }>();
   if (!["admin", "member", "guest"].includes(body.role)) return err("Invalid role");
 
+  // K2: load target before mutating. Without this an admin could downgrade
+  // the lobby owner to `guest` and seize control, and we'd silently UPDATE
+  // 0 rows for a non-member target instead of returning 404.
+  const target = await env.DB
+    .prepare("SELECT role FROM lobby_members WHERE lobby_id = ? AND user_id = ?")
+    .bind(lobbyId, targetUserId)
+    .first<{ role: string }>();
+  if (!target) return err("Target user not in lobby", 404);
+  if (target.role === "owner") {
+    return err("cannot modify owner role", 403);
+  }
+  if (target.role === "admin" && caller.role !== "owner") {
+    return err("only owner can change admin role", 403);
+  }
+
   await env.DB
     .prepare("UPDATE lobby_members SET role = ? WHERE lobby_id = ? AND user_id = ?")
     .bind(body.role, lobbyId, targetUserId)

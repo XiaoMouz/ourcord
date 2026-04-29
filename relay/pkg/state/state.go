@@ -69,6 +69,19 @@ func LoadRelayID(path string) (string, error) {
 	return strings.TrimSpace(string(data)), nil
 }
 
+// ClearRelayID removes the persisted relay ID file at path. Used when the
+// control plane reports the relay row no longer exists (HTTP 404 on
+// heartbeat) so the next heartbeat re-registers from scratch.
+func ClearRelayID(path string) error {
+	if path == "" {
+		return nil
+	}
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("state: remove %s: %w", path, err)
+	}
+	return nil
+}
+
 // SaveRelayID atomically writes the relay ID to path (mode 0600).
 func SaveRelayID(path, id string) error {
 	if path == "" || id == "" {

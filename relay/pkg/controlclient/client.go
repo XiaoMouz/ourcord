@@ -77,6 +77,7 @@ type Client struct {
 	connCount   atomic.Int64 // current open connections; incremented externally
 	bytesPerSec atomic.Int64 // last computed throughput; updated by SetBytesPerSec
 	onRegister  func(id string)
+	onReset     func()
 }
 
 // New creates a new control plane client.
@@ -114,6 +115,11 @@ func (c *Client) SetBytesPerSec(v int64) { c.bytesPerSec.Store(v) }
 // subsequent restarts reuse the same relay_servers row instead of creating
 // a duplicate. Setting it after Run() has already registered is a no-op.
 func (c *Client) OnRegister(fn func(id string)) { c.onRegister = fn }
+
+// OnReset registers a callback fired when the control plane reports the
+// relay row no longer exists (HTTP 404 on heartbeat). The callback should
+// clear any persisted relay ID so the next heartbeat re-registers cleanly.
+func (c *Client) OnReset(fn func()) { c.onReset = fn }
 
 // RelayID returns the currently known relay ID, or "" before registration.
 func (c *Client) RelayID() string {
@@ -242,6 +248,18 @@ func (c *Client) sendHeartbeat(ctx context.Context) error {
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode == http.StatusNotFound && payload.ID != "" {
+		// Control side has lost our relay row (DB reset, manual delete, etc.).
+		// Clear the in-memory + persisted ID so the next tick re-registers
+		// from scratch instead of looping on 404 forever.
+		fmt.Printf("[controlclient] relay row missing on control side; resetting and re-registering\n")
+		empty := ""
+		c.relayID.Store(&empty)
+		if c.onReset != nil {
+			c.onReset()
+		}
+		return fmt.Errorf("heartbeat HTTP 404: relay row missing, will re-register")
+	}
 	if resp.StatusCode >= 400 {
 		return fmt.Errorf("heartbeat HTTP %d", resp.StatusCode)
 	}

@@ -21,7 +21,15 @@ export async function requestOTP(request: Request, env: Env): Promise<Response> 
   await env.KV.put(key, otp, { expirationTtl: OTP_TTL });
 
   // Send OTP email (via external email API configured in env)
-  await sendOTPEmail(env, email, otp);
+  // K1: in production with no email provider configured, sendOTPEmail throws
+  // rather than silently no-op'ing. Catch here and surface 503 so callers
+  // know the OTP was never sent (instead of falsely reporting success).
+  try {
+    await sendOTPEmail(env, email, otp);
+  } catch (e) {
+    console.error(`[otp] sendOTPEmail failed for ${email}:`, e);
+    return json({ error: "OTP delivery not configured" }, 503);
+  }
 
   return json({ message: "OTP sent", expires_in: OTP_TTL });
 }
@@ -224,12 +232,22 @@ function b64urlDecode(s: string): string {
 
 async function sendOTPEmail(env: Env, email: string, otp: string): Promise<void> {
   // Stub: integrate with Resend / Mailgun / SendGrid via env.EMAIL_API_KEY
-  // In development, log the OTP
+  // In development, log the OTP and short-circuit so local flows still work.
   if (env.ENVIRONMENT === "development") {
     console.log(`[DEV] OTP for ${email}: ${otp}`);
     return;
   }
+  // K1: in production we have no email provider integration yet. Refuse
+  // honestly instead of returning success while never sending anything —
+  // a silent no-op here makes OTP login look working in staging/prod and
+  // locks every real user out. requestOTP catches this and returns 503.
+  if (!env.EMAIL_API_KEY) {
+    console.error(`[otp] EMAIL_API_KEY not configured; cannot deliver OTP to ${email}`);
+    throw new Error("email provider not configured");
+  }
   // TODO: implement email sending via configured provider
+  console.error(`[otp] EMAIL_API_KEY present but provider integration not implemented`);
+  throw new Error("email provider integration not implemented");
 }
 
 function json(data: unknown, status = 200): Response {
