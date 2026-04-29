@@ -2,6 +2,7 @@
 package limiter
 
 import (
+	"context"
 	"io"
 	"sync"
 
@@ -47,18 +48,21 @@ func (m *Manager) Remove(key string) {
 	m.mu.Unlock()
 }
 
+
 // LimitedWriter wraps an io.Writer with rate limiting.
 type LimitedWriter struct {
 	w       io.Writer
 	limiter *rate.Limiter
+	ctx     context.Context
 }
 
 // NewLimitedWriter creates a rate-limited writer. If limiter is nil, no limiting is applied.
-func NewLimitedWriter(w io.Writer, limiter *rate.Limiter) io.Writer {
+// ctx controls cancellation while waiting for tokens; pass context.Background() if no cancellation needed.
+func NewLimitedWriter(ctx context.Context, w io.Writer, limiter *rate.Limiter) io.Writer {
 	if limiter == nil {
 		return w
 	}
-	return &LimitedWriter{w: w, limiter: limiter}
+	return &LimitedWriter{w: w, limiter: limiter, ctx: ctx}
 }
 
 func (lw *LimitedWriter) Write(p []byte) (int, error) {
@@ -72,7 +76,7 @@ func (lw *LimitedWriter) Write(p []byte) (int, error) {
 			end = len(p)
 		}
 		chunk := p[written:end]
-		if err := lw.limiter.WaitN(nil, len(chunk)); err != nil {
+		if err := lw.limiter.WaitN(lw.ctx, len(chunk)); err != nil {
 			return written, err
 		}
 		n, err := lw.w.Write(chunk)

@@ -4,7 +4,7 @@ import { requireAuth, generateId, json, err } from "./auth";
 // POST /api/rooms/:roomId/files — initiate file upload
 // Client sends metadata; server returns a pre-signed URL or storage target
 export async function initiateUpload(request: Request, env: Env, roomId: string): Promise<Response> {
-  const auth = await requireAuth(request, env.CONTROL_INTERNAL_SECRET ?? "dev-secret-change-me");
+  const auth = await requireAuth(request, env.JWT_SECRET ?? "dev-secret-change-me");
   if (auth instanceof Response) return auth;
 
   const room = await env.DB
@@ -83,7 +83,7 @@ export async function initiateUpload(request: Request, env: Env, roomId: string)
 export async function uploadToR2(
   request: Request, env: Env, roomId: string, fileId: string
 ): Promise<Response> {
-  const auth = await requireAuth(request, env.CONTROL_INTERNAL_SECRET ?? "dev-secret-change-me");
+  const auth = await requireAuth(request, env.JWT_SECRET ?? "dev-secret-change-me");
   if (auth instanceof Response) return auth;
 
   const file = await env.DB
@@ -105,7 +105,7 @@ export async function uploadToR2(
 
 // GET /api/rooms/:roomId/files — list files in room
 export async function listFiles(request: Request, env: Env, roomId: string): Promise<Response> {
-  const auth = await requireAuth(request, env.CONTROL_INTERNAL_SECRET ?? "dev-secret-change-me");
+  const auth = await requireAuth(request, env.JWT_SECRET ?? "dev-secret-change-me");
   if (auth instanceof Response) return auth;
 
   const room = await env.DB
@@ -130,7 +130,7 @@ export async function listFiles(request: Request, env: Env, roomId: string): Pro
 export async function getDownloadUrl(
   request: Request, env: Env, roomId: string, fileId: string
 ): Promise<Response> {
-  const auth = await requireAuth(request, env.CONTROL_INTERNAL_SECRET ?? "dev-secret-change-me");
+  const auth = await requireAuth(request, env.JWT_SECRET ?? "dev-secret-change-me");
   if (auth instanceof Response) return auth;
 
   const file = await env.DB
@@ -159,7 +159,7 @@ export async function getDownloadUrl(
 
 // GET /api/lobbies/:lobbyId/file-policy — get file policy
 export async function getFilePolicy(request: Request, env: Env, lobbyId: string): Promise<Response> {
-  const auth = await requireAuth(request, env.CONTROL_INTERNAL_SECRET ?? "dev-secret-change-me");
+  const auth = await requireAuth(request, env.JWT_SECRET ?? "dev-secret-change-me");
   if (auth instanceof Response) return auth;
 
   const policy = await env.DB
@@ -171,7 +171,7 @@ export async function getFilePolicy(request: Request, env: Env, lobbyId: string)
 
 // PUT /api/lobbies/:lobbyId/file-policy — update file policy (owner/admin only)
 export async function updateFilePolicy(request: Request, env: Env, lobbyId: string): Promise<Response> {
-  const auth = await requireAuth(request, env.CONTROL_INTERNAL_SECRET ?? "dev-secret-change-me");
+  const auth = await requireAuth(request, env.JWT_SECRET ?? "dev-secret-change-me");
   if (auth instanceof Response) return auth;
 
   const member = await env.DB

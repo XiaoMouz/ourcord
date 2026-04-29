@@ -4,7 +4,7 @@ export interface Env {
   FILES: R2Bucket;
   ENVIRONMENT: string;
   CONTROL_URL?: string;       // control layer URL for cross-service calls
-  CONTROL_INTERNAL_SECRET?: string;
+  JWT_SECRET?: string;
 }
 
 export interface Lobby {

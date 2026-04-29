@@ -3,7 +3,7 @@ import { requireAuth, generateId, json, err } from "./auth";
 
 // POST /api/lobbies — create a lobby
 export async function createLobby(request: Request, env: Env): Promise<Response> {
-  const auth = await requireAuth(request, env.CONTROL_INTERNAL_SECRET ?? "dev-secret-change-me");
+  const auth = await requireAuth(request, env.JWT_SECRET ?? "dev-secret-change-me");
   if (auth instanceof Response) return auth;
   const userId = auth.sub;
 
@@ -34,7 +34,7 @@ export async function createLobby(request: Request, env: Env): Promise<Response>
 
 // GET /api/lobbies/:id — get lobby info
 export async function getLobby(request: Request, env: Env, lobbyId: string): Promise<Response> {
-  const auth = await requireAuth(request, env.CONTROL_INTERNAL_SECRET ?? "dev-secret-change-me");
+  const auth = await requireAuth(request, env.JWT_SECRET ?? "dev-secret-change-me");
   if (auth instanceof Response) return auth;
 
   const lobby = await env.DB
@@ -60,7 +60,7 @@ export async function getLobby(request: Request, env: Env, lobbyId: string): Pro
 
 // POST /api/lobbies/:id/join — join with invite (simplified: open join for now)
 export async function joinLobby(request: Request, env: Env, lobbyId: string): Promise<Response> {
-  const auth = await requireAuth(request, env.CONTROL_INTERNAL_SECRET ?? "dev-secret-change-me");
+  const auth = await requireAuth(request, env.JWT_SECRET ?? "dev-secret-change-me");
   if (auth instanceof Response) return auth;
 
   const lobby = await env.DB.prepare("SELECT id FROM lobbies WHERE id = ?").bind(lobbyId).first();
@@ -82,7 +82,7 @@ export async function joinLobby(request: Request, env: Env, lobbyId: string): Pr
 
 // GET /api/lobbies/:id/members — list members
 export async function listMembers(request: Request, env: Env, lobbyId: string): Promise<Response> {
-  const auth = await requireAuth(request, env.CONTROL_INTERNAL_SECRET ?? "dev-secret-change-me");
+  const auth = await requireAuth(request, env.JWT_SECRET ?? "dev-secret-change-me");
   if (auth instanceof Response) return auth;
 
   const member = await env.DB
@@ -103,7 +103,7 @@ export async function listMembers(request: Request, env: Env, lobbyId: string): 
 export async function updateMemberRole(
   request: Request, env: Env, lobbyId: string, targetUserId: string
 ): Promise<Response> {
-  const auth = await requireAuth(request, env.CONTROL_INTERNAL_SECRET ?? "dev-secret-change-me");
+  const auth = await requireAuth(request, env.JWT_SECRET ?? "dev-secret-change-me");
   if (auth instanceof Response) return auth;
 
   const caller = await env.DB

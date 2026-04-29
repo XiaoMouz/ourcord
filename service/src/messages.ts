@@ -3,7 +3,7 @@ import { requireAuth, generateId, json, err } from "./auth";
 
 // GET /api/rooms/:roomId/messages?before=<id>&limit=50
 export async function getMessages(request: Request, env: Env, roomId: string): Promise<Response> {
-  const auth = await requireAuth(request, env.CONTROL_INTERNAL_SECRET ?? "dev-secret-change-me");
+  const auth = await requireAuth(request, env.JWT_SECRET ?? "dev-secret-change-me");
   if (auth instanceof Response) return auth;
 
   // Verify room membership via lobby
@@ -42,7 +42,7 @@ export async function getMessages(request: Request, env: Env, roomId: string): P
 
 // POST /api/rooms/:roomId/messages
 export async function sendMessage(request: Request, env: Env, roomId: string): Promise<Response> {
-  const auth = await requireAuth(request, env.CONTROL_INTERNAL_SECRET ?? "dev-secret-change-me");
+  const auth = await requireAuth(request, env.JWT_SECRET ?? "dev-secret-change-me");
   if (auth instanceof Response) return auth;
 
   const room = await env.DB
@@ -81,7 +81,7 @@ export async function sendMessage(request: Request, env: Env, roomId: string): P
 export async function deleteMessage(
   request: Request, env: Env, roomId: string, msgId: string
 ): Promise<Response> {
-  const auth = await requireAuth(request, env.CONTROL_INTERNAL_SECRET ?? "dev-secret-change-me");
+  const auth = await requireAuth(request, env.JWT_SECRET ?? "dev-secret-change-me");
   if (auth instanceof Response) return auth;
 
   const msg = await env.DB

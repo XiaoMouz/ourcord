@@ -45,6 +45,24 @@ export default {
       if (path.startsWith("/api/signal/")) {
         const roomId = path.split("/")[3];
         if (!roomId) return json({ error: "room_id required" }, 400);
+
+        // Authenticate before opening the WebSocket. WebSocket clients pass the
+        // JWT via ?token=... query param (browsers can't send custom headers on WS).
+        // Also verify that the claimed public key (?pk=) belongs to this user.
+        const token = url.searchParams.get("token");
+        const pk = url.searchParams.get("pk");
+        if (!token || !pk) return json({ error: "token and pk required" }, 401);
+
+        const { verifyToken } = await import("./auth");
+        const claims = await verifyToken(token, env.JWT_SECRET ?? "dev-secret-change-me");
+        if (!claims) return json({ error: "invalid token" }, 401);
+
+        const owned = await env.DB
+          .prepare("SELECT 1 FROM peers WHERE public_key = ? AND user_id = ?")
+          .bind(pk, claims.sub)
+          .first();
+        if (!owned) return json({ error: "peer not owned by user" }, 403);
+
         const doId = env.SIGNAL.idFromName(roomId);
         const doStub = env.SIGNAL.get(doId);
         return doStub.fetch(request);
