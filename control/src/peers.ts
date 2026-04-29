@@ -1,6 +1,11 @@
 import { Env, Peer } from "./types";
 import { requireAuth, generateId } from "./auth";
-import { allocateVPNIP } from "./ipam";
+import {
+  ipsForOffset,
+  nextCandidateOffset,
+  commitOffset,
+  isUniqueViolation,
+} from "./ipam";
 
 // POST /api/peers/register — register a new device/peer
 // Body: { public_key: string, name: string, platform: string }
@@ -36,17 +41,44 @@ export async function registerPeer(request: Request, env: Env): Promise<Response
     return json({ peer, config: buildWireGuardConfig(peer!) });
   }
 
-  // Allocate VPN IPs
-  const { ip4, ip6 } = await allocateVPNIP(env.KV, env.DB);
-
+  // Atomic IP allocation: try offsets advancing past the KV counter,
+  // relying on the UNIQUE constraint on peers.ip4 / peers.ip6 to detect
+  // races with concurrent registrations. Bounded retry to avoid runaway
+  // when the pool is genuinely contended.
   const id = generateId();
   const now = Date.now();
-  await env.DB
-    .prepare(
-      "INSERT INTO peers (id, user_id, public_key, name, platform, last_seen, ip4, ip6) VALUES (?,?,?,?,?,?,?,?)"
-    )
-    .bind(id, userId, body.public_key, body.name ?? "", body.platform, now, ip4, ip6)
-    .run();
+  const MAX_ATTEMPTS = 16;
+  let offset = await nextCandidateOffset(env.KV);
+  let inserted: { ip4: string; ip6: string } | null = null;
+
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+    let candidate;
+    try {
+      candidate = ipsForOffset(offset);
+    } catch {
+      return json({ error: "VPN IP pool exhausted" }, 507);
+    }
+    try {
+      await env.DB
+        .prepare(
+          "INSERT INTO peers (id, user_id, public_key, name, platform, last_seen, ip4, ip6) VALUES (?,?,?,?,?,?,?,?)"
+        )
+        .bind(id, userId, body.public_key, body.name ?? "", body.platform, now, candidate.ip4, candidate.ip6)
+        .run();
+      inserted = { ip4: candidate.ip4, ip6: candidate.ip6 };
+      // Best-effort persist the new high-water mark so peers don't all rescan from 2.
+      env.KV && (await commitOffset(env.KV, offset));
+      break;
+    } catch (err) {
+      if (!isUniqueViolation(err)) throw err;
+      // Race or stale counter — bump and retry.
+      offset++;
+    }
+  }
+
+  if (!inserted) {
+    return json({ error: "Could not allocate VPN IP after retries" }, 503);
+  }
 
   const peer = await env.DB
     .prepare("SELECT * FROM peers WHERE id = ?")
