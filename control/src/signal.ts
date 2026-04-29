@@ -37,6 +37,10 @@ interface CachedSignal {
 const REPLAY_WINDOW_MS = 30_000;
 const STALE_AFTER_MS = 90_000;
 const ALARM_INTERVAL_MS = 30_000;
+// Hard cap on a single signal-message size. Hole-punching offers/answers and
+// ICE candidates are <2 KiB in practice; anything beyond this is a malicious
+// or misbehaving client trying to exhaust DO memory or saturate forward fanout.
+const MAX_MESSAGE_BYTES = 16 * 1024;
 
 export class SignalDO implements DurableObject {
   private sessions = new Map<string, PeerSession>();
@@ -88,7 +92,9 @@ export class SignalDO implements DurableObject {
     // Replay any cached offer/answer addressed to this peer (from anyone in the room).
     for (const [key, entry] of this.replayCache) {
       if (now - entry.cachedAt > REPLAY_WINDOW_MS) { this.replayCache.delete(key); continue; }
-      const [, to] = key.split("->");
+      // Key format: `${type}:${from}->${to}`. We only need the addressee.
+      const arrowIdx = key.indexOf("->");
+      const to = arrowIdx >= 0 ? key.slice(arrowIdx + 2) : "";
       if (to === publicKey || to === "*") {
         try { server.send(JSON.stringify(entry.msg)); } catch { /* ignore */ }
       }
@@ -132,6 +138,12 @@ export class SignalDO implements DurableObject {
   }
 
   private handleMessage(fromKey: string, raw: string): void {
+    if (typeof raw !== "string" || raw.length > MAX_MESSAGE_BYTES) {
+      const s = this.sessions.get(fromKey);
+      try { s?.ws.close(1009, "message too large"); } catch { /* ignore */ }
+      this.dropSession(fromKey);
+      return;
+    }
     let msg: SignalMessage;
     try { msg = JSON.parse(raw); } catch { return; }
 
@@ -145,8 +157,10 @@ export class SignalDO implements DurableObject {
     }
 
     // Cache offer/answer for short replay window (helps reconnect-and-resume).
+    // Key includes msg.type so independent streams (e.g. voice offer vs screen
+    // share offer) don't overwrite each other.
     if (msg.type === "offer" || msg.type === "answer") {
-      const cacheKey = `${fromKey}->${msg.to ?? "*"}`;
+      const cacheKey = `${msg.type}:${fromKey}->${msg.to ?? "*"}`;
       this.replayCache.set(cacheKey, { msg, cachedAt: Date.now() });
     }
 

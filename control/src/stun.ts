@@ -1,5 +1,5 @@
 import { Env, StunServer } from "./types";
-import { requireAuth, generateId, isUserBanned } from "./auth";
+import { requireAuth, requireAdmin, generateId } from "./auth";
 
 // GET /api/stun/servers — return STUN server list, optionally filtered by region
 export async function getStunServers(request: Request, env: Env): Promise<Response> {
@@ -19,7 +19,8 @@ export async function getStunServers(request: Request, env: Env): Promise<Respon
 
 // POST /api/stun/servers — admin: add a STUN server
 export async function addStunServer(request: Request, env: Env): Promise<Response> {
-  // TODO: add admin role check
+  const auth = await requireAdmin(request, env);
+  if (auth instanceof Response) return auth;
   const body = await request.json<{ host: string; port?: number; region?: string }>();
   if (!body.host) return json({ error: "host required" }, 400);
 

@@ -2,6 +2,9 @@ import { Env } from "./types";
 import { signToken, makeToken, generateOTP, generateId } from "./auth";
 
 const OTP_TTL = 10 * 60; // 10 minutes
+// OAuth `state` lifetime: long enough for an interactive consent flow (incl.
+// the user typing 2FA codes), short enough that a stolen state is useless.
+const OAUTH_STATE_TTL = 10 * 60;
 
 // POST /api/auth/otp/request — send OTP to email
 export async function requestOTP(request: Request, env: Env): Promise<Response> {
@@ -69,13 +72,20 @@ export async function oauthRedirect(request: Request, env: Env, provider: string
   const url = new URL(request.url);
   const redirectUri = `${url.origin}/api/auth/oauth/${provider}/callback`;
 
+  // Generate a single-use `state` and persist it in KV. The callback handler
+  // requires the same state to be present (and then deletes it), preventing
+  // OAuth login-CSRF where an attacker tricks a victim's browser into
+  // completing the attacker's authorization flow.
+  const state = crypto.randomUUID();
+  await env.KV.put(`oauth_state:${state}`, provider, { expirationTtl: OAUTH_STATE_TTL });
+
   if (provider === "google") {
     const params = new URLSearchParams({
       client_id: env.OAUTH_GOOGLE_CLIENT_ID ?? "",
       redirect_uri: redirectUri,
       response_type: "code",
       scope: "openid email profile",
-      state: crypto.randomUUID(),
+      state,
     });
     return Response.redirect(`https://accounts.google.com/o/oauth2/v2/auth?${params}`);
   }
@@ -85,11 +95,13 @@ export async function oauthRedirect(request: Request, env: Env, provider: string
       client_id: env.OAUTH_GITHUB_CLIENT_ID ?? "",
       redirect_uri: redirectUri,
       scope: "user:email",
-      state: crypto.randomUUID(),
+      state,
     });
     return Response.redirect(`https://github.com/login/oauth/authorize?${params}`);
   }
 
+  // Unknown provider: clean up the state so we don't leak KV entries.
+  await env.KV.delete(`oauth_state:${state}`);
   return json({ error: "Unknown provider" }, 400);
 }
 
@@ -97,7 +109,19 @@ export async function oauthRedirect(request: Request, env: Env, provider: string
 export async function oauthCallback(request: Request, env: Env, provider: string): Promise<Response> {
   const url = new URL(request.url);
   const code = url.searchParams.get("code");
+  const state = url.searchParams.get("state");
   if (!code) return json({ error: "Missing code" }, 400);
+  if (!state) return json({ error: "Missing state" }, 400);
+
+  // Validate `state` matches a recently-issued one for this provider, then
+  // delete to prevent reuse. KV.delete is best-effort but acceptable for a
+  // single-use token whose TTL bounds replay anyway.
+  const stateKey = `oauth_state:${state}`;
+  const issuedFor = await env.KV.get(stateKey);
+  if (!issuedFor || issuedFor !== provider) {
+    return json({ error: "Invalid or expired state" }, 400);
+  }
+  await env.KV.delete(stateKey);
 
   const redirectUri = `${url.origin}/api/auth/oauth/${provider}/callback`;
 
@@ -146,10 +170,21 @@ async function fetchOAuthEmail(env: Env, provider: string, code: string, redirec
         grant_type: "authorization_code",
       }),
     });
-    const tokenData = await tokenRes.json<{ id_token: string }>();
-    // Decode JWT id_token to get email (no verification needed, from Google directly)
+    if (!tokenRes.ok) throw new Error(`google token endpoint: HTTP ${tokenRes.status}`);
+    const tokenData = await tokenRes.json<{ id_token?: string }>();
+    if (!tokenData.id_token) throw new Error("google: missing id_token in response");
+    // The id_token is fetched server-to-server from Google with our client
+    // secret, so signature verification is skipped — but the *parse* still
+    // has to be defensive against malformed responses.
     const parts = tokenData.id_token.split(".");
-    const claims = JSON.parse(atob(parts[1])) as { email: string };
+    if (parts.length !== 3) throw new Error("google: malformed id_token");
+    let claims: { email?: string };
+    try {
+      claims = JSON.parse(b64urlDecode(parts[1])) as { email?: string };
+    } catch (e) {
+      throw new Error(`google: id_token payload parse failed: ${String(e)}`);
+    }
+    if (!claims.email) throw new Error("google: id_token missing email claim");
     return claims.email.toLowerCase();
   }
 
@@ -163,10 +198,13 @@ async function fetchOAuthEmail(env: Env, provider: string, code: string, redirec
         client_secret: env.OAUTH_GITHUB_CLIENT_SECRET ?? "",
       }),
     });
-    const tokenData = await tokenRes.json<{ access_token: string }>();
+    if (!tokenRes.ok) throw new Error(`github token endpoint: HTTP ${tokenRes.status}`);
+    const tokenData = await tokenRes.json<{ access_token?: string }>();
+    if (!tokenData.access_token) throw new Error("github: missing access_token");
     const emailRes = await fetch("https://api.github.com/user/emails", {
       headers: { Authorization: `Bearer ${tokenData.access_token}`, "User-Agent": "ourcord" },
     });
+    if (!emailRes.ok) throw new Error(`github emails endpoint: HTTP ${emailRes.status}`);
     const emails = await emailRes.json<Array<{ email: string; primary: boolean; verified: boolean }>>();
     const primary = emails.find((e) => e.primary && e.verified);
     if (!primary) throw new Error("No verified primary email on GitHub account");
@@ -174,6 +212,14 @@ async function fetchOAuthEmail(env: Env, provider: string, code: string, redirec
   }
 
   throw new Error("Unknown provider");
+}
+
+// b64urlDecode decodes a base64url string (no padding) into a UTF-8 string.
+// JWT claim segments use this encoding, not the standard base64 atob expects.
+function b64urlDecode(s: string): string {
+  const padded = s.replace(/-/g, "+").replace(/_/g, "/");
+  const padLen = (4 - (padded.length % 4)) % 4;
+  return atob(padded + "=".repeat(padLen));
 }
 
 async function sendOTPEmail(env: Env, email: string, otp: string): Promise<void> {
