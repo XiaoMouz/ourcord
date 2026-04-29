@@ -38,16 +38,57 @@ export async function initiateUpload(request: Request, env: Env, roomId: string)
     return err(`File size ${body.size_bytes} exceeds limit ${policy.max_size_bytes}`, 413);
   }
 
-  // Determine storage location based on policy and preference
-  // Priority: user_server → lobby_server → r2
-  let storageLocation: "user_server" | "lobby_server" | "r2" = "r2";
-  if (body.storage_preference === "user_server" && policy.user_server_enabled) {
-    storageLocation = "user_server";
-  } else if (body.storage_preference === "lobby_server" && policy.lobby_server_enabled) {
-    storageLocation = "lobby_server";
-  } else if (!policy.r2_enabled) {
-    return err("No available storage for this lobby", 503);
+  // Enforce permanent / temporary file count quotas. retain_days = 0 (kept
+  // forever) counts toward max_total_files; finite retention counts toward
+  // max_temp_files. A 0 in either field means unlimited.
+  const isTemp = policy.retain_days > 0;
+  if (isTemp && policy.max_temp_files > 0) {
+    const count = await env.DB
+      .prepare(
+        `SELECT COUNT(*) AS n FROM files f JOIN rooms r ON f.room_id = r.id
+         WHERE r.lobby_id = ? AND f.expires_at IS NOT NULL`
+      )
+      .bind(room.lobby_id)
+      .first<{ n: number }>();
+    if ((count?.n ?? 0) >= policy.max_temp_files) {
+      return err(`Temporary file quota reached (${policy.max_temp_files})`, 409);
+    }
   }
+  if (!isTemp && policy.max_total_files > 0) {
+    const count = await env.DB
+      .prepare(
+        `SELECT COUNT(*) AS n FROM files f JOIN rooms r ON f.room_id = r.id
+         WHERE r.lobby_id = ? AND f.expires_at IS NULL`
+      )
+      .bind(room.lobby_id)
+      .first<{ n: number }>();
+    if ((count?.n ?? 0) >= policy.max_total_files) {
+      return err(`Permanent file quota reached (${policy.max_total_files})`, 409);
+    }
+  }
+
+  // Storage selection: respect preference, but if it's not enabled by policy
+  // walk the priority chain (user_server → lobby_server → r2). The first
+  // enabled tier wins. Spec: "默认优先上传用户自己服务器、别人分享给用户的
+  // 服务器、大厅服务器、服务层 R2".
+  type StorageTier = "user_server" | "lobby_server" | "r2";
+  const enabledFor = (tier: StorageTier): boolean => {
+    if (tier === "user_server") return policy.user_server_enabled === 1;
+    if (tier === "lobby_server") return policy.lobby_server_enabled === 1;
+    return policy.r2_enabled === 1;
+  };
+  const chain: StorageTier[] = ["user_server", "lobby_server", "r2"];
+  // Move preferred tier to the front; the rest of the chain is the fallback order.
+  const preferred = body.storage_preference;
+  const ordered: StorageTier[] = preferred
+    ? [preferred, ...chain.filter((t) => t !== preferred)]
+    : chain;
+
+  let storageLocation: StorageTier | null = null;
+  for (const tier of ordered) {
+    if (enabledFor(tier)) { storageLocation = tier; break; }
+  }
+  if (!storageLocation) return err("No storage tier available for this lobby", 503);
 
   const id = generateId();
   const now = Math.floor(Date.now() / 1000);

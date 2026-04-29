@@ -1,6 +1,6 @@
 import { Env } from "./types";
 import { SCHEMA_SQL } from "./schema";
-import { createLobby, getLobby, joinLobby, listMembers, updateMemberRole } from "./lobby";
+import { createLobby, getLobby, joinLobby, listMembers, updateMemberRole, createInvite, revokeInvite } from "./lobby";
 import { getMessages, sendMessage, deleteMessage } from "./messages";
 import { initiateUpload, uploadToR2, listFiles, getDownloadUrl, getFilePolicy, updateFilePolicy, runR2Cleanup } from "./files";
 import { json } from "./auth";
@@ -39,6 +39,12 @@ export default {
       }
       if (method === "PUT" && parts[1] === "lobbies" && parts[3] === "members" && parts[4]) {
         return updateMemberRole(request, env, parts[2], parts[4]);
+      }
+      if (method === "POST" && parts[1] === "lobbies" && parts[3] === "invites") {
+        return createInvite(request, env, parts[2]);
+      }
+      if (method === "DELETE" && parts[1] === "lobbies" && parts[3] === "invites" && parts[4]) {
+        return revokeInvite(request, env, parts[2], parts[4]);
       }
 
       // ── File policies ──────────────────────────────────────────────────────

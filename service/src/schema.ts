@@ -63,4 +63,19 @@ CREATE INDEX IF NOT EXISTS idx_rooms_lobby ON rooms(lobby_id);
 CREATE INDEX IF NOT EXISTS idx_messages_room ON messages(room_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_files_room ON files(room_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_lobby_members_user ON lobby_members(user_id);
+
+-- Invite codes for joining a lobby. Created by owner/admin; consumed (or
+-- counted) by joinLobby. uses=0 + max_uses>0 means single/multi-use; max_uses=0
+-- means unlimited until expires_at.
+CREATE TABLE IF NOT EXISTS lobby_invites (
+  code TEXT PRIMARY KEY,
+  lobby_id TEXT NOT NULL REFERENCES lobbies(id) ON DELETE CASCADE,
+  created_by TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  expires_at INTEGER,
+  max_uses INTEGER NOT NULL DEFAULT 0,
+  uses INTEGER NOT NULL DEFAULT 0,
+  revoked INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_invites_lobby ON lobby_invites(lobby_id);
 `;

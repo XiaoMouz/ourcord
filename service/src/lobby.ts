@@ -58,13 +58,36 @@ export async function getLobby(request: Request, env: Env, lobbyId: string): Pro
   return json({ lobby, rooms: rooms.results, member });
 }
 
-// POST /api/lobbies/:id/join — join with invite (simplified: open join for now)
+// POST /api/lobbies/:id/join — requires an invite code (?code=XXX or { code }).
+// Owner/admin can grant invites via POST /api/lobbies/:id/invites.
 export async function joinLobby(request: Request, env: Env, lobbyId: string): Promise<Response> {
   const auth = await requireAuth(request, env.JWT_SECRET ?? "dev-secret-change-me");
   if (auth instanceof Response) return auth;
 
+  const url = new URL(request.url);
+  let code = url.searchParams.get("code");
+  if (!code) {
+    try {
+      const body = await request.json<{ code?: string }>();
+      code = body?.code ?? null;
+    } catch { /* no body */ }
+  }
+  if (!code) return err("invite code required", 401);
+
   const lobby = await env.DB.prepare("SELECT id FROM lobbies WHERE id = ?").bind(lobbyId).first();
   if (!lobby) return err("Lobby not found", 404);
+
+  const now = Math.floor(Date.now() / 1000);
+  const invite = await env.DB
+    .prepare(
+      `SELECT * FROM lobby_invites
+       WHERE code = ? AND lobby_id = ? AND revoked = 0
+       AND (expires_at IS NULL OR expires_at > ?)
+       AND (max_uses = 0 OR uses < max_uses)`
+    )
+    .bind(code, lobbyId, now)
+    .first<{ code: string; uses: number; max_uses: number }>();
+  if (!invite) return err("invalid, revoked, or exhausted invite", 403);
 
   const existing = await env.DB
     .prepare("SELECT role FROM lobby_members WHERE lobby_id = ? AND user_id = ?")
@@ -72,12 +95,72 @@ export async function joinLobby(request: Request, env: Env, lobbyId: string): Pr
     .first();
   if (existing) return json({ message: "Already a member" });
 
-  await env.DB
-    .prepare("INSERT INTO lobby_members (lobby_id, user_id, role, joined_at) VALUES (?,?,?,?)")
-    .bind(lobbyId, auth.sub, "member", Math.floor(Date.now() / 1000))
-    .run();
+  // Best-effort atomic-ish increment: bump uses first, then INSERT member.
+  // If the INSERT loses (race with concurrent join), the use count over-counts
+  // by at most that race window — acceptable since invite quotas are coarse.
+  await env.DB.batch([
+    env.DB.prepare("UPDATE lobby_invites SET uses = uses + 1 WHERE code = ?").bind(code),
+    env.DB.prepare("INSERT INTO lobby_members (lobby_id, user_id, role, joined_at) VALUES (?,?,?,?)")
+      .bind(lobbyId, auth.sub, "member", now),
+  ]);
 
   return json({ joined: true });
+}
+
+// POST /api/lobbies/:id/invites — owner/admin creates an invite code.
+// Body: { expires_in_seconds?, max_uses? } (default: 7d expiry, single use)
+export async function createInvite(request: Request, env: Env, lobbyId: string): Promise<Response> {
+  const auth = await requireAuth(request, env.JWT_SECRET ?? "dev-secret-change-me");
+  if (auth instanceof Response) return auth;
+
+  const member = await env.DB
+    .prepare("SELECT role FROM lobby_members WHERE lobby_id = ? AND user_id = ?")
+    .bind(lobbyId, auth.sub).first<{ role: string }>();
+  if (!member || (member.role !== "owner" && member.role !== "admin")) {
+    return err("Insufficient permissions", 403);
+  }
+
+  let body: { expires_in_seconds?: number; max_uses?: number } = {};
+  try { body = await request.json(); } catch { /* empty body ok */ }
+
+  const now = Math.floor(Date.now() / 1000);
+  const expiresAt = body.expires_in_seconds === 0
+    ? null
+    : now + (body.expires_in_seconds ?? 7 * 86400);
+  const maxUses = body.max_uses ?? 1;
+  // 8-byte URL-safe code; collisions on PRIMARY KEY would 500, accept it.
+  const arr = new Uint8Array(8);
+  crypto.getRandomValues(arr);
+  const code = Array.from(arr, (b) => b.toString(16).padStart(2, "0")).join("");
+
+  await env.DB
+    .prepare(
+      `INSERT INTO lobby_invites (code, lobby_id, created_by, created_at, expires_at, max_uses)
+       VALUES (?,?,?,?,?,?)`
+    )
+    .bind(code, lobbyId, auth.sub, now, expiresAt, maxUses)
+    .run();
+
+  return json({ code, lobby_id: lobbyId, expires_at: expiresAt, max_uses: maxUses }, 201);
+}
+
+// DELETE /api/lobbies/:id/invites/:code — revoke
+export async function revokeInvite(request: Request, env: Env, lobbyId: string, code: string): Promise<Response> {
+  const auth = await requireAuth(request, env.JWT_SECRET ?? "dev-secret-change-me");
+  if (auth instanceof Response) return auth;
+
+  const member = await env.DB
+    .prepare("SELECT role FROM lobby_members WHERE lobby_id = ? AND user_id = ?")
+    .bind(lobbyId, auth.sub).first<{ role: string }>();
+  if (!member || (member.role !== "owner" && member.role !== "admin")) {
+    return err("Insufficient permissions", 403);
+  }
+
+  await env.DB
+    .prepare("UPDATE lobby_invites SET revoked = 1 WHERE code = ? AND lobby_id = ?")
+    .bind(code, lobbyId)
+    .run();
+  return json({ revoked: true });
 }
 
 // GET /api/lobbies/:id/members — list members
