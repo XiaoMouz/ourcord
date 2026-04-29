@@ -14,15 +14,16 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
 	"github.com/ourcord/ourcord/relay/pkg/controlclient"
 	"github.com/ourcord/ourcord/relay/pkg/limiter"
+	"github.com/ourcord/ourcord/relay/pkg/state"
 	"tailscale.com/derp/derpserver"
 	"tailscale.com/net/stunserver"
 	"tailscale.com/tailcfg"
-	"tailscale.com/types/key"
 	"tailscale.com/types/logger"
 )
 
@@ -42,6 +43,7 @@ func main() {
 		meshPSKFile  = flag.String("mesh-psk-file", "", "mesh pre-shared key file for DERP mesh")
 		stun         = flag.Bool("stun", true, "run STUN server on same address (UDP)")
 		stunPort     = flag.Int("stun-port", 3478, "STUN listen port")
+		stateDir     = flag.String("state-dir", state.DefaultDir, "Persistent state directory (DERP node key, relay id)")
 	)
 	flag.Parse()
 
@@ -51,10 +53,27 @@ func main() {
 	rootCtx, rootCancel := context.WithCancel(context.Background())
 	defer rootCancel()
 
-	// Generate or load server key
-	serverPrivKey := key.NewNode()
-	log.Printf("Server public key: %s", serverPrivKey.Public().ShortString())
+	// Load (or create + persist) DERP node key. Stable across restarts so
+	// clients keep their pinned-key trust.
+	nodeKeyPath := filepath.Join(*stateDir, "node.key")
+	serverPrivKey, err := state.LoadOrCreateNodeKey(nodeKeyPath)
+	if err != nil {
+		log.Fatalf("Load DERP node key (%s): %v", nodeKeyPath, err)
+	}
+	log.Printf("Server public key: %s (state: %s)", serverPrivKey.Public().ShortString(), nodeKeyPath)
 	log.Printf("Region: %s", *region)
+
+	// Persistent relay-id from previous registration. Empty on first run.
+	relayIDPath := filepath.Join(*stateDir, "relay.id")
+	if *relayID == "" {
+		persistedID, err := state.LoadRelayID(relayIDPath)
+		if err != nil {
+			log.Printf("Warning: read relay-id %s: %v", relayIDPath, err)
+		} else if persistedID != "" {
+			log.Printf("Resuming as relay %s (from %s)", persistedID, relayIDPath)
+			*relayID = persistedID
+		}
+	}
 
 	// DERP server
 	derpSrv := derpserver.New(serverPrivKey, logger.WithPrefix(log.Printf, "[derp] "))
@@ -88,6 +107,13 @@ func main() {
 			Port:         port,
 			Mode:         *mode,
 			CapacityKbps: *capacityKbps,
+		})
+		// Persist control-issued relay ID so subsequent restarts keep the
+		// same relay_servers row instead of leaking duplicates.
+		cc.OnRegister(func(id string) {
+			if err := state.SaveRelayID(relayIDPath, id); err != nil {
+				log.Printf("Warning: persist relay-id %s: %v", relayIDPath, err)
+			}
 		})
 		go cc.Run(rootCtx, 5*time.Minute, 30*time.Second)
 		log.Printf("Control plane: %s (mode=%s)", *controlURL, *mode)

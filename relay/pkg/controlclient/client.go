@@ -58,6 +58,7 @@ type Client struct {
 	httpClient *http.Client
 	connCount   atomic.Int64 // current open connections; incremented externally
 	bytesPerSec atomic.Int64 // last computed throughput; updated by SetBytesPerSec
+	onRegister  func(id string)
 }
 
 // New creates a new control plane client.
@@ -89,6 +90,20 @@ func (c *Client) DecConn() { c.connCount.Add(-1) }
 // call this; if never called, heartbeats report 0 and the relay is treated as
 // fully idle for ranking purposes.
 func (c *Client) SetBytesPerSec(v int64) { c.bytesPerSec.Store(v) }
+
+// OnRegister registers a callback fired exactly once when the control plane
+// first issues a relay ID. Used by the relay binary to persist the ID so
+// subsequent restarts reuse the same relay_servers row instead of creating
+// a duplicate. Setting it after Run() has already registered is a no-op.
+func (c *Client) OnRegister(fn func(id string)) { c.onRegister = fn }
+
+// RelayID returns the currently known relay ID, or "" before registration.
+func (c *Client) RelayID() string {
+	if p := c.relayID.Load(); p != nil {
+		return *p
+	}
+	return ""
+}
 
 // Run starts the background sync loop. It fetches banned keys every syncInterval
 // and sends heartbeats every heartbeatInterval.
@@ -220,6 +235,9 @@ func (c *Client) sendHeartbeat(ctx context.Context) error {
 		if err := json.NewDecoder(resp.Body).Decode(&reply); err == nil && reply.ID != "" {
 			c.relayID.Store(&reply.ID)
 			fmt.Printf("[controlclient] registered as relay %s\n", reply.ID)
+			if c.onRegister != nil {
+				c.onRegister(reply.ID)
+			}
 		}
 	}
 	return nil

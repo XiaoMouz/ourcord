@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	"github.com/ourcord/ourcord/daemon/pkg/ipc"
@@ -19,6 +20,7 @@ func main() {
 	var (
 		controlURL = flag.String("control-url", "https://control.ourcord.app", "Control plane URL")
 		socketPath = flag.String("socket", ipc.DefaultSocketPath(), "Unix socket path for IPC")
+		stateDir   = flag.String("state-dir", wg.DefaultStateDir(), "Persistent state directory (WireGuard private key, etc.)")
 		logLevel   = flag.String("log-level", "info", "Log level: debug, info, error")
 	)
 	flag.Parse()
@@ -28,12 +30,15 @@ func main() {
 
 	_ = logLevel
 
-	// Load or generate WireGuard key pair
-	kp, err := wg.GenerateKeyPair()
+	// Load (or generate-then-persist) the WireGuard identity. The key MUST be
+	// stable across restarts: control plane allocates one VPN IP per public
+	// key out of a finite pool, and peers cache the key in their WG configs.
+	keyPath := filepath.Join(*stateDir, "wg.key")
+	kp, err := wg.LoadOrCreateKeyPair(keyPath)
 	if err != nil {
-		log.Fatalf("Failed to generate WireGuard key pair: %v", err)
+		log.Fatalf("Load WireGuard key (%s): %v", keyPath, err)
 	}
-	log.Printf("VPN public key: %s", kp.PublicKeyBase64())
+	log.Printf("VPN public key: %s (state: %s)", kp.PublicKeyBase64(), keyPath)
 
 	// Build daemon
 	d := &daemon{
