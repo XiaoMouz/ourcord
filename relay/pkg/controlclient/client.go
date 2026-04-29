@@ -3,12 +3,13 @@
 package controlclient
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -35,29 +36,52 @@ func (b *BanList) Replace(keys []string) {
 	b.mu.Unlock()
 }
 
+// Identity describes how this relay reports itself to the control plane.
+// All fields are required by the control layer's /api/relay/register endpoint
+// (see control/src/relay.ts).
+type Identity struct {
+	Region       string // e.g. "cn-east"
+	Hostname     string // public hostname clients connect to
+	Port         int    // public TCP port (defaults to 443 if zero)
+	Mode         string // "personal" | "lobby" | "rental"
+	CapacityKbps int    // soft capacity hint
+}
+
 // Client communicates with the control plane to register the relay server
 // and keep the banned key list up to date.
 type Client struct {
 	controlURL string
 	authToken  string
-	relayID    string
+	relayID    atomic.Pointer[string] // mutable so first registration can fill it in
+	identity   Identity
 	banList    *BanList
 	httpClient *http.Client
+	connCount  atomic.Int64 // current open connections; incremented externally
 }
 
 // New creates a new control plane client.
-func New(controlURL, authToken, relayID string) *Client {
-	return &Client{
+// If relayID is empty the first heartbeat will register and remember the
+// returned ID for subsequent heartbeats.
+func New(controlURL, authToken, relayID string, identity Identity) *Client {
+	c := &Client{
 		controlURL: controlURL,
 		authToken:  authToken,
-		relayID:    relayID,
+		identity:   identity,
 		banList:    &BanList{keys: make(map[string]struct{})},
 		httpClient: &http.Client{Timeout: 10 * time.Second},
 	}
+	if relayID != "" {
+		c.relayID.Store(&relayID)
+	}
+	return c
 }
 
 // BanList returns the live ban list.
 func (c *Client) BanList() *BanList { return c.banList }
+
+// IncConn / DecConn track current connection count for heartbeat reporting.
+func (c *Client) IncConn() { c.connCount.Add(1) }
+func (c *Client) DecConn() { c.connCount.Add(-1) }
 
 // Run starts the background sync loop. It fetches banned keys every syncInterval
 // and sends heartbeats every heartbeatInterval.
@@ -119,13 +143,43 @@ func (c *Client) syncBannedKeys(ctx context.Context) error {
 	return nil
 }
 
+// heartbeatPayload mirrors what control/src/relay.ts expects on
+// POST /api/relay/register. Both new registration and heartbeat-update use
+// the same shape; presence of "id" switches to update mode server-side.
+type heartbeatPayload struct {
+	ID            string `json:"id,omitempty"`
+	Region        string `json:"region"`
+	Hostname      string `json:"hostname"`
+	Port          int    `json:"port,omitempty"`
+	Mode          string `json:"mode"`
+	CapacityKbps  int    `json:"capacity_kbps,omitempty"`
+	CurrentConns  int64  `json:"current_conns,omitempty"`
+}
+
 func (c *Client) sendHeartbeat(ctx context.Context) error {
-	if c.relayID == "" {
-		return nil // no relay ID set, skip heartbeat
+	if c.identity.Hostname == "" || c.identity.Region == "" || c.identity.Mode == "" {
+		return fmt.Errorf("incomplete identity (need region, hostname, mode)")
 	}
-	body := fmt.Sprintf(`{"id":%q}`, c.relayID)
+
+	payload := heartbeatPayload{
+		Region:       c.identity.Region,
+		Hostname:     c.identity.Hostname,
+		Port:         c.identity.Port,
+		Mode:         c.identity.Mode,
+		CapacityKbps: c.identity.CapacityKbps,
+		CurrentConns: c.connCount.Load(),
+	}
+	if idPtr := c.relayID.Load(); idPtr != nil {
+		payload.ID = *idPtr
+	}
+
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+
 	req, err := http.NewRequestWithContext(ctx, "POST", c.controlURL+"/api/relay/register",
-		strings.NewReader(body))
+		bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
@@ -136,6 +190,21 @@ func (c *Client) sendHeartbeat(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	resp.Body.Close()
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("heartbeat HTTP %d", resp.StatusCode)
+	}
+
+	// On first registration the server returns {"id": "..."}; remember it.
+	if payload.ID == "" {
+		var reply struct {
+			ID string `json:"id"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&reply); err == nil && reply.ID != "" {
+			c.relayID.Store(&reply.ID)
+			fmt.Printf("[controlclient] registered as relay %s\n", reply.ID)
+		}
+	}
 	return nil
 }

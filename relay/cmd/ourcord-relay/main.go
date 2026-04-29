@@ -9,6 +9,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -25,22 +26,28 @@ import (
 
 func main() {
 	var (
-		addr            = flag.String("addr", ":443", "listen address (host:port)")
-		controlURL      = flag.String("control-url", "", "OurCord control plane URL")
-		authToken       = flag.String("auth-token", "", "Bearer token for control plane auth")
-		relayID         = flag.String("relay-id", "", "relay server ID (from control plane registration)")
-		region          = flag.String("region", "unknown", "geographic region name")
-		limitKbps       = flag.Int("limit-kbps", 0, "per-connection bandwidth limit in kbps (0=unlimited)")
-		certFile        = flag.String("cert", "", "TLS certificate file (PEM)")
-		keyFile         = flag.String("key", "", "TLS key file (PEM)")
-		meshPSKFile     = flag.String("mesh-psk-file", "", "mesh pre-shared key file for DERP mesh")
-		stun            = flag.Bool("stun", true, "run STUN server on same address (UDP)")
-		stunPort        = flag.Int("stun-port", 3478, "STUN listen port")
+		addr         = flag.String("addr", ":443", "listen address (host:port)")
+		controlURL   = flag.String("control-url", "", "OurCord control plane URL")
+		authToken    = flag.String("auth-token", "", "Bearer token for control plane auth")
+		relayID      = flag.String("relay-id", "", "relay server ID (from control plane registration); leave empty on first run")
+		region       = flag.String("region", "unknown", "geographic region name")
+		hostname     = flag.String("hostname", "", "public hostname clients connect to (required for control registration)")
+		mode         = flag.String("mode", "personal", "relay mode: personal | lobby | rental")
+		capacityKbps = flag.Int("capacity-kbps", 10000, "soft total capacity hint reported to control plane")
+		limitKbps    = flag.Int("limit-kbps", 0, "per-connection bandwidth limit in kbps (0=unlimited; 128 recommended for voice floor)")
+		certFile     = flag.String("cert", "", "TLS certificate file (PEM)")
+		keyFile      = flag.String("key", "", "TLS key file (PEM)")
+		meshPSKFile  = flag.String("mesh-psk-file", "", "mesh pre-shared key file for DERP mesh")
+		stun         = flag.Bool("stun", true, "run STUN server on same address (UDP)")
+		stunPort     = flag.Int("stun-port", 3478, "STUN listen port")
 	)
 	flag.Parse()
 
 	log.SetFlags(log.LstdFlags | log.Lmsgprefix)
 	log.SetPrefix("[ourcord-relay] ")
+
+	rootCtx, rootCancel := context.WithCancel(context.Background())
+	defer rootCancel()
 
 	// Generate or load server key
 	serverPrivKey := key.NewNode()
@@ -55,24 +62,39 @@ func main() {
 		}
 	}
 
-	// Rate limiter
+	// Rate limiter — bytes per second per connection
 	limitBps := *limitKbps * 1024 / 8
 	lm := limiter.NewManager(limitBps)
+	if lm.Enabled() {
+		log.Printf("Per-connection rate limit: %d kbps (%d Bps)", *limitKbps, limitBps)
+	}
 
 	// Control plane client
 	var cc *controlclient.Client
 	if *controlURL != "" {
-		cc = controlclient.New(*controlURL, *authToken, *relayID)
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		go cc.Run(ctx, 5*time.Minute, 30*time.Second)
-		log.Printf("Control plane: %s", *controlURL)
+		if *hostname == "" {
+			log.Fatalf("--hostname required when --control-url is set")
+		}
+		// Parse port out of addr (best effort) for heartbeat reporting
+		port := 443
+		if _, p, err := net.SplitHostPort(*addr); err == nil {
+			fmt.Sscanf(p, "%d", &port)
+		}
+		cc = controlclient.New(*controlURL, *authToken, *relayID, controlclient.Identity{
+			Region:       *region,
+			Hostname:     *hostname,
+			Port:         port,
+			Mode:         *mode,
+			CapacityKbps: *capacityKbps,
+		})
+		go cc.Run(rootCtx, 5*time.Minute, 30*time.Second)
+		log.Printf("Control plane: %s (mode=%s)", *controlURL, *mode)
 	}
 
 	// Build HTTP mux
 	mux := http.NewServeMux()
 
-	// DERP HTTP handler with ban check
+	// DERP HTTP handler with ban check + connection counting
 	derpHandler := derpserver.Handler(derpSrv)
 	mux.HandleFunc("/derp", func(w http.ResponseWriter, r *http.Request) {
 		// Check banned key before upgrading
@@ -82,6 +104,8 @@ func main() {
 				http.Error(w, "Forbidden", http.StatusForbidden)
 				return
 			}
+			cc.IncConn()
+			defer cc.DecConn()
 		}
 		derpHandler.ServeHTTP(w, r)
 	})
@@ -109,15 +133,23 @@ func main() {
 		log.Printf("TLS enabled")
 	}
 
-	srv := &http.Server{
-		Addr:      *addr,
-		Handler:   mux,
-		TLSConfig: tlsCfg,
+	// Build a (possibly rate-limited) listener so all bytes — DERP and HTTP both —
+	// observe the per-connection bandwidth floor. Wrapping at the listener level
+	// keeps us out of derpserver internals while still enforcing the limit.
+	rawLn, err := net.Listen("tcp", *addr)
+	if err != nil {
+		log.Fatalf("Listen %s: %v", *addr, err)
 	}
+	limitedLn := limiter.WrapListener(rootCtx, rawLn, lm)
+	if tlsCfg != nil {
+		limitedLn = tls.NewListener(limitedLn, tlsCfg)
+	}
+
+	srv := &http.Server{Handler: mux, TLSConfig: tlsCfg}
 
 	// STUN server (UDP)
 	if *stun {
-		stunSrv := stunserver.New(context.Background())
+		stunSrv := stunserver.New(rootCtx)
 		go func() {
 			stunAddr := fmt.Sprintf(":%d", *stunPort)
 			if err := stunSrv.ListenAndServe(stunAddr); err != nil {
@@ -133,23 +165,16 @@ func main() {
 	go func() {
 		<-quit
 		log.Println("Shutting down...")
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		shutCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
-		srv.Shutdown(ctx)
+		srv.Shutdown(shutCtx)
+		rootCancel()
 	}()
 
 	log.Printf("Listening on %s", *addr)
-	var listenErr error
-	if tlsCfg != nil {
-		listenErr = srv.ListenAndServeTLS("", "") // certs already in TLSConfig
-	} else {
-		listenErr = srv.ListenAndServe()
+	if err := srv.Serve(limitedLn); err != nil && err != http.ErrServerClosed {
+		log.Fatalf("Server error: %v", err)
 	}
-	if listenErr != nil && listenErr != http.ErrServerClosed {
-		log.Fatalf("Server error: %v", listenErr)
-	}
-
-	_ = lm // used in future per-conn wrapping
 }
 
 func loadOptionalFile(path string) string {

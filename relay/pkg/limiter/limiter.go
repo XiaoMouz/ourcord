@@ -4,7 +4,9 @@ package limiter
 import (
 	"context"
 	"io"
+	"net"
 	"sync"
+	"time"
 
 	"golang.org/x/time/rate"
 )
@@ -26,6 +28,7 @@ func NewManager(limitBps int) *Manager {
 }
 
 // GetLimiter returns (or creates) the limiter for a given key.
+// Returns nil when rate limiting is disabled (limitBps == 0).
 func (m *Manager) GetLimiter(key string) *rate.Limiter {
 	if m.limitBps == 0 {
 		return nil
@@ -48,6 +51,8 @@ func (m *Manager) Remove(key string) {
 	m.mu.Unlock()
 }
 
+// Enabled reports whether rate limiting is active.
+func (m *Manager) Enabled() bool { return m.limitBps > 0 }
 
 // LimitedWriter wraps an io.Writer with rate limiting.
 type LimitedWriter struct {
@@ -66,8 +71,8 @@ func NewLimitedWriter(ctx context.Context, w io.Writer, limiter *rate.Limiter) i
 }
 
 func (lw *LimitedWriter) Write(p []byte) (int, error) {
-	// Wait for permission to write len(p) bytes
-	// For large writes, split into chunks to respect the rate limit accurately
+	// For large writes, split into chunks to respect the rate limit accurately.
+	// chunkSize must not exceed the limiter's burst.
 	const chunkSize = 4096
 	written := 0
 	for written < len(p) {
@@ -86,4 +91,75 @@ func (lw *LimitedWriter) Write(p []byte) (int, error) {
 		}
 	}
 	return written, nil
+}
+
+// limitedConn wraps a net.Conn so that Write goes through a rate limiter.
+// On Close it removes the limiter from the manager.
+type limitedConn struct {
+	net.Conn
+	w       io.Writer // the rate-limited writer
+	mgr     *Manager
+	key     string
+	ctx     context.Context
+	cancel  context.CancelFunc
+	closeMu sync.Once
+}
+
+func (c *limitedConn) Write(p []byte) (int, error) { return c.w.Write(p) }
+func (c *limitedConn) Close() error {
+	c.closeMu.Do(func() {
+		c.cancel()
+		c.mgr.Remove(c.key)
+	})
+	return c.Conn.Close()
+}
+func (c *limitedConn) SetDeadline(t time.Time) error      { return c.Conn.SetDeadline(t) }
+func (c *limitedConn) SetReadDeadline(t time.Time) error  { return c.Conn.SetReadDeadline(t) }
+func (c *limitedConn) SetWriteDeadline(t time.Time) error { return c.Conn.SetWriteDeadline(t) }
+
+// WrapConn returns a net.Conn whose Write path is rate-limited per the manager's setting.
+// If the manager is disabled, the conn is returned unchanged.
+// The limiter is keyed by the remote address; on Close it is removed from the manager.
+func WrapConn(parent context.Context, c net.Conn, m *Manager) net.Conn {
+	if m == nil || !m.Enabled() {
+		return c
+	}
+	key := c.RemoteAddr().String()
+	l := m.GetLimiter(key)
+	ctx, cancel := context.WithCancel(parent)
+	return &limitedConn{
+		Conn:   c,
+		w:      NewLimitedWriter(ctx, c, l),
+		mgr:    m,
+		key:    key,
+		ctx:    ctx,
+		cancel: cancel,
+	}
+}
+
+// limitedListener wraps a net.Listener so each accepted Conn is rate-limited.
+type limitedListener struct {
+	net.Listener
+	mgr *Manager
+	ctx context.Context
+}
+
+func (l *limitedListener) Accept() (net.Conn, error) {
+	c, err := l.Listener.Accept()
+	if err != nil {
+		return nil, err
+	}
+	return WrapConn(l.ctx, c, l.mgr), nil
+}
+
+// WrapListener wraps a listener so accepted connections share the manager's rate limit
+// (one bucket per remote address). If the manager is disabled, the listener is returned unchanged.
+//
+// Use this *before* tls.NewListener so the limit is applied at the byte level (ciphertext).
+// For DERP this is acceptable: the 128 Kbps floor is a wire-rate guarantee, not an app-rate one.
+func WrapListener(ctx context.Context, ln net.Listener, m *Manager) net.Listener {
+	if m == nil || !m.Enabled() {
+		return ln
+	}
+	return &limitedListener{Listener: ln, mgr: m, ctx: ctx}
 }
