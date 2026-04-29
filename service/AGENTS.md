@@ -43,7 +43,15 @@ npx tsc --noEmit
 npx wrangler deploy
 ```
 
+## 设计契约（不要"修"）
+
+- **房间消息只允许 type ∈ {text, voice}**：`messages.sendMessage` 拒绝 file/video 房间发文字。这是 by design——文件/视频房间不存聊天历史，附带说明走对应类型房间。
+- **lobby 加入需邀请码**：`POST /api/lobbies/:id/join?code=...`，code 在 `lobby_invites` 表（owner 通过 `POST /api/lobbies/:id/invites` 生成）。
+- **文件存储优先链 fallback**：`storage_preference` 不可用时按 user_server → lobby_server → r2 顺序自动降级，不直接 503。
+- **/api/internal/* 仅供控制层调用**：用 `SERVICE_INTERNAL_TOKEN` 头校验；不要给客户端暴露。
+
 ## 已知技术债
 
-- R2 过期文件清理 cron 未实现（元数据已过期 ≠ R2 对象已删）。
-- 权限系统目前粗粒度；细粒度（每房间 ACL）阶段二补。
+- R2 过期文件清理 cron 已上线（cron.ts），但删失败仅记日志。
+- 权限系统目前粗粒度（owner/admin/member/guest）；细粒度位掩码权限（D3）阶段二补。
+- D1 schema 仍靠 `CREATE IF NOT EXISTS`，无版本化迁移；新增列要写迁移脚本（D5）。

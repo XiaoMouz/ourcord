@@ -40,6 +40,8 @@
 - `src/auth.ts` 是唯一签发 / 校验入口。
 - `JWT_SECRET` env var 必须与 `service/` 完全一致。
 - `requireAuth` 已处理 401 返回；handler 拿到的若是 `Response` 直接返回即可。
+- `requireAdmin` 基于 `Env.ADMIN_USER_IDS`（逗号分隔白名单）；用于 `/api/ban` 等运营级端点。未来引入 `users.role` 列时迁移。
+- 控制层 → 服务层调用走 `SERVICE_INTERNAL_TOKEN` + `X-Internal-Token` 头（如 `getPeerConfig?room_id=` 时拉成员列表）。
 
 ## 构建/检查
 
@@ -50,7 +52,17 @@ npx tsc --noEmit       # 类型检查
 npx wrangler deploy    # 部署
 ```
 
+## 设计契约（不要"修"）
+
+- **打洞信令成对语义**：`SignalDO` 双方登记后才广播 `paired`，30s offer/answer replay cache，重复 pk 上线时关旧连接；不是裸 WS 透传。
+- **getPeerConfig 默认仅返回该用户自己的 peers**；带 `?room_id=` 才跨 user 暴露同 room 成员的 peers。这就是"每个房间独立组网"的实现。
+- **relay map 按 region 过滤、按 headroom 排序**；daemon 自己挑前几个 relay 做候选。
+- **per-relay denylist 与全局 ban 解耦**：`/api/relay/banned-keys?relay_id=` 才返回合并集。
+- **schema 加表只能用 `CREATE IF NOT EXISTS`**；现有部署需手工 `wrangler d1 execute` 应用 schema.ts diff（D5 迁移系统未上）。
+
 ## 已知技术债
 
-- `peers.ts` IP 分配在并发场景下可能冲突 → 待改原子方案。
+- `peers.ts` IP 分配在并发场景下用 UNIQUE + retry，已原子化但仍有 race 时 500 重试；无回退池。
 - 中继链拓扑计算逻辑尚未上线（daemon 端先实现，再决定控制层是否需要做拓扑计算 service）。
+- `invalidateRelayCache` 用硬编码 region 列表清 KV；region 数量上去后改为索引 key。
+- 缺 `users.role` 列；admin 用环境变量白名单临时方案。
