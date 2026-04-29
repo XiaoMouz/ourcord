@@ -132,9 +132,44 @@ func (c *limitedConn) Close() error {
 	})
 	return c.Conn.Close()
 }
-func (c *limitedConn) SetDeadline(t time.Time) error      { return c.Conn.SetDeadline(t) }
-func (c *limitedConn) SetReadDeadline(t time.Time) error  { return c.Conn.SetReadDeadline(t) }
-func (c *limitedConn) SetWriteDeadline(t time.Time) error { return c.Conn.SetWriteDeadline(t) }
+
+// G10 sweep: limitedConn.Close removes the limiter from the manager, but if
+// the underlying conn is closed via a path that bypasses our Close (e.g.
+// derpserver tearing down a hijacked conn, OS half-close on RST), the entry
+// would otherwise leak. SweepIdle scans the manager's map and drops entries
+// whose token bucket is fully refilled (i.e. inactive for ~1 burst worth of
+// time). Manager.Run launches it on the relay binary at startup.
+func (m *Manager) SweepIdle() {
+	if m.limitBps == 0 {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for k, l := range m.limiters {
+		// A fully-saturated bucket means there have been no recent reservations,
+		// so the conn is either gone or idle enough to recreate cheaply.
+		if l.Tokens() >= float64(m.limitBps) {
+			delete(m.limiters, k)
+		}
+	}
+}
+
+// Run launches the periodic sweeper. Cancel ctx to stop it.
+func (m *Manager) Run(ctx context.Context, every time.Duration) {
+	if m.limitBps == 0 {
+		return
+	}
+	t := time.NewTicker(every)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			m.SweepIdle()
+		}
+	}
+}
 
 // WrapConn returns a net.Conn whose Write path is rate-limited per the manager's setting
 // and whose write byte count is added to the manager's running total.

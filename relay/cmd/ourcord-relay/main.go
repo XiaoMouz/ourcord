@@ -88,6 +88,9 @@ func main() {
 	lm := limiter.NewManager(limitBps)
 	if lm.Enabled() {
 		log.Printf("Per-connection rate limit: %d kbps (%d Bps)", *limitKbps, limitBps)
+		// G10: drop idle limiter map entries periodically so they don't leak
+		// when a conn is torn down via a path that bypasses limitedConn.Close.
+		go lm.Run(rootCtx, 5*time.Minute)
 	}
 
 	// Control plane client

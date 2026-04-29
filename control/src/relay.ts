@@ -244,16 +244,20 @@ async function buildRelayMap(env: Env, region: string | null) {
 }
 
 async function invalidateRelayCache(env: Env): Promise<void> {
-  // Drop all region-scoped variants too. KV doesn't have wildcard delete in
-  // the runtime; track with a list key. Simple approach: also delete a couple
-  // common region keys plus the global one. For an MVP this is fine.
-  await Promise.all([
-    env.KV.delete("relay_map"),
-    env.KV.delete("relay_map:cn"),
-    env.KV.delete("relay_map:us"),
-    env.KV.delete("relay_map:eu"),
-    env.KV.delete("relay_map:ap"),
-  ]);
+  // Drop the global key plus every region-scoped variant. We list under the
+  // common prefix so an arbitrary set of regions (cn-east, us-west, eu-frankfurt,
+  // ap-singapore, …) all get invalidated, not just a hardcoded short list.
+  // List is paginated; relay regions are few (<100) so a single page suffices,
+  // but we loop on cursor anyway for correctness.
+  const deletes: Promise<unknown>[] = [env.KV.delete("relay_map")];
+  let cursor: string | undefined;
+  for (;;) {
+    const page = await env.KV.list({ prefix: "relay_map:", cursor });
+    for (const k of page.keys) deletes.push(env.KV.delete(k.name));
+    if (page.list_complete) break;
+    cursor = page.cursor;
+  }
+  await Promise.all(deletes);
 }
 
 function json(data: unknown, status = 200): Response {

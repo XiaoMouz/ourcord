@@ -83,7 +83,11 @@ export class SignalDO implements DurableObject {
     server.send(JSON.stringify({ type: "join", from: "server", peers: [publicKey, ...others] } satisfies SignalMessage));
     this.broadcast({ type: "join", from: publicKey }, publicKey);
 
-    // If this connect makes the room a pair (or larger), notify everyone.
+    // G19: every membership change in a paired-or-larger room rebroadcasts
+    // the current peer set so 3+-person rooms see additions, not just the
+    // initial 1→2 transition. UI relies on this to refresh status without
+    // polling. The "paired" event name is kept for backward compatibility;
+    // it now means "current peer set in a multi-peer room".
     if (this.sessions.size >= 2) {
       const peers = [...this.sessions.keys()];
       this.broadcast({ type: "paired", from: "server", peers });
@@ -132,7 +136,12 @@ export class SignalDO implements DurableObject {
   private dropSession(publicKey: string): void {
     if (!this.sessions.delete(publicKey)) return;
     this.broadcast({ type: "leave", from: publicKey });
-    if (this.sessions.size < 2) {
+    // G19: drop-with-≥2-remaining used to be silent; now we re-emit "paired"
+    // with the current peer set so every membership change keeps clients in
+    // sync. Falling below 2 emits "unpaired" exactly as before.
+    if (this.sessions.size >= 2) {
+      this.broadcast({ type: "paired", from: "server", peers: [...this.sessions.keys()] });
+    } else {
       this.broadcast({ type: "unpaired", from: "server", peers: [...this.sessions.keys()] });
     }
   }

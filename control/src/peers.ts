@@ -157,7 +157,11 @@ export async function getPeerConfig(request: Request, env: Env): Promise<Respons
     }
   }
 
-  // Filter peers by the resolved member set.
+  // G20: D1 caps prepared-statement parameters at ~100. Each member contributes
+  // one ? here, plus we have no other binds in this query. With the documented
+  // small-group ceiling (5–10 people per lobby) we're nowhere near, but if a
+  // future tier raises the cap this needs chunking (UNION ALL of multiple
+  // bound batches). Recorded in AGENTS.md as a known scaling boundary.
   const placeholders = memberIds.map(() => "?").join(",");
   const peers = await env.DB
     .prepare(`SELECT * FROM peers WHERE user_id IN (${placeholders}) ORDER BY last_seen DESC`)

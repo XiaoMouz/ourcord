@@ -55,16 +55,6 @@ export function isUniqueViolation(err: unknown): boolean {
   return /UNIQUE constraint failed|SQLITE_CONSTRAINT/i.test(msg);
 }
 
-// allocateVPNIP is kept for backwards compatibility but the recommended path
-// is now insertWithIPRetry in peers.ts: candidate offset → INSERT → retry on
-// UNIQUE → commit counter. The KV counter alone is NOT atomic across
-// concurrent registrations.
-export async function allocateVPNIP(
-  kv: KVNamespace,
-  _db: D1Database,
-): Promise<{ ip4: string; ip6: string }> {
-  const offset = await nextCandidateOffset(kv);
-  const { ip4, ip6 } = ipsForOffset(offset);
-  await commitOffset(kv, offset);
-  return { ip4, ip6 };
-}
+// (allocateVPNIP removed — see G17. The previous KV-counter-only allocation
+// was never atomic across concurrent registrations and was superseded by
+// insertWithIPRetry in peers.ts which uses candidate-offset + UNIQUE retry.)

@@ -68,6 +68,21 @@ R2 配额由后端控制（大小、永久/临时数量、保存天数）。元�
 - `SignalDO` WebSocket 必须带 `?token=<jwt>&pk=<public_key>`。
 - 控制层入口校验：JWT 合法 + `pk` 在该用户的 `peers` 表中存在。**不要在 DO 内重做校验**（DO 假设上游已认证）。
 
+### 3.7 封禁双 key 体系（G12）
+- 控制层 peers 表同时记录 `public_key`（WireGuard base64）和 `derp_node_key`（Tailscale `tailcfg.NodePublic.String()`，形如 `nodekey:HEX...`）。
+- daemon 注册 peer 时**必须**同时上报两者，否则 DERP 通道封禁会失效。
+- `/api/relay/banned-keys` 返回 `{keys, derp_keys}` 两个数组：`keys` 给 WireGuard 层用，`derp_keys` 给 DERP admit hook 用。
+- relay `controlclient.BanList` 提供 `IsBanned` 与 `IsBannedDERP` 两个方法，分别针对两个层面。
+
+### 3.8 D1 参数上限（G20）
+- D1 prepared statement 单语句参数上限约 100 个。
+- `peers` IN(?,?,...) 查询直接绑定成员 ID，对 5–10 人小群无问题；任何"成员列表→IN 查询"的实现需要在拼 SQL 前确认成员数 ≤ 100 或拆批。
+
+### 3.9 控制 ↔ 服务层信任（G6，遗留）
+- 当前用 `SERVICE_INTERNAL_TOKEN` 共享密钥（HTTP 头）。
+- **已知缺陷**：泄漏一次永久泄漏；服务层日志可能记录；只能改环境变量轮换。
+- 阶段二必须升级为 mTLS 或 HMAC(ts+nonce) 短签名头。MVP 接受现状但不要扩散到新接口。
+
 ---
 
 ## 4. 构建/检查命令（在 PR 前必须全部通过）
