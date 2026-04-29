@@ -1,5 +1,6 @@
 import { Env, Peer } from "./types";
 import { requireAuth, generateId } from "./auth";
+import { buildRelayMap } from "./relay";
 import {
   ipsForOffset,
   nextCandidateOffset,
@@ -22,6 +23,12 @@ export async function registerPeer(request: Request, env: Env): Promise<Response
   }>();
   if (!body.public_key || !body.platform) {
     return json({ error: "public_key and platform required" }, 400);
+  }
+  // J3: WireGuard public keys are base64(32-byte) — exactly 43 chars + "="
+  // padding. Reject anything else so junk can't reach the banned-keys feed,
+  // wg-quick INI generator, or stored-XSS surface in any UI later.
+  if (!/^[A-Za-z0-9+/]{43}=$/.test(body.public_key)) {
+    return json({ error: "public_key must be base64-encoded 32-byte WireGuard key" }, 400);
   }
   const derpNodeKey = (body.derp_node_key ?? "").trim();
   // Cheap sanity-check: tailcfg.NodePublic.String() always starts with this prefix.
@@ -135,11 +142,19 @@ export async function getPeerConfig(request: Request, env: Env): Promise<Respons
   let scopeWarning: string | null = null;
 
   if (roomId) {
+    // J1: roomId is interpolated into a service-worker URL below. Validate the
+    // shape (matches I4 normalization in index.ts) BEFORE encoding so we fail
+    // closed on path-traversal attempts (e.g. "foo/../internal/admin/evil").
+    if (!/^[a-z0-9-]{1,64}$/.test(roomId)) {
+      return json({ error: "invalid room_id" }, 400);
+    }
     if (!env.SERVICE_URL || !env.SERVICE_INTERNAL_TOKEN) {
       scopeWarning = "room scoping requested but SERVICE_URL/SERVICE_INTERNAL_TOKEN not configured";
     } else {
       try {
-        const resp = await fetch(`${env.SERVICE_URL}/api/internal/rooms/${roomId}/member-ids`, {
+        // Defense in depth: encodeURIComponent even though the regex above
+        // already excludes "/" and other reserved characters.
+        const resp = await fetch(`${env.SERVICE_URL}/api/internal/rooms/${encodeURIComponent(roomId)}/member-ids`, {
           headers: { "X-Internal-Token": env.SERVICE_INTERNAL_TOKEN },
         });
         if (!resp.ok) {
@@ -170,9 +185,11 @@ export async function getPeerConfig(request: Request, env: Env): Promise<Respons
     .bind(...memberIds)
     .all<Peer>();
 
-  // KV stores { relays, region, generated_at } object (see relay.ts buildRelayMap).
-  const relayMap = await env.KV.get("relay_map", "json") as { relays: RelayEntry[] } | null;
-  const relays = relayMap?.relays ?? [];
+  // J2: relay map is per-caller now (personal relays scoped to owner).
+  // Query live; relay_servers is small. Region filter is N/A here — return
+  // all visible relays so the daemon can pick by latency on its own.
+  const relayMap = await buildRelayMap(env, null, userId);
+  const relays = relayMap.relays;
 
   const headers: HeadersInit = { "Content-Type": "application/json" };
   if (scopeWarning) headers["X-Scope-Warning"] = scopeWarning;

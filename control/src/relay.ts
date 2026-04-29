@@ -111,19 +111,25 @@ export async function registerRelay(request: Request, env: Env): Promise<Respons
 // Optional ?region=<r> filters; results are ranked by available headroom
 // (capacity_kbps - bytes_per_sec/1000) descending so the daemon picks the
 // least-loaded relay first.
+// GET /api/relay/map — return relay server map (public, cached in KV).
+// Optional ?region=<r> filters; results are ranked by available headroom
+// (capacity_kbps - bytes_per_sec/1000) descending so the daemon picks the
+// least-loaded relay first.
+//
+// J2: relays in `personal` mode are scoped to their owner — they do not
+// appear in other users' maps. Otherwise any user could see the public
+// hostnames/load of every personal relay (privacy leak), or stand up a
+// fake `personal` relay and have strangers' clients pick it (steering
+// metadata harvest). Cache key therefore embeds the caller's user-id.
 export async function getRelayMap(request: Request, env: Env): Promise<Response> {
   const authResult = await requireAuth(request, env);
   if (authResult instanceof Response) return authResult;
+  const userId = authResult.sub;
 
   const url = new URL(request.url);
   const region = url.searchParams.get("region");
 
-  // KV cache is region-keyed.
-  const cacheKey = region ? `relay_map:${region}` : "relay_map";
-  const cached = await env.KV.get(cacheKey, "json");
-  if (cached) return json(cached);
-
-  return json(await buildRelayMap(env, region));
+  return json(await buildRelayMap(env, region, userId));
 }
 
 // GET /api/relay/banned-keys — relay server pulls its denylist.
@@ -229,16 +235,20 @@ export async function allowPeerOnRelay(request: Request, env: Env, relayId: stri
   return json({ removed: true });
 }
 
-async function buildRelayMap(env: Env, region: string | null) {
+export async function buildRelayMap(env: Env, region: string | null, userId: string) {
   const now = Math.floor(Date.now() / 1000);
-  const params: (string | number)[] = [now - 120];
+  // J2: personal relays are visible only to their owner. The (mode <> 'personal'
+  // OR owner_id = ?) clause keeps shared relays public while scoping personal
+  // ones. Heartbeat freshness window is 120s.
+  const params: (string | number)[] = [now - 120, userId];
   let q =
     `SELECT r.id, r.region, r.hostname, r.port, r.mode, r.capacity_kbps,
             COALESCE(l.active_conns, 0) AS active_conns,
             COALESCE(l.bytes_per_sec, 0) AS bytes_per_sec
      FROM relay_servers r
      LEFT JOIN relay_load l ON l.relay_id = r.id
-     WHERE r.active = 1 AND r.last_heartbeat > ?`;
+     WHERE r.active = 1 AND r.last_heartbeat > ?
+       AND (r.mode <> 'personal' OR r.owner_id = ?)`;
   if (region) { q += " AND r.region = ?"; params.push(region); }
 
   const relays = await env.DB.prepare(q).bind(...params).all<RelayServer & { active_conns: number; bytes_per_sec: number }>();
@@ -249,27 +259,15 @@ async function buildRelayMap(env: Env, region: string | null) {
     .map((r) => ({ ...r, headroom_kbps: r.capacity_kbps - Math.floor(r.bytes_per_sec * 8 / 1000) }))
     .sort((a, b) => b.headroom_kbps - a.headroom_kbps);
 
-  const map = { relays: ranked, region, generated_at: now };
-  const cacheKey = region ? `relay_map:${region}` : "relay_map";
-  await env.KV.put(cacheKey, JSON.stringify(map), { expirationTtl: 60 });
-  return map;
+  return { relays: ranked, region, generated_at: now };
 }
 
 async function invalidateRelayCache(env: Env): Promise<void> {
-  // Drop the global key plus every region-scoped variant. We list under the
-  // common prefix so an arbitrary set of regions (cn-east, us-west, eu-frankfurt,
-  // ap-singapore, …) all get invalidated, not just a hardcoded short list.
-  // List is paginated; relay regions are few (<100) so a single page suffices,
-  // but we loop on cursor anyway for correctness.
-  const deletes: Promise<unknown>[] = [env.KV.delete("relay_map")];
-  let cursor: string | undefined;
-  for (;;) {
-    const page = await env.KV.list({ prefix: "relay_map:", cursor });
-    for (const k of page.keys) deletes.push(env.KV.delete(k.name));
-    if (page.list_complete) break;
-    cursor = page.cursor;
-  }
-  await Promise.all(deletes);
+  // J2: per-user relay-map caching was removed because the response now
+  // depends on caller identity (personal-relay scoping). This helper is
+  // kept as a no-op so existing call sites in registerRelay don't need
+  // surgery; if/when caching returns it will need to walk per-user keys.
+  void env;
 }
 
 function json(data: unknown, status = 200): Response {
