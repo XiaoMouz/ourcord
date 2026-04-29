@@ -53,8 +53,13 @@ export default {
         const pk = url.searchParams.get("pk");
         if (!token || !pk) return json({ error: "token and pk required" }, 401);
 
-        const { verifyToken } = await import("./auth");
-        const claims = await verifyToken(token, env.JWT_SECRET ?? "dev-secret-change-me");
+        const { verifyToken, getJwtSecret } = await import("./auth");
+        let claims;
+        try {
+          claims = await verifyToken(token, getJwtSecret(env));
+        } catch (e) {
+          return json({ error: (e as Error).message }, 500);
+        }
         if (!claims) return json({ error: "invalid token" }, 401);
 
         const owned = await env.DB
@@ -62,6 +67,39 @@ export default {
           .bind(pk, claims.sub)
           .first();
         if (!owned) return json({ error: "peer not owned by user" }, 403);
+
+        // H1: gate the SignalDO on room membership. Two roomId conventions:
+        //   1. "pair:<pkA>-<pkB>" (sorted lexicographically) — 1:1 hole-punch
+        //      outside any lobby. Caller's pk must be one of the two halves.
+        //   2. anything else — treated as a service-layer room id; we ask the
+        //      service worker for the lobby member-ids and require the caller
+        //      to be in that set.
+        // Without one of these checks any authenticated user could connect to
+        // an arbitrary roomId DO and snoop / inject ICE signaling.
+        if (roomId.startsWith("pair:")) {
+          const halves = roomId.slice(5).split("-");
+          if (halves.length !== 2) return json({ error: "malformed pair roomId" }, 400);
+          const [a, b] = halves;
+          if (a > b) return json({ error: "pair roomId must be sorted" }, 400);
+          if (pk !== a && pk !== b) return json({ error: "pk not part of this pair" }, 403);
+        } else {
+          if (!env.SERVICE_URL || !env.SERVICE_INTERNAL_TOKEN) {
+            return json({ error: "service layer not configured; room signaling unavailable" }, 503);
+          }
+          try {
+            const r = await fetch(`${env.SERVICE_URL}/api/internal/rooms/${encodeURIComponent(roomId)}/member-ids`, {
+              headers: { "X-Internal-Token": env.SERVICE_INTERNAL_TOKEN },
+            });
+            if (r.status === 404) return json({ error: "room not found" }, 404);
+            if (!r.ok) return json({ error: `service returned ${r.status}` }, 502);
+            const body = await r.json<{ user_ids: string[] }>();
+            if (!body.user_ids?.includes(claims.sub)) {
+              return json({ error: "not a member of this room" }, 403);
+            }
+          } catch (e) {
+            return json({ error: `service fetch failed: ${(e as Error).message}` }, 502);
+          }
+        }
 
         const doId = env.SIGNAL.idFromName(roomId);
         const doStub = env.SIGNAL.get(doId);

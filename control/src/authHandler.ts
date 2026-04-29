@@ -1,5 +1,5 @@
 import { Env } from "./types";
-import { signToken, makeToken, generateOTP, generateId } from "./auth";
+import { signToken, makeToken, generateOTP, generateId, getJwtSecret } from "./auth";
 
 const OTP_TTL = 10 * 60; // 10 minutes
 // OAuth `state` lifetime: long enough for an interactive consent flow (incl.
@@ -63,7 +63,7 @@ export async function verifyOTP(request: Request, env: Env): Promise<Response> {
   }
 
   const payload = makeToken(user.id, email);
-  const token = await signToken(payload, env.JWT_SECRET ?? "dev-secret-change-me");
+  const token = await signToken(payload, getJwtSecret(env));
   return json({ token, user_id: user.id });
 }
 
@@ -151,7 +151,7 @@ export async function oauthCallback(request: Request, env: Env, provider: string
   if (user.banned_at) return json({ error: "Account banned" }, 403);
 
   const payload = makeToken(user.id, email);
-  const token = await signToken(payload, env.JWT_SECRET ?? "dev-secret-change-me");
+  const token = await signToken(payload, getJwtSecret(env));
 
   // Redirect to app with token (or return JSON in dev)
   const appUrl = `ourcord://auth?token=${encodeURIComponent(token)}`;

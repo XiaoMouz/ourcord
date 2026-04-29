@@ -60,6 +60,20 @@ export function makeToken(userId: string, email: string): TokenPayload {
   return { sub: userId, email, iat: now, exp: now + TOKEN_TTL };
 }
 
+// getJwtSecret returns the configured JWT secret or throws if missing in
+// production. Centralizing the lookup avoids the trap of multiple sites
+// silently falling back to a known-weak default ("dev-secret-change-me")
+// when an operator forgets to set the secret. In development the fallback
+// is allowed but logged so it's noisy.
+export function getJwtSecret(env: Env): string {
+  if (env.JWT_SECRET && env.JWT_SECRET.length >= 16) return env.JWT_SECRET;
+  if ((env.ENVIRONMENT ?? "development") === "development") {
+    if (!env.JWT_SECRET) console.warn("[auth] JWT_SECRET unset; using dev fallback");
+    return env.JWT_SECRET || "dev-secret-change-me-dev-only-not-for-prod";
+  }
+  throw new Error("JWT_SECRET is not configured (>=16 bytes required in production)");
+}
+
 // Extract and verify Bearer token from Authorization header
 export async function authMiddleware(
   request: Request,
@@ -68,7 +82,7 @@ export async function authMiddleware(
   const auth = request.headers.get("Authorization") ?? "";
   if (!auth.startsWith("Bearer ")) return null;
   const token = auth.slice(7);
-  return verifyToken(token, env.JWT_SECRET ?? "dev-secret-change-me");
+  return verifyToken(token, getJwtSecret(env));
 }
 
 // Require auth or return 401

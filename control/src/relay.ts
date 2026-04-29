@@ -1,14 +1,28 @@
 import { Env, RelayServer } from "./types";
-import { requireAuth, generateId } from "./auth";
+import { requireAuth, requireAdmin, generateId } from "./auth";
 
 // POST /api/relay/register — relay server self-registration / heartbeat
-// Called by the relay server daemon itself (authenticated by server secret)
+// Called by the relay server daemon itself (authenticated by server secret).
+//
+// H5: only `personal` mode is open to any authenticated user. `lobby` and
+// `rental` modes are operator-controlled (anyone could otherwise stand up
+// a "honeypot lobby relay" and intercept traffic), so they require the
+// caller to be in ADMIN_USER_IDS. Lobby-owner-issued registration is a
+// Phase-2 feature behind the service worker's permission system.
 export async function registerRelay(request: Request, env: Env): Promise<Response> {
-  const authResult = await requireAuth(request, env);
+  // Peek body first to know which auth gate to apply, then re-process with
+  // the appropriate one. We can't read the body twice, so we clone for the
+  // auth-gated path.
+  const cloned = request.clone();
+  const peek = await request.json<{ mode?: string }>().catch(() => ({} as { mode?: string }));
+  const requiresAdmin = peek.mode === "lobby" || peek.mode === "rental";
+  const authResult = requiresAdmin
+    ? await requireAdmin(cloned, env)
+    : await requireAuth(cloned, env);
   if (authResult instanceof Response) return authResult;
   const { sub: ownerId } = authResult;
 
-  const body = await request.json<{
+  const body = await cloned.json<{
     id?: string; // if updating existing registration
     region: string;
     hostname: string;

@@ -1,11 +1,24 @@
 // Lightweight auth middleware for service layer.
 // Validates the same JWT format as control layer (shared JWT_SECRET).
 
+import type { Env } from "./types";
+
 export interface TokenPayload {
   sub: string;
   email: string;
   iat: number;
   exp: number;
+}
+
+// H2: centralized JWT secret lookup. In production, missing/short secrets
+// fail loud; in development a noisy fallback is allowed.
+export function getJwtSecret(env: Env): string {
+  if (env.JWT_SECRET && env.JWT_SECRET.length >= 16) return env.JWT_SECRET;
+  if ((env.ENVIRONMENT ?? "development") === "development") {
+    if (!env.JWT_SECRET) console.warn("[service/auth] JWT_SECRET unset; using dev fallback");
+    return env.JWT_SECRET || "dev-secret-change-me-dev-only-not-for-prod";
+  }
+  throw new Error("JWT_SECRET is not configured (>=16 bytes required in production)");
 }
 
 async function hmacSign(secret: string, data: string): Promise<string> {
@@ -38,7 +51,8 @@ export async function verifyToken(token: string, secret: string): Promise<TokenP
   } catch { return null; }
 }
 
-export async function requireAuth(request: Request, secret: string): Promise<TokenPayload | Response> {
+export async function requireAuth(request: Request, secretOrEnv: string | Env): Promise<TokenPayload | Response> {
+  const secret = typeof secretOrEnv === "string" ? secretOrEnv : getJwtSecret(secretOrEnv);
   const auth = request.headers.get("Authorization") ?? "";
   if (!auth.startsWith("Bearer ")) return err("Unauthorized", 401);
   const payload = await verifyToken(auth.slice(7), secret);

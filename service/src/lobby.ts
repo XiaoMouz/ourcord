@@ -3,7 +3,7 @@ import { requireAuth, generateId, json, err } from "./auth";
 
 // POST /api/lobbies — create a lobby
 export async function createLobby(request: Request, env: Env): Promise<Response> {
-  const auth = await requireAuth(request, env.JWT_SECRET ?? "dev-secret-change-me");
+  const auth = await requireAuth(request, env);
   if (auth instanceof Response) return auth;
   const userId = auth.sub;
 
@@ -34,7 +34,7 @@ export async function createLobby(request: Request, env: Env): Promise<Response>
 
 // GET /api/lobbies/:id — get lobby info
 export async function getLobby(request: Request, env: Env, lobbyId: string): Promise<Response> {
-  const auth = await requireAuth(request, env.JWT_SECRET ?? "dev-secret-change-me");
+  const auth = await requireAuth(request, env);
   if (auth instanceof Response) return auth;
 
   const lobby = await env.DB
@@ -61,7 +61,7 @@ export async function getLobby(request: Request, env: Env, lobbyId: string): Pro
 // POST /api/lobbies/:id/join — requires an invite code (?code=XXX or { code }).
 // Owner/admin can grant invites via POST /api/lobbies/:id/invites.
 export async function joinLobby(request: Request, env: Env, lobbyId: string): Promise<Response> {
-  const auth = await requireAuth(request, env.JWT_SECRET ?? "dev-secret-change-me");
+  const auth = await requireAuth(request, env);
   if (auth instanceof Response) return auth;
 
   const url = new URL(request.url);
@@ -110,7 +110,7 @@ export async function joinLobby(request: Request, env: Env, lobbyId: string): Pr
 // POST /api/lobbies/:id/invites — owner/admin creates an invite code.
 // Body: { expires_in_seconds?, max_uses? } (default: 7d expiry, single use)
 export async function createInvite(request: Request, env: Env, lobbyId: string): Promise<Response> {
-  const auth = await requireAuth(request, env.JWT_SECRET ?? "dev-secret-change-me");
+  const auth = await requireAuth(request, env);
   if (auth instanceof Response) return auth;
 
   const member = await env.DB
@@ -146,7 +146,7 @@ export async function createInvite(request: Request, env: Env, lobbyId: string):
 
 // DELETE /api/lobbies/:id/invites/:code — revoke
 export async function revokeInvite(request: Request, env: Env, lobbyId: string, code: string): Promise<Response> {
-  const auth = await requireAuth(request, env.JWT_SECRET ?? "dev-secret-change-me");
+  const auth = await requireAuth(request, env);
   if (auth instanceof Response) return auth;
 
   const member = await env.DB
@@ -165,7 +165,7 @@ export async function revokeInvite(request: Request, env: Env, lobbyId: string, 
 
 // GET /api/lobbies/:id/members — list members
 export async function listMembers(request: Request, env: Env, lobbyId: string): Promise<Response> {
-  const auth = await requireAuth(request, env.JWT_SECRET ?? "dev-secret-change-me");
+  const auth = await requireAuth(request, env);
   if (auth instanceof Response) return auth;
 
   const member = await env.DB
@@ -186,7 +186,7 @@ export async function listMembers(request: Request, env: Env, lobbyId: string): 
 export async function updateMemberRole(
   request: Request, env: Env, lobbyId: string, targetUserId: string
 ): Promise<Response> {
-  const auth = await requireAuth(request, env.JWT_SECRET ?? "dev-secret-change-me");
+  const auth = await requireAuth(request, env);
   if (auth instanceof Response) return auth;
 
   const caller = await env.DB
