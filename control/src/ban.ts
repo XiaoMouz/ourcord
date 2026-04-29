@@ -1,9 +1,11 @@
 import { Env } from "./types";
-import { requireAuth, generateId } from "./auth";
+import { requireAuth, requireAdmin, generateId } from "./auth";
 
 // POST /api/ban — admin: ban a user, peer, or relay
 export async function createBan(request: Request, env: Env): Promise<Response> {
-  // TODO: add admin role check
+  const auth = await requireAdmin(request, env);
+  if (auth instanceof Response) return auth;
+
   const body = await request.json<{
     target_type: "user" | "peer" | "relay";
     target_id: string;
@@ -30,8 +32,10 @@ export async function createBan(request: Request, env: Env): Promise<Response> {
   return json({ id, target_type: body.target_type, target_id: body.target_id }, 201);
 }
 
-// DELETE /api/ban/:id — remove a ban
+// DELETE /api/ban/:id — remove a ban (admin only)
 export async function removeBan(request: Request, env: Env, banId: string): Promise<Response> {
+  const auth = await requireAdmin(request, env);
+  if (auth instanceof Response) return auth;
   await env.DB.prepare("DELETE FROM bans WHERE id = ?").bind(banId).run();
   await env.KV.delete("banned_keys_cache");
   return json({ removed: true });

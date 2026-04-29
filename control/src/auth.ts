@@ -83,6 +83,21 @@ export async function requireAuth(request: Request, env: Env): Promise<TokenPayl
   return payload;
 }
 
+// Require auth + global-admin membership.
+// ADMIN_USER_IDS is a comma-separated user-id allowlist on Env.
+export async function requireAdmin(request: Request, env: Env): Promise<TokenPayload | Response> {
+  const payload = await requireAuth(request, env);
+  if (payload instanceof Response) return payload;
+  const admins = (env.ADMIN_USER_IDS ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+  if (!admins.includes(payload.sub)) {
+    return new Response(JSON.stringify({ error: "Admin required" }), {
+      status: 403,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+  return payload;
+}
+
 // Check if user is banned
 export async function isUserBanned(userId: string, db: D1Database): Promise<boolean> {
   const now = Math.floor(Date.now() / 1000);

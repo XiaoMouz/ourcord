@@ -10,6 +10,9 @@ export interface Env {
   OAUTH_GITHUB_CLIENT_ID?: string;
   OAUTH_GITHUB_CLIENT_SECRET?: string;
   EMAIL_API_KEY?: string; // for sending OTP emails
+  // Comma-separated list of user ids treated as global admins. Used to gate
+  // /api/ban and other operator-only endpoints. Empty / missing = nobody.
+  ADMIN_USER_IDS?: string;
 }
 
 export interface User {
