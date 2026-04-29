@@ -1,0 +1,48 @@
+# Claude Code Instructions
+
+**首要参考：根目录 [`AGENTS.md`](./AGENTS.md)。** 本文件不重复其内容，只补充 Claude Code 特定偏好。
+
+## Claude Code 工作偏好
+
+- **复杂改动先用 PLAN 模式**写计划到 `~/.copilot/session-state/<id>/plan.md`，然后 `exit_plan_mode` 走审批，再进 autopilot。
+- **优先并行工具调用**：读多个文件、跑多种 lint/build 时一次性发起，别串行。
+- **任务分发优先级**：简单文件改动自己做；多文件跨模块研究用 `explore` agent；非平凡设计/实现先过 `rubber-duck`。
+- **plan.md 是 session 私有的，永远不 commit**。
+
+## Commit 规范
+
+- Conventional Commits + scope（`control` / `service` / `relay` / `daemon`）
+- 必须包含 trailer：
+  ```
+  Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>
+  ```
+- 本机启用 1Password GPG 签名；用以下命令绕过：
+  ```bash
+  git -c gpg.format=openpgp -c commit.gpgsign=false commit -m "..."
+  ```
+
+## 关键契约速查
+
+| 契约 | 位置 | 备注 |
+|---|---|---|
+| `JWT_SECRET` | control + service 共用 | 不要再叫 `CONTROL_INTERNAL_SECRET` |
+| SignalDO WS 鉴权 | `control/src/index.ts` | `?token&pk`，DO 假设上游已校验 |
+| limiter ctx | `relay/pkg/limiter` | 禁止 nil context |
+| VPN IP 池 | `100.64.0.0/10` + `fd7a:115c:a1e0::/48` | CGNAT + ULA |
+| 中继链 | WireGuard `AllowedIPs` | DERP 不感知拓扑 |
+| 文件优先级 | 自建 → 分享 → 大厅 → R2 | R2 受配额控制 |
+
+详细背景见 `AGENTS.md` 第 3 节。
+
+## 构建/检查（PR 前必跑）
+
+```bash
+(cd control && npx tsc --noEmit)
+(cd service && npx tsc --noEmit)
+(cd relay   && go build ./... && go vet ./...)
+(cd daemon  && go build ./... && go vet ./...)
+```
+
+## 当前阶段
+
+阶段一已完成；正在做"补全 + 修技术债"。改动前判断归属哪个阶段，不要提前实现阶段三/四（媒体、UI）的内容。
