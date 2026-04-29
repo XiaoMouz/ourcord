@@ -8,14 +8,21 @@ export async function createLobby(request: Request, env: Env): Promise<Response>
   const userId = auth.sub;
 
   const body = await request.json<{ name: string; icon?: string }>();
-  if (!body.name?.trim()) return err("name required");
+  const name = typeof body.name === "string" ? body.name.trim() : "";
+  // M2: bound name and icon to prevent oversized D1 rows.
+  if (!name) return err("name required");
+  if (name.length > 80) return err("name too long (max 80)", 413);
+  if (body.icon !== undefined && body.icon !== null) {
+    if (typeof body.icon !== "string") return err("icon must be a string");
+    if (body.icon.length > 512) return err("icon too long (max 512)", 413);
+  }
 
   const id = generateId();
   const now = Math.floor(Date.now() / 1000);
 
   await env.DB.batch([
     env.DB.prepare("INSERT INTO lobbies (id, name, owner_id, icon, created_at) VALUES (?,?,?,?,?)")
-      .bind(id, body.name.trim(), userId, body.icon ?? null, now),
+      .bind(id, name, userId, body.icon ?? null, now),
     // Add owner as member
     env.DB.prepare("INSERT INTO lobby_members (lobby_id, user_id, role, joined_at) VALUES (?,?,?,?)")
       .bind(id, userId, "owner", now),
@@ -29,7 +36,7 @@ export async function createLobby(request: Request, env: Env): Promise<Response>
       .bind(id),
   ]);
 
-  return json({ id, name: body.name.trim(), owner_id: userId, created_at: now }, 201);
+  return json({ id, name, owner_id: userId, created_at: now }, 201);
 }
 
 // GET /api/lobbies/:id — get lobby info

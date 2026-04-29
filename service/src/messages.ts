@@ -58,34 +58,49 @@ export async function sendMessage(request: Request, env: Env, roomId: string): P
     .first();
   if (!isMember) return err("Not a member", 403);
 
-  const body = await request.json<{ content: string; attachments?: string[] }>();
+  const body = await request.json<{ content: unknown; attachments?: unknown }>();
 
   const MAX_CONTENT_BYTES = 8 * 1024;
   const MAX_ATTACHMENTS = 10;
-  if (typeof body.content === "string" &&
-      new TextEncoder().encode(body.content).byteLength > MAX_CONTENT_BYTES) {
-    return err("content too large", 413);
-  }
-  if (Array.isArray(body.attachments) && body.attachments.length > MAX_ATTACHMENTS) {
-    return err("too many attachments", 400);
+  const MAX_ATTACHMENT_LEN = 256;
+
+  // M5: content must be a string when present (else ?.trim() throws → 500).
+  let content = "";
+  if (body.content !== undefined && body.content !== null) {
+    if (typeof body.content !== "string") return err("content must be a string");
+    if (new TextEncoder().encode(body.content).byteLength > MAX_CONTENT_BYTES) {
+      return err("content too large", 413);
+    }
+    content = body.content.trim();
   }
 
-  if (!body.content?.trim() && !body.attachments?.length) return err("content required");
+  // M3: each attachment must be a short string (file id / URL ref).
+  let attachmentsJSON: string | null = null;
+  if (body.attachments !== undefined && body.attachments !== null) {
+    if (!Array.isArray(body.attachments)) return err("attachments must be an array");
+    if (body.attachments.length > MAX_ATTACHMENTS) return err("too many attachments", 400);
+    const cleaned: string[] = [];
+    for (const a of body.attachments) {
+      if (typeof a !== "string") return err("attachment must be a string");
+      const t = a.trim();
+      if (!t) return err("attachment must not be empty");
+      if (t.length > MAX_ATTACHMENT_LEN) return err("attachment too long", 413);
+      cleaned.push(t);
+    }
+    if (cleaned.length > 0) attachmentsJSON = JSON.stringify(cleaned);
+  }
+
+  if (!content && !attachmentsJSON) return err("content required");
 
   const id = generateId();
   const now = Math.floor(Date.now() / 1000);
 
   await env.DB
     .prepare("INSERT INTO messages (id, room_id, user_id, content, attachments, created_at) VALUES (?,?,?,?,?,?)")
-    .bind(
-      id, roomId, auth.sub,
-      body.content?.trim() ?? "",
-      body.attachments ? JSON.stringify(body.attachments) : null,
-      now
-    )
+    .bind(id, roomId, auth.sub, content, attachmentsJSON, now)
     .run();
 
-  return json({ id, room_id: roomId, user_id: auth.sub, content: body.content, created_at: now }, 201);
+  return json({ id, room_id: roomId, user_id: auth.sub, content, created_at: now }, 201);
 }
 
 // DELETE /api/rooms/:roomId/messages/:msgId
