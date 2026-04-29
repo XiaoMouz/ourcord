@@ -62,6 +62,12 @@ CREATE TABLE IF NOT EXISTS file_policies (
 CREATE INDEX IF NOT EXISTS idx_rooms_lobby ON rooms(lobby_id);
 CREATE INDEX IF NOT EXISTS idx_messages_room ON messages(room_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_files_room ON files(room_id, created_at);
+-- L4: runR2Cleanup scans WHERE storage_location='r2' AND expires_at <= ?
+-- on a 5-minute cron. Without this partial index that is a full table scan
+-- once the files table grows. The WHERE clause keeps the index small (only
+-- rows that can ever expire) and matches the cleanup query exactly.
+CREATE INDEX IF NOT EXISTS idx_files_expires
+  ON files(storage_location, expires_at) WHERE expires_at IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_lobby_members_user ON lobby_members(user_id);
 
 -- Invite codes for joining a lobby. Created by owner/admin; consumed (or
