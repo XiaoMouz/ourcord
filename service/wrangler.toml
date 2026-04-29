@@ -18,3 +18,7 @@ bucket_name = "ourcord-files"
 
 [vars]
 ENVIRONMENT = "development"
+
+# Hourly R2 cleanup of expired file records (see scheduled handler in src/index.ts).
+[triggers]
+crons = ["0 * * * *"]

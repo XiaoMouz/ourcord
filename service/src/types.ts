@@ -5,6 +5,7 @@ export interface Env {
   ENVIRONMENT: string;
   CONTROL_URL?: string;       // control layer URL for cross-service calls
   JWT_SECRET?: string;
+  ADMIN_TOKEN?: string;       // shared secret for admin endpoints in production
 }
 
 export interface Lobby {

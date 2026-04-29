@@ -199,6 +199,41 @@ export async function updateFilePolicy(request: Request, env: Env, lobbyId: stri
   return json({ updated: true });
 }
 
+// runR2Cleanup deletes R2-stored files whose expires_at has passed.
+// Triggered by the Workers cron (see wrangler.toml [triggers]) and exposed
+// as POST /api/admin/cleanup-r2 for manual runs in development.
+//
+// Strategy: select up to `batchSize` expired R2 rows, delete the R2 object
+// then the DB row. If the R2 delete fails we leave the DB row alone so the
+// next run retries. This trades a tiny window of orphaned DB rows on R2
+// outages for never silently dropping files we can't actually evict.
+export async function runR2Cleanup(env: Env, batchSize = 200): Promise<{ deleted: number; failed: number }> {
+  const now = Math.floor(Date.now() / 1000);
+  const rows = await env.DB
+    .prepare(
+      `SELECT id, storage_key FROM files
+       WHERE storage_location = 'r2' AND expires_at IS NOT NULL AND expires_at <= ?
+       LIMIT ?`
+    )
+    .bind(now, batchSize)
+    .all<{ id: string; storage_key: string }>();
+
+  let deleted = 0;
+  let failed = 0;
+  for (const row of rows.results ?? []) {
+    try {
+      await env.FILES.delete(row.storage_key);
+      await env.DB.prepare("DELETE FROM files WHERE id = ?").bind(row.id).run();
+      deleted++;
+    } catch (e) {
+      console.error(`[r2-cleanup] failed to delete ${row.id}:`, e);
+      failed++;
+    }
+  }
+  return { deleted, failed };
+}
+
+
 function defaultPolicy(lobbyId: string): FilePolicy {
   return {
     lobby_id: lobbyId,

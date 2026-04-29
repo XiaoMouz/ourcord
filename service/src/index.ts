@@ -2,7 +2,7 @@ import { Env } from "./types";
 import { SCHEMA_SQL } from "./schema";
 import { createLobby, getLobby, joinLobby, listMembers, updateMemberRole } from "./lobby";
 import { getMessages, sendMessage, deleteMessage } from "./messages";
-import { initiateUpload, uploadToR2, listFiles, getDownloadUrl, getFilePolicy, updateFilePolicy } from "./files";
+import { initiateUpload, uploadToR2, listFiles, getDownloadUrl, getFilePolicy, updateFilePolicy, runR2Cleanup } from "./files";
 import { json } from "./auth";
 
 export default {
@@ -81,6 +81,17 @@ export default {
         return json({ message: "Schema initialized" });
       }
 
+      // Manual cleanup trigger (also runs on cron). Gated to development unless
+      // an admin token matches; production should rely on the scheduled handler.
+      if (method === "POST" && path === "/api/admin/cleanup-r2") {
+        const adminToken = request.headers.get("X-Admin-Token");
+        if (env.ENVIRONMENT !== "development" && adminToken !== env.ADMIN_TOKEN) {
+          return json({ error: "Forbidden" }, 403);
+        }
+        const result = await runR2Cleanup(env);
+        return json(result);
+      }
+
       if (path === "/health" || path === "/") {
         return json({ status: "ok", service: "ourcord-service", ts: Date.now() });
       }
@@ -90,5 +101,13 @@ export default {
       console.error("Unhandled error:", e);
       return json({ error: "Internal server error" }, 500);
     }
+  },
+
+  // Workers cron handler. Configured via [triggers].crons in wrangler.toml.
+  // Runs hourly to evict expired R2 files; the DB rows for non-R2 storage
+  // backends are left alone because we don't own those bytes.
+  async scheduled(_controller: ScheduledController, env: Env, _ctx: ExecutionContext): Promise<void> {
+    const result = await runR2Cleanup(env);
+    console.log(`[cron] r2 cleanup: deleted=${result.deleted} failed=${result.failed}`);
   },
 } satisfies ExportedHandler<Env>;
