@@ -137,11 +137,48 @@ export async function uploadToR2(
   const body = request.body;
   if (!body) return err("No body", 400);
 
-  await env.FILES.put(file.storage_key, body, {
-    httpMetadata: { contentType: file.mime_type },
+  // I1: enforce that the actual streamed bytes match files.size_bytes recorded
+  // in initiateUpload. Without this, a client can declare 1 KiB to bypass the
+  // policy.max_size_bytes check then PUT arbitrary bytes, blowing R2 quota.
+  // We wrap the body in a TransformStream that counts bytes and aborts the
+  // stream once the declared size is exceeded; on overrun we also delete the
+  // (partially written) R2 object so we don't keep paying for it.
+  const declared = file.size_bytes;
+  let received = 0;
+  let overflowed = false;
+  const counter = new TransformStream<Uint8Array, Uint8Array>({
+    transform(chunk, controller) {
+      received += chunk.byteLength;
+      if (received > declared) {
+        overflowed = true;
+        controller.error(new Error("declared size exceeded"));
+        return;
+      }
+      controller.enqueue(chunk);
+    },
   });
 
-  return json({ uploaded: true, key: file.storage_key });
+  try {
+    await env.FILES.put(file.storage_key, body.pipeThrough(counter), {
+      httpMetadata: { contentType: file.mime_type },
+    });
+  } catch (e) {
+    if (overflowed) {
+      // Best-effort cleanup; ignore secondary errors.
+      try { await env.FILES.delete(file.storage_key); } catch { /* noop */ }
+      return err(`Upload exceeded declared size ${declared}`, 413);
+    }
+    throw e;
+  }
+
+  if (received !== declared) {
+    // Underflow: client said size N but only sent M<N. Reject — the metadata
+    // and quota math are otherwise wrong. Wipe R2 to avoid orphans.
+    try { await env.FILES.delete(file.storage_key); } catch { /* noop */ }
+    return err(`Upload short: expected ${declared}, got ${received}`, 400);
+  }
+
+  return json({ uploaded: true, key: file.storage_key, bytes: received });
 }
 
 // GET /api/rooms/:roomId/files — list files in room
@@ -179,6 +216,18 @@ export async function getDownloadUrl(
     .bind(fileId, roomId)
     .first<FileRecord>();
   if (!file) return err("File not found", 404);
+
+  // I2: enforce membership. listFiles already does this; getDownloadUrl was
+  // missing it, so any authenticated user with a (room_id, file_id) pair could
+  // read files from rooms/lobbies they don't belong to.
+  const room = await env.DB
+    .prepare("SELECT lobby_id FROM rooms WHERE id = ?")
+    .bind(roomId).first<{ lobby_id: string }>();
+  if (!room) return err("Room not found", 404);
+  const isMember = await env.DB
+    .prepare("SELECT 1 FROM lobby_members WHERE lobby_id = ? AND user_id = ?")
+    .bind(room.lobby_id, auth.sub).first();
+  if (!isMember) return err("Not a member", 403);
 
   if (file.storage_location === "r2") {
     // Serve directly from R2
@@ -223,12 +272,28 @@ export async function updateFilePolicy(request: Request, env: Env, lobbyId: stri
   }
 
   const body = await request.json<Partial<FilePolicy>>();
-  const fields = Object.entries(body)
-    .filter(([k]) => k !== "lobby_id" && body[k as keyof FilePolicy] !== undefined)
-    .map(([k]) => `${k} = ?`);
-  const values = Object.entries(body)
-    .filter(([k]) => k !== "lobby_id" && body[k as keyof FilePolicy] !== undefined)
-    .map(([, v]) => v);
+  // I3: column-name allowlist. Previously the SQL was built by interpolating
+  // Object.keys(body) directly, letting a malicious admin/owner inject arbitrary
+  // SQL via JSON keys (e.g. "max_size_bytes = 1, banned_at = 0 --"). Keep an
+  // explicit, finite set of editable columns and silently drop the rest.
+  const ALLOWED: readonly (keyof FilePolicy)[] = [
+    "max_size_bytes",
+    "max_total_files",
+    "max_temp_files",
+    "retain_days",
+    "r2_enabled",
+    "user_server_enabled",
+    "lobby_server_enabled",
+  ];
+  const fields: string[] = [];
+  const values: unknown[] = [];
+  for (const k of ALLOWED) {
+    const v = body[k];
+    if (v !== undefined) {
+      fields.push(`${k} = ?`);
+      values.push(v);
+    }
+  }
 
   if (!fields.length) return err("No fields to update");
 
