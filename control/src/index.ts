@@ -67,7 +67,8 @@ export default {
         try {
           claims = await verifyToken(token, getJwtSecret(env));
         } catch (e) {
-          return json({ error: (e as Error).message }, 500);
+          console.error("signal route: token verification failed:", e);
+          return json({ error: "invalid token" }, 401);
         }
         if (!claims) return json({ error: "invalid token" }, 401);
 
@@ -95,18 +96,26 @@ export default {
           if (!env.SERVICE_URL || !env.SERVICE_INTERNAL_TOKEN) {
             return json({ error: "service layer not configured; room signaling unavailable" }, 503);
           }
+          let r: Response;
           try {
-            const r = await fetch(`${env.SERVICE_URL}/api/internal/rooms/${encodeURIComponent(roomId)}/member-ids`, {
+            r = await fetch(`${env.SERVICE_URL}/api/internal/rooms/${encodeURIComponent(roomId)}/member-ids`, {
               headers: { "X-Internal-Token": env.SERVICE_INTERNAL_TOKEN },
+              signal: AbortSignal.timeout(3000),
             });
-            if (r.status === 404) return json({ error: "room not found" }, 404);
-            if (!r.ok) return json({ error: `service returned ${r.status}` }, 502);
+          } catch (e) {
+            console.error("signal route: service fetch failed:", e);
+            return json({ error: "service unavailable" }, 502);
+          }
+          if (r.status === 404) return json({ error: "room not found" }, 404);
+          if (!r.ok) return json({ error: `service returned ${r.status}` }, 502);
+          try {
             const body = await r.json<{ user_ids: string[] }>();
             if (!body.user_ids?.includes(claims.sub)) {
               return json({ error: "not a member of this room" }, 403);
             }
           } catch (e) {
-            return json({ error: `service fetch failed: ${(e as Error).message}` }, 502);
+            console.error("signal route: service response parse failed:", e);
+            return json({ error: "service unavailable" }, 502);
           }
         }
 

@@ -44,6 +44,13 @@ func (s *Server) Listen() error {
 	if err != nil {
 		return fmt.Errorf("listen unix %s: %w", s.socketPath, err)
 	}
+	// K10: defense-in-depth — ensure the socket is only accessible by the
+	// owning user, even on platforms where checkPeerCred is a no-op or where
+	// the process umask would otherwise leave it group/world-accessible.
+	if err := os.Chmod(s.socketPath, 0o600); err != nil {
+		ln.Close()
+		return fmt.Errorf("chmod unix %s: %w", s.socketPath, err)
+	}
 	s.listener = ln
 	return nil
 }
