@@ -6,6 +6,7 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -20,6 +21,7 @@ import (
 	"github.com/ourcord/ourcord/relay/pkg/limiter"
 	"tailscale.com/derp/derpserver"
 	"tailscale.com/net/stunserver"
+	"tailscale.com/tailcfg"
 	"tailscale.com/types/key"
 	"tailscale.com/types/logger"
 )
@@ -94,16 +96,45 @@ func main() {
 	// Build HTTP mux
 	mux := http.NewServeMux()
 
-	// DERP HTTP handler with ban check + connection counting
+	// Local admission controller for DERP — runs on a separate plain-HTTP
+	// loopback listener (the public listener may be TLS). derpserver POSTs
+	// {NodePublic, Source} after the client's key-exchange frame; we reply
+	// {Allow: bool}. This is the only layer where banned DERP clients can
+	// be reliably rejected — the WebSocket Sec-WebSocket-Protocol header is
+	// not set by DERP clients, so an HTTP-layer check is a no-op.
+	admitMux := http.NewServeMux()
+	admitMux.HandleFunc("/internal/derp-admit", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method", http.StatusMethodNotAllowed)
+			return
+		}
+		var req tailcfg.DERPAdmitClientRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "bad json", http.StatusBadRequest)
+			return
+		}
+		allow := true
+		if cc != nil && cc.BanList().IsBanned(req.NodePublic.String()) {
+			allow = false
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(tailcfg.DERPAdmitClientResponse{Allow: allow})
+	})
+
+	admitLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		log.Fatalf("admit listen: %v", err)
+	}
+	go func() {
+		_ = http.Serve(admitLn, admitMux)
+	}()
+	admitURL := "http://" + admitLn.Addr().String() + "/internal/derp-admit"
+	log.Printf("DERP admission controller: %s", admitURL)
+
+	// DERP HTTP handler with connection counting only (ban check is at admit URL).
 	derpHandler := derpserver.Handler(derpSrv)
 	mux.HandleFunc("/derp", func(w http.ResponseWriter, r *http.Request) {
-		// Check banned key before upgrading
 		if cc != nil {
-			clientKey := r.Header.Get("Sec-WebSocket-Protocol")
-			if clientKey != "" && cc.BanList().IsBanned(clientKey) {
-				http.Error(w, "Forbidden", http.StatusForbidden)
-				return
-			}
 			cc.IncConn()
 			defer cc.DecConn()
 		}
@@ -118,6 +149,15 @@ func main() {
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprintf(w, `{"status":"ok","region":%q,"ts":%d}`, *region, time.Now().Unix())
 	})
+
+	// Wire the admission controller into derpserver. Fail-open so a broken
+	// loopback doesn't take down the relay; ban evasion is bounded by the
+	// relay-process lifetime.
+	if cc != nil {
+		derpSrv.SetVerifyClient(true)
+		derpSrv.SetVerifyClientURL(admitURL)
+		derpSrv.SetVerifyClientURLFailOpen(true)
+	}
 
 	// Build TLS config if certs provided
 	var tlsCfg *tls.Config
@@ -170,6 +210,34 @@ func main() {
 		srv.Shutdown(shutCtx)
 		rootCancel()
 	}()
+
+	// Periodic sampler: convert byte counter delta → bytes/sec for heartbeat.
+	if cc != nil {
+		go func() {
+			ticker := time.NewTicker(10 * time.Second)
+			defer ticker.Stop()
+			var lastTotal int64
+			lastTime := time.Now()
+			for {
+				select {
+				case <-rootCtx.Done():
+					return
+				case now := <-ticker.C:
+					total := lm.BytesTotal()
+					elapsed := now.Sub(lastTime).Seconds()
+					if elapsed > 0 {
+						bps := int64(float64(total-lastTotal) / elapsed)
+						if bps < 0 {
+							bps = 0
+						}
+						cc.SetBytesPerSec(bps)
+					}
+					lastTotal = total
+					lastTime = now
+				}
+			}
+		}()
+	}
 
 	log.Printf("Listening on %s", *addr)
 	if err := srv.Serve(limitedLn); err != nil && err != http.ErrServerClosed {

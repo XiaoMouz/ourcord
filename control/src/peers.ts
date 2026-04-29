@@ -152,11 +152,13 @@ export async function getPeerConfig(request: Request, env: Env): Promise<Respons
     .bind(...memberIds)
     .all<Peer>();
 
-  const relays = await env.KV.get("relay_map", "json") as RelayEntry[] | null;
+  // KV stores { relays, region, generated_at } object (see relay.ts buildRelayMap).
+  const relayMap = await env.KV.get("relay_map", "json") as { relays: RelayEntry[] } | null;
+  const relays = relayMap?.relays ?? [];
 
   const headers: HeadersInit = { "Content-Type": "application/json" };
   if (scopeWarning) headers["X-Scope-Warning"] = scopeWarning;
-  return new Response(JSON.stringify({ peers: peers.results, relays: relays ?? [] }), { headers });
+  return new Response(JSON.stringify({ peers: peers.results, relays }), { headers });
 }
 
 interface RelayEntry {

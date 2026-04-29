@@ -76,8 +76,12 @@ func (t *Table) BuildIPCConfig(privateKey wgtypes.Key) string {
 		if extras, ok := chainExtra[r.PublicKey.String()]; ok {
 			allowedIPs = append(allowedIPs, extras...)
 		}
-		if len(allowedIPs) > 0 {
-			sb.WriteString(fmt.Sprintf("allowed_ip=%s\n", strings.Join(allowedIPs, ",")))
+		// WireGuard UAPI requires one allowed_ip per line; comma-joined values
+		// are silently rejected, so emit each CIDR individually.
+		for _, cidr := range allowedIPs {
+			sb.WriteString("allowed_ip=")
+			sb.WriteString(cidr)
+			sb.WriteString("\n")
 		}
 
 		// Endpoint: only set for direct or next-hop targets, not for the

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"sync"
 	"time"
 
 	"nhooyr.io/websocket"
@@ -34,6 +35,7 @@ type Client struct {
 	controlURL string
 	authToken  string
 	publicKey  string
+	wsMu       sync.RWMutex
 	ws         *websocket.Conn
 	onSignal   func(msg SignalMessage)
 	onClose    func() // invoked by readLoop when the connection terminates (used by Run)
@@ -79,9 +81,11 @@ func (c *Client) Connect(ctx context.Context, roomID string) error {
 	if err != nil {
 		return fmt.Errorf("signal WS dial: %w", err)
 	}
+	c.wsMu.Lock()
 	c.ws = ws
+	c.wsMu.Unlock()
 
-	go c.readLoop(ctx)
+	go c.readLoop(ctx, ws)
 	return nil
 }
 
@@ -140,10 +144,13 @@ func nextBackoff(cur, max time.Duration) time.Duration {
 
 // SendSignal sends a signaling message to a specific peer or broadcasts.
 func (c *Client) SendSignal(ctx context.Context, msg SignalMessage) error {
-	if c.ws == nil {
+	c.wsMu.RLock()
+	ws := c.ws
+	c.wsMu.RUnlock()
+	if ws == nil {
 		return fmt.Errorf("not connected to signal server")
 	}
-	return wsjson.Write(ctx, c.ws, msg)
+	return wsjson.Write(ctx, ws, msg)
 }
 
 // InitiateHolePunch sends ICE offer to target peer.
@@ -166,7 +173,7 @@ func (c *Client) SendICEAnswer(ctx context.Context, targetKey string, answer ICE
 	})
 }
 
-func (c *Client) readLoop(ctx context.Context) {
+func (c *Client) readLoop(ctx context.Context, ws *websocket.Conn) {
 	defer func() {
 		if c.onClose != nil {
 			c.onClose()
@@ -174,7 +181,7 @@ func (c *Client) readLoop(ctx context.Context) {
 	}()
 	for {
 		var msg SignalMessage
-		if err := wsjson.Read(ctx, c.ws, &msg); err != nil {
+		if err := wsjson.Read(ctx, ws, &msg); err != nil {
 			if ctx.Err() == nil {
 				fmt.Printf("[control] read error: %v\n", err)
 			}
@@ -188,10 +195,14 @@ func (c *Client) readLoop(ctx context.Context) {
 
 // Close closes the WebSocket connection.
 func (c *Client) Close() error {
-	if c.ws == nil {
+	c.wsMu.Lock()
+	ws := c.ws
+	c.ws = nil
+	c.wsMu.Unlock()
+	if ws == nil {
 		return nil
 	}
-	return c.ws.Close(websocket.StatusNormalClosure, "closing")
+	return ws.Close(websocket.StatusNormalClosure, "closing")
 }
 
 // PeerConfig is the configuration received from the control plane.

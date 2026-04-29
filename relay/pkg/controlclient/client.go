@@ -123,7 +123,11 @@ func (c *Client) Run(ctx context.Context, syncInterval, heartbeatInterval time.D
 }
 
 func (c *Client) syncBannedKeys(ctx context.Context) error {
-	req, err := http.NewRequestWithContext(ctx, "GET", c.controlURL+"/api/relay/banned-keys", nil)
+	urlStr := c.controlURL + "/api/relay/banned-keys"
+	if idPtr := c.relayID.Load(); idPtr != nil && *idPtr != "" {
+		urlStr += "?relay_id=" + *idPtr
+	}
+	req, err := http.NewRequestWithContext(ctx, "GET", urlStr, nil)
 	if err != nil {
 		return err
 	}
