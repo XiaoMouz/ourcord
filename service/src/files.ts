@@ -31,7 +31,21 @@ export async function initiateUpload(request: Request, env: Env, roomId: string)
     storage_preference?: "user_server" | "lobby_server" | "r2";
   }>();
 
-  if (!body.filename || !body.size_bytes) return err("filename and size_bytes required");
+  if (!body.filename) return err("filename required");
+  // J6: positive-integer size_bytes. The previous `!body.size_bytes` check
+  // accepted negative values (truthy in JS) which then sailed past the
+  // max_size_bytes ceiling and ended up as a negative row in D1; the
+  // streaming overflow check (I1) would then trip on the very first byte.
+  // Cap declared size at 5 GiB to avoid silly memory/DB weirdness even if
+  // policy.max_size_bytes is unset.
+  const MAX_DECLARED_BYTES = 5 * 1024 * 1024 * 1024;
+  if (
+    !Number.isInteger(body.size_bytes) ||
+    body.size_bytes <= 0 ||
+    body.size_bytes > MAX_DECLARED_BYTES
+  ) {
+    return err("size_bytes must be a positive integer (max 5 GiB declared)");
+  }
 
   // Enforce per-file size limit
   if (policy.max_size_bytes > 0 && body.size_bytes > policy.max_size_bytes) {

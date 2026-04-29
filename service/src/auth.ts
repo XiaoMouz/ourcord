@@ -43,7 +43,7 @@ function b64urlDecode(str: string): string {
   return new TextDecoder().decode(bytes);
 }
 
-function constantTimeEqual(a: string, b: string): boolean {
+export function constantTimeEqual(a: string, b: string): boolean {
   const al = a.length, bl = b.length;
   let diff = al ^ bl;
   const max = Math.max(al, bl);

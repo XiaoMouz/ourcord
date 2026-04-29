@@ -3,7 +3,7 @@ import { SCHEMA_SQL } from "./schema";
 import { createLobby, getLobby, joinLobby, listMembers, updateMemberRole, createInvite, revokeInvite } from "./lobby";
 import { getMessages, sendMessage, deleteMessage } from "./messages";
 import { initiateUpload, uploadToR2, listFiles, getDownloadUrl, getFilePolicy, updateFilePolicy, runR2Cleanup } from "./files";
-import { json } from "./auth";
+import { json, constantTimeEqual } from "./auth";
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -86,7 +86,10 @@ export default {
       // scoping. Authenticated via X-Internal-Token shared secret.
       if (method === "GET" && parts[1] === "internal" && parts[2] === "rooms" && parts[4] === "member-ids") {
         const token = request.headers.get("X-Internal-Token");
-        if (!env.SERVICE_INTERNAL_TOKEN || token !== env.SERVICE_INTERNAL_TOKEN) {
+        // J5: constant-time compare so timing oracles can't leak the token
+        // byte-by-byte. The token is what control-layer trusts to scope
+        // peer mesh by room membership; leaking it breaks the boundary.
+        if (!env.SERVICE_INTERNAL_TOKEN || !token || !constantTimeEqual(token, env.SERVICE_INTERNAL_TOKEN)) {
           return json({ error: "Forbidden" }, 403);
         }
         const roomId = parts[3];
@@ -113,8 +116,13 @@ export default {
       // an admin token matches; production should rely on the scheduled handler.
       if (method === "POST" && path === "/api/admin/cleanup-r2") {
         const adminToken = request.headers.get("X-Admin-Token");
-        if (env.ENVIRONMENT !== "development" && adminToken !== env.ADMIN_TOKEN) {
-          return json({ error: "Forbidden" }, 403);
+        // J4: constant-time compare on ADMIN_TOKEN. Same threat model as
+        // the internal token: a timing oracle would let an attacker recover
+        // the secret byte-by-byte and then trigger admin-only operations.
+        if (env.ENVIRONMENT !== "development") {
+          if (!env.ADMIN_TOKEN || !adminToken || !constantTimeEqual(adminToken, env.ADMIN_TOKEN)) {
+            return json({ error: "Forbidden" }, 403);
+          }
         }
         const result = await runR2Cleanup(env);
         return json(result);
