@@ -32,6 +32,19 @@ export async function initiateUpload(request: Request, env: Env, roomId: string)
   }>();
 
   if (!body.filename) return err("filename required");
+  // K3: validate filename charset/length before it goes into a storage_key
+  // path component or a Content-Disposition header. Reject control chars,
+  // quotes/backslashes (header injection / quote-escape in CD), forward
+  // slashes (path traversal in storage_key), and `.`/`..` which are special
+  // path segments. 1..255 bytes is the conventional filesystem ceiling.
+  if (
+    typeof body.filename !== "string" ||
+    body.filename.length < 1 ||
+    body.filename.length > 255 ||
+    /[\x00-\x1f\x7f"\\]|^\.\.?$|\//.test(body.filename)
+  ) {
+    return err("filename contains invalid characters or has invalid length");
+  }
   // J6: positive-integer size_bytes. The previous `!body.size_bytes` check
   // accepted negative values (truthy in JS) which then sailed past the
   // max_size_bytes ceiling and ended up as a negative row in D1; the
@@ -247,13 +260,21 @@ export async function getDownloadUrl(
     // Serve directly from R2
     const obj = await env.FILES.get(file.storage_key);
     if (!obj) return err("File not found in storage", 404);
-    return new Response(obj.body, {
-      headers: {
-        "Content-Type": file.mime_type,
-        "Content-Disposition": `attachment; filename="${file.filename}"`,
-        "Access-Control-Allow-Origin": "*",
-      },
+    // K3: RFC 5987 Content-Disposition. The legacy `filename="..."` token must
+    // be ASCII-only and must not contain a literal `"` or `\` — escape those
+    // to `_` for the fallback, and put the real (possibly UTF-8) name in
+    // `filename*` per RFC 5987. Without this, a filename with `"` would let
+    // a client smuggle additional CD parameters or break parsing entirely.
+    const safeAscii = file.filename.replace(/[^\x20-\x7e]|["\\]/g, "_");
+    const headers = new Headers({
+      "Content-Type": file.mime_type,
+      "Access-Control-Allow-Origin": "*",
     });
+    headers.set(
+      "Content-Disposition",
+      `attachment; filename="${safeAscii}"; filename*=UTF-8''${encodeURIComponent(file.filename)}`,
+    );
+    return new Response(obj.body, { headers });
   }
 
   // For user_server/lobby_server: the storage_key contains an external URL
