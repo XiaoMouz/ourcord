@@ -73,6 +73,30 @@ func TestPeerFromConfig_InvalidCIDR(t *testing.T) {
 	}
 }
 
+// M1: silent zero-pad / truncation must be rejected.
+func TestPeerFromConfig_WrongLength(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  []byte
+	}{
+		{"too-short-31", make([]byte, 31)},
+		{"too-long-33", make([]byte, 33)},
+		{"empty", nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			b64 := base64.StdEncoding.EncodeToString(tc.raw)
+			_, err := PeerFromConfig(b64, []string{"100.64.0.5/32"})
+			if err == nil {
+				t.Fatalf("expected error for %d-byte key, got nil", len(tc.raw))
+			}
+			if !strings.Contains(err.Error(), "32 bytes") {
+				t.Errorf("expected length error, got %v", err)
+			}
+		})
+	}
+}
+
 func TestGeneratePSK(t *testing.T) {
 	a, err := GeneratePSK()
 	if err != nil {

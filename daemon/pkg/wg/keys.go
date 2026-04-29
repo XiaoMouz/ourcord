@@ -46,6 +46,12 @@ func PeerFromConfig(pubKeyB64 string, allowedIPs []string) (*Peer, error) {
 	if err != nil {
 		return nil, fmt.Errorf("decode public key: %w", err)
 	}
+	// M1: enforce exact 32-byte length. copy() silently truncates or
+	// zero-pads, which would yield a syntactically valid but semantically
+	// wrong WireGuard key — handshakes "succeed" against the wrong identity.
+	if len(decoded) != wgtypes.KeyLen {
+		return nil, fmt.Errorf("wg public key must be %d bytes, got %d", wgtypes.KeyLen, len(decoded))
+	}
 	var key wgtypes.Key
 	copy(key[:], decoded)
 
