@@ -168,7 +168,12 @@ export async function getPeerConfig(request: Request, env: Env): Promise<Respons
           memberIds = body.user_ids;
         }
       } catch (e) {
-        scopeWarning = `service fetch failed: ${(e as Error).message}`;
+        // L2: never leak the underlying error message (which may include
+        // internal hostnames / IPs / connection-refused details) into a
+        // response header. Emit a stable opaque code; full detail goes to
+        // worker logs only.
+        console.warn(`[peers] service fetch failed for room ${roomId}:`, e);
+        scopeWarning = "service-fetch-failed";
       }
     }
   }

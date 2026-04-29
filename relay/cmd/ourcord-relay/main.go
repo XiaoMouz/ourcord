@@ -238,7 +238,17 @@ func main() {
 		limitedLn = tls.NewListener(limitedLn, tlsCfg)
 	}
 
-	srv := &http.Server{Handler: mux, TLSConfig: tlsCfg}
+	// L3: harden the public-facing HTTPS server against slow-loris / half-open
+	// TLS handshakes. ReadHeaderTimeout caps how long we wait for the request
+	// line + headers; IdleTimeout reaps idle keep-alive connections. We must
+	// NOT set ReadTimeout or WriteTimeout because DERP clients hold long-lived
+	// streaming connections and those timeouts would forcibly tear them down.
+	srv := &http.Server{
+		Handler:           mux,
+		TLSConfig:         tlsCfg,
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
 
 	// STUN server (UDP)
 	if *stun {

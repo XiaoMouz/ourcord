@@ -137,7 +137,15 @@ export async function oauthCallback(request: Request, env: Env, provider: string
   try {
     email = await fetchOAuthEmail(env, provider, code, redirectUri);
   } catch (e) {
-    return json({ error: "OAuth failed", detail: String(e) }, 502);
+    // L1: do not leak provider error details (URLs, status codes, partial
+    // tokens, stack frames) to the public client. Always log the full error
+    // server-side; only echo the message in development.
+    console.error(`[oauth] ${provider} callback failed:`, e);
+    const isDev = (env.ENVIRONMENT ?? "development") === "development";
+    return json(
+      isDev ? { error: "OAuth failed", detail: String(e) } : { error: "OAuth failed" },
+      502,
+    );
   }
 
   // Get or create user (same as OTP flow)
