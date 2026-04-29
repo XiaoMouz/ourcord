@@ -2,7 +2,7 @@ import { Env } from "./types";
 import { SCHEMA_SQL } from "./schema";
 import { registerPeer, getPeerConfig } from "./peers";
 import { getStunServers, addStunServer } from "./stun";
-import { registerRelay, getRelayMap, getBannedKeys } from "./relay";
+import { registerRelay, getRelayMap, getBannedKeys, denyPeerOnRelay, allowPeerOnRelay } from "./relay";
 import { createBan, removeBan, checkBan } from "./ban";
 import { requestOTP, verifyOTP, oauthRedirect, oauthCallback } from "./authHandler";
 
@@ -76,6 +76,39 @@ export default {
       if (method === "POST" && path === "/api/relay/register") return registerRelay(request, env);
       if (method === "GET" && path === "/api/relay/map") return getRelayMap(request, env);
       if (method === "GET" && path === "/api/relay/banned-keys") return getBannedKeys(request, env);
+      // Per-relay denylist (relay owner only)
+      if (path.startsWith("/api/relay/") && path.includes("/deny")) {
+        const parts = path.split("/").filter(Boolean); // ["api","relay",":id","deny",":pk?"]
+        const relayId = parts[2];
+        if (method === "POST" && parts[3] === "deny" && parts.length === 4) {
+          return denyPeerOnRelay(request, env, relayId);
+        }
+        if (method === "DELETE" && parts[3] === "deny" && parts.length === 5) {
+          return allowPeerOnRelay(request, env, relayId, decodeURIComponent(parts[4]));
+        }
+      }
+
+      // ── Control status ─────────────────────────────────────────────────────
+      if (method === "GET" && path === "/api/control/status") {
+        const now = Math.floor(Date.now() / 1000);
+        const [users, peers, relays, bans] = await Promise.all([
+          env.DB.prepare("SELECT COUNT(*) AS c FROM users").first<{ c: number }>(),
+          env.DB.prepare("SELECT COUNT(*) AS c FROM peers WHERE last_seen > ?").bind((now - 300) * 1000).first<{ c: number }>(),
+          env.DB.prepare("SELECT COUNT(*) AS c FROM relay_servers WHERE active = 1 AND last_heartbeat > ?").bind(now - 120).first<{ c: number }>(),
+          env.DB.prepare("SELECT COUNT(*) AS c FROM bans WHERE expires_at IS NULL OR expires_at > ?").bind(now).first<{ c: number }>(),
+        ]);
+        return json({
+          status: "ok",
+          environment: env.ENVIRONMENT ?? "unknown",
+          counts: {
+            users: users?.c ?? 0,
+            active_peers_5m: peers?.c ?? 0,
+            active_relays: relays?.c ?? 0,
+            active_bans: bans?.c ?? 0,
+          },
+          ts: Date.now(),
+        });
+      }
 
       // ── Ban management ─────────────────────────────────────────────────────
       if (method === "POST" && path === "/api/ban") return createBan(request, env);

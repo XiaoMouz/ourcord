@@ -59,4 +59,24 @@ CREATE INDEX IF NOT EXISTS idx_peers_user_id ON peers(user_id);
 CREATE INDEX IF NOT EXISTS idx_peers_public_key ON peers(public_key);
 CREATE INDEX IF NOT EXISTS idx_bans_target ON bans(target_type, target_id);
 CREATE INDEX IF NOT EXISTS idx_relay_servers_owner ON relay_servers(owner_id);
+
+-- Per-relay peer denylist. Lobby owners (or relay owners directly) can refuse
+-- specific peers without making them globally banned. Used by relay servers
+-- to filter incoming connections (see /api/relay/banned-keys?relay_id=...).
+CREATE TABLE IF NOT EXISTS relay_denied_peers (
+  relay_id TEXT NOT NULL REFERENCES relay_servers(id) ON DELETE CASCADE,
+  public_key TEXT NOT NULL,
+  reason TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (relay_id, public_key)
+);
+
+-- Coarse per-relay load report so control can rank in /api/relay/map.
+-- Updated by relay heartbeat alongside last_heartbeat.
+CREATE TABLE IF NOT EXISTS relay_load (
+  relay_id TEXT PRIMARY KEY REFERENCES relay_servers(id) ON DELETE CASCADE,
+  active_conns INTEGER NOT NULL DEFAULT 0,
+  bytes_per_sec INTEGER NOT NULL DEFAULT 0,
+  reported_at INTEGER NOT NULL DEFAULT 0
+);
 `;

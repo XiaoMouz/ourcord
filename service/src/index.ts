@@ -80,6 +80,28 @@ export default {
         return getDownloadUrl(request, env, parts[2], parts[4]);
       }
 
+      // ── Internal (control → service) ───────────────────────────────────────
+      // Returns the user_ids of every member of the lobby that owns the room.
+      // Used by control-layer getPeerConfig?room_id=... for per-room mesh
+      // scoping. Authenticated via X-Internal-Token shared secret.
+      if (method === "GET" && parts[1] === "internal" && parts[2] === "rooms" && parts[4] === "member-ids") {
+        const token = request.headers.get("X-Internal-Token");
+        if (!env.SERVICE_INTERNAL_TOKEN || token !== env.SERVICE_INTERNAL_TOKEN) {
+          return json({ error: "Forbidden" }, 403);
+        }
+        const roomId = parts[3];
+        const room = await env.DB
+          .prepare("SELECT lobby_id FROM rooms WHERE id = ?")
+          .bind(roomId)
+          .first<{ lobby_id: string }>();
+        if (!room) return json({ error: "Room not found" }, 404);
+        const members = await env.DB
+          .prepare("SELECT user_id FROM lobby_members WHERE lobby_id = ?")
+          .bind(room.lobby_id)
+          .all<{ user_id: string }>();
+        return json({ user_ids: members.results.map((m) => m.user_id), room_id: roomId, lobby_id: room.lobby_id });
+      }
+
       // ── Admin ──────────────────────────────────────────────────────────────
       if (method === "POST" && path === "/api/admin/init-db") {
         if (env.ENVIRONMENT !== "development") return json({ error: "Dev only" }, 403);

@@ -88,7 +88,19 @@ export async function registerPeer(request: Request, env: Env): Promise<Response
   return json({ peer, config: buildWireGuardConfig(peer!) }, 201);
 }
 
-// GET /api/peers/config — get full peer list for building WireGuard config
+// GET /api/peers/config — get peer list for building WireGuard config.
+//
+// Without query params: returns all of this user's own peers (single-account
+// mesh). With ?room_id=<id>: also returns peers belonging to other users who
+// share that room. Per spec, "每个房间应属于单独的组网" — voice/video/file
+// rooms get isolated tables; text rooms don't expose any peers (membership is
+// purely chat-level).
+//
+// Cross-room peers are fetched by asking the service layer for the lobby's
+// member user-ids and intersecting with our peers table. Requires
+// SERVICE_URL + SERVICE_INTERNAL_TOKEN to be configured; without them
+// room scoping is silently skipped (back to user-only mesh, with a warning
+// header for client-side debugging).
 export async function getPeerConfig(request: Request, env: Env): Promise<Response> {
   const authResult = await requireAuth(request, env);
   if (authResult instanceof Response) return authResult;
@@ -103,16 +115,48 @@ export async function getPeerConfig(request: Request, env: Env): Promise<Respons
       .run();
   }
 
-  // Return all active peers for this user (for full mesh config)
+  const url = new URL(request.url);
+  const roomId = url.searchParams.get("room_id");
+
+  let memberIds: string[] = [userId];
+  let scopeWarning: string | null = null;
+
+  if (roomId) {
+    if (!env.SERVICE_URL || !env.SERVICE_INTERNAL_TOKEN) {
+      scopeWarning = "room scoping requested but SERVICE_URL/SERVICE_INTERNAL_TOKEN not configured";
+    } else {
+      try {
+        const resp = await fetch(`${env.SERVICE_URL}/api/internal/rooms/${roomId}/member-ids`, {
+          headers: { "X-Internal-Token": env.SERVICE_INTERNAL_TOKEN },
+        });
+        if (!resp.ok) {
+          scopeWarning = `service returned ${resp.status} for room ${roomId}`;
+        } else {
+          const body = await resp.json<{ user_ids: string[] }>();
+          // Caller must be a member; otherwise return empty mesh.
+          if (!body.user_ids?.includes(userId)) {
+            return json({ peers: [], relays: [], note: "not a member of this room" });
+          }
+          memberIds = body.user_ids;
+        }
+      } catch (e) {
+        scopeWarning = `service fetch failed: ${(e as Error).message}`;
+      }
+    }
+  }
+
+  // Filter peers by the resolved member set.
+  const placeholders = memberIds.map(() => "?").join(",");
   const peers = await env.DB
-    .prepare("SELECT * FROM peers WHERE user_id = ? ORDER BY last_seen DESC")
-    .bind(userId)
+    .prepare(`SELECT * FROM peers WHERE user_id IN (${placeholders}) ORDER BY last_seen DESC`)
+    .bind(...memberIds)
     .all<Peer>();
 
-  // Get relay server list
   const relays = await env.KV.get("relay_map", "json") as RelayEntry[] | null;
 
-  return json({ peers: peers.results, relays: relays ?? [] });
+  const headers: HeadersInit = { "Content-Type": "application/json" };
+  if (scopeWarning) headers["X-Scope-Warning"] = scopeWarning;
+  return new Response(JSON.stringify({ peers: peers.results, relays: relays ?? [] }), { headers });
 }
 
 interface RelayEntry {

@@ -56,7 +56,8 @@ type Client struct {
 	identity   Identity
 	banList    *BanList
 	httpClient *http.Client
-	connCount  atomic.Int64 // current open connections; incremented externally
+	connCount   atomic.Int64 // current open connections; incremented externally
+	bytesPerSec atomic.Int64 // last computed throughput; updated by SetBytesPerSec
 }
 
 // New creates a new control plane client.
@@ -82,6 +83,12 @@ func (c *Client) BanList() *BanList { return c.banList }
 // IncConn / DecConn track current connection count for heartbeat reporting.
 func (c *Client) IncConn() { c.connCount.Add(1) }
 func (c *Client) DecConn() { c.connCount.Add(-1) }
+
+// SetBytesPerSec updates the throughput sample reported on the next heartbeat.
+// The relay's limiter accounting layer (or a periodic sampler) is expected to
+// call this; if never called, heartbeats report 0 and the relay is treated as
+// fully idle for ranking purposes.
+func (c *Client) SetBytesPerSec(v int64) { c.bytesPerSec.Store(v) }
 
 // Run starts the background sync loop. It fetches banned keys every syncInterval
 // and sends heartbeats every heartbeatInterval.
@@ -146,14 +153,18 @@ func (c *Client) syncBannedKeys(ctx context.Context) error {
 // heartbeatPayload mirrors what control/src/relay.ts expects on
 // POST /api/relay/register. Both new registration and heartbeat-update use
 // the same shape; presence of "id" switches to update mode server-side.
+//
+// ActiveConns / BytesPerSec are persisted into the relay_load table and used
+// by /api/relay/map to rank relays by available headroom.
 type heartbeatPayload struct {
-	ID            string `json:"id,omitempty"`
-	Region        string `json:"region"`
-	Hostname      string `json:"hostname"`
-	Port          int    `json:"port,omitempty"`
-	Mode          string `json:"mode"`
-	CapacityKbps  int    `json:"capacity_kbps,omitempty"`
-	CurrentConns  int64  `json:"current_conns,omitempty"`
+	ID           string `json:"id,omitempty"`
+	Region       string `json:"region"`
+	Hostname     string `json:"hostname"`
+	Port         int    `json:"port,omitempty"`
+	Mode         string `json:"mode"`
+	CapacityKbps int    `json:"capacity_kbps,omitempty"`
+	ActiveConns  int64  `json:"active_conns"`
+	BytesPerSec  int64  `json:"bytes_per_sec"`
 }
 
 func (c *Client) sendHeartbeat(ctx context.Context) error {
@@ -167,7 +178,8 @@ func (c *Client) sendHeartbeat(ctx context.Context) error {
 		Port:         c.identity.Port,
 		Mode:         c.identity.Mode,
 		CapacityKbps: c.identity.CapacityKbps,
-		CurrentConns: c.connCount.Load(),
+		ActiveConns:  c.connCount.Load(),
+		BytesPerSec:  c.bytesPerSec.Load(),
 	}
 	if idPtr := c.relayID.Load(); idPtr != nil {
 		payload.ID = *idPtr

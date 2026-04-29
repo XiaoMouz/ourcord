@@ -13,6 +13,12 @@ export interface Env {
   // Comma-separated list of user ids treated as global admins. Used to gate
   // /api/ban and other operator-only endpoints. Empty / missing = nobody.
   ADMIN_USER_IDS?: string;
+  // Base URL of the service layer worker (used for per-room peer scoping).
+  // E.g. https://service.ourcord.example
+  SERVICE_URL?: string;
+  // Shared secret presented by control → service for member-list lookups.
+  // Service treats requests with this header as trusted internal callers.
+  SERVICE_INTERNAL_TOKEN?: string;
 }
 
 export interface User {

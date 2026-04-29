@@ -6,6 +6,8 @@ export interface Env {
   CONTROL_URL?: string;       // control layer URL for cross-service calls
   JWT_SECRET?: string;
   ADMIN_TOKEN?: string;       // shared secret for admin endpoints in production
+  // Shared secret accepted on /api/internal/* requests from control layer.
+  SERVICE_INTERNAL_TOKEN?: string;
 }
 
 export interface Lobby {
