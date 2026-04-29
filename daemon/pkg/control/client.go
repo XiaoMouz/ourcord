@@ -42,7 +42,10 @@ type Client struct {
 	publicKey  string
 	wsMu       sync.RWMutex
 	ws         *websocket.Conn
-	onSignal   func(msg SignalMessage)
+	// I5: protect onSignal — Run() ↔ SetSignalHandler can race once the
+	// daemon's main goroutine wires the callback after Run is in flight.
+	signalMu sync.RWMutex
+	onSignal func(msg SignalMessage)
 }
 
 // New creates a new control plane client.
@@ -56,7 +59,16 @@ func New(controlURL, authToken, publicKey string) *Client {
 
 // SetSignalHandler sets the callback invoked for incoming signaling messages.
 func (c *Client) SetSignalHandler(fn func(msg SignalMessage)) {
+	c.signalMu.Lock()
 	c.onSignal = fn
+	c.signalMu.Unlock()
+}
+
+// signalHandler returns a snapshot of the current signal callback under lock.
+func (c *Client) signalHandler() func(msg SignalMessage) {
+	c.signalMu.RLock()
+	defer c.signalMu.RUnlock()
+	return c.onSignal
 }
 
 // Connect establishes the WebSocket connection to the signaling endpoint.
@@ -197,8 +209,8 @@ func (c *Client) readLoop(ctx context.Context, ws *websocket.Conn, onClose func(
 			}
 			return
 		}
-		if c.onSignal != nil {
-			c.onSignal(msg)
+		if h := c.signalHandler(); h != nil {
+			h(msg)
 		}
 	}
 }

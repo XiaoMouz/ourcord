@@ -161,7 +161,15 @@ func main() {
 		log.Fatalf("admit listen: %v", err)
 	}
 	go func() {
-		_ = http.Serve(admitLn, admitMux)
+		// I6: cap header read + total write so a hung client (even on
+		// loopback) can't pin a goroutine forever. Admit requests are tiny
+		// JSON in/out, 5s is generous.
+		srv := &http.Server{
+			Handler:           admitMux,
+			ReadHeaderTimeout: 5 * time.Second,
+			WriteTimeout:      5 * time.Second,
+		}
+		_ = srv.Serve(admitLn)
 	}()
 	admitURL := "http://" + admitLn.Addr().String() + "/internal/derp-admit"
 	log.Printf("DERP admission controller: %s", admitURL)

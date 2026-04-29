@@ -43,8 +43,17 @@ export default {
 
       // ── Hole-punching signal (WebSocket via Durable Object) ─────────────────
       if (path.startsWith("/api/signal/")) {
-        const roomId = path.split("/")[3];
-        if (!roomId) return json({ error: "room_id required" }, 400);
+        const rawRoomId = path.split("/")[3];
+        if (!rawRoomId) return json({ error: "room_id required" }, 400);
+        // I4: normalize service-room ids so case variants ("Room1" vs "room1")
+        // can't fan out into separate Durable Objects. Pair ids are kept
+        // verbatim (they're already lowercase hex from the client and order
+        // is checked below). For service rooms, lowercase + tight charset.
+        const isPair = rawRoomId.startsWith("pair:");
+        const roomId = isPair ? rawRoomId : rawRoomId.toLowerCase();
+        if (!isPair && !/^[a-z0-9-]{1,64}$/.test(roomId)) {
+          return json({ error: "invalid room_id" }, 400);
+        }
 
         // Authenticate before opening the WebSocket. WebSocket clients pass the
         // JWT via ?token=... query param (browsers can't send custom headers on WS).
