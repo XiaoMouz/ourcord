@@ -31,6 +31,11 @@ type ICEOffer struct {
 }
 
 // Client manages the daemon's connection to the control plane.
+//
+// onClose handling: each Run iteration creates a fresh `done` channel and
+// passes it through Connect → readLoop. This avoids the race where the
+// previous-generation readLoop fires the new generation's onClose callback
+// after a reconnect.
 type Client struct {
 	controlURL string
 	authToken  string
@@ -38,7 +43,6 @@ type Client struct {
 	wsMu       sync.RWMutex
 	ws         *websocket.Conn
 	onSignal   func(msg SignalMessage)
-	onClose    func() // invoked by readLoop when the connection terminates (used by Run)
 }
 
 // New creates a new control plane client.
@@ -57,7 +61,10 @@ func (c *Client) SetSignalHandler(fn func(msg SignalMessage)) {
 
 // Connect establishes the WebSocket connection to the signaling endpoint.
 // The roomID should be a deterministic identifier for this peer's signaling room.
-func (c *Client) Connect(ctx context.Context, roomID string) error {
+// onClose, if non-nil, is invoked exactly once when readLoop for this specific
+// connection exits — bound to this connection generation, no cross-talk with
+// later reconnects.
+func (c *Client) Connect(ctx context.Context, roomID string, onClose func()) error {
 	wsURL, err := url.Parse(c.controlURL)
 	if err != nil {
 		return fmt.Errorf("parse control URL: %w", err)
@@ -85,7 +92,7 @@ func (c *Client) Connect(ctx context.Context, roomID string) error {
 	c.ws = ws
 	c.wsMu.Unlock()
 
-	go c.readLoop(ctx, ws)
+	go c.readLoop(ctx, ws, onClose)
 	return nil
 }
 
@@ -104,9 +111,12 @@ func (c *Client) Run(ctx context.Context, roomID string) {
 			return
 		}
 		done := make(chan struct{})
-		c.onClose = func() { close(done) }
+		// Capture done in this iteration's closure; readLoop only knows about
+		// this generation's channel.
+		closeOnce := sync.Once{}
+		closer := func() { closeOnce.Do(func() { close(done) }) }
 
-		if err := c.Connect(ctx, roomID); err != nil {
+		if err := c.Connect(ctx, roomID, closer); err != nil {
 			fmt.Printf("[control] connect failed: %v (retry in %s)\n", err, backoff)
 			select {
 			case <-ctx.Done():
@@ -173,10 +183,10 @@ func (c *Client) SendICEAnswer(ctx context.Context, targetKey string, answer ICE
 	})
 }
 
-func (c *Client) readLoop(ctx context.Context, ws *websocket.Conn) {
+func (c *Client) readLoop(ctx context.Context, ws *websocket.Conn, onClose func()) {
 	defer func() {
-		if c.onClose != nil {
-			c.onClose()
+		if onClose != nil {
+			onClose()
 		}
 	}()
 	for {

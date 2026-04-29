@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"strings"
+	"sync"
 	"time"
 
 	pionice "github.com/pion/ice/v4"
@@ -76,17 +77,28 @@ func NewAgent(cfg Config) (*Agent, error) {
 
 	a := &Agent{agent: iceAgent}
 
-	// Gather candidates and collect them
-	var gathered []string
+	// Gather candidates and collect them. pion fires OnCandidate from its
+	// gather goroutine; the nil-candidate sentinel that triggers the user
+	// callback can race with concurrent appends, so guard the slice with
+	// a mutex and snapshot it before invoking the user callback.
+	var (
+		mu       sync.Mutex
+		gathered []string
+	)
 	if err := iceAgent.OnCandidate(func(c pionice.Candidate) {
 		if c == nil {
-			// nil means gathering complete
+			mu.Lock()
+			snapshot := make([]string, len(gathered))
+			copy(snapshot, gathered)
+			mu.Unlock()
 			if cfg.OnCandidates != nil {
-				cfg.OnCandidates(gathered)
+				cfg.OnCandidates(snapshot)
 			}
 			return
 		}
+		mu.Lock()
 		gathered = append(gathered, c.Marshal())
+		mu.Unlock()
 	}); err != nil {
 		return nil, fmt.Errorf("set candidate handler: %w", err)
 	}

@@ -14,9 +14,21 @@ export async function registerPeer(request: Request, env: Env): Promise<Response
   if (authResult instanceof Response) return authResult;
   const { sub: userId } = authResult;
 
-  const body = await request.json<{ public_key: string; name: string; platform: string }>();
+  const body = await request.json<{
+    public_key: string;
+    name: string;
+    platform: string;
+    derp_node_key?: string; // optional Tailscale DERP NodePublic.String() (G12)
+  }>();
   if (!body.public_key || !body.platform) {
     return json({ error: "public_key and platform required" }, 400);
+  }
+  const derpNodeKey = (body.derp_node_key ?? "").trim();
+  // Cheap sanity-check: tailcfg.NodePublic.String() always starts with this prefix.
+  // Empty is allowed (legacy daemon); anything else gets rejected so a malformed
+  // value can't pollute the banned-keys feed.
+  if (derpNodeKey !== "" && !derpNodeKey.startsWith("nodekey:")) {
+    return json({ error: "derp_node_key must start with 'nodekey:'" }, 400);
   }
 
   // Check for existing peer with same public key
@@ -31,8 +43,8 @@ export async function registerPeer(request: Request, env: Env): Promise<Response
     }
     // Update last_seen and return existing
     await env.DB
-      .prepare("UPDATE peers SET last_seen = ?, name = ?, platform = ? WHERE id = ?")
-      .bind(Date.now(), body.name ?? "", body.platform, existing.id)
+      .prepare("UPDATE peers SET last_seen = ?, name = ?, platform = ?, derp_node_key = ? WHERE id = ?")
+      .bind(Date.now(), body.name ?? "", body.platform, derpNodeKey, existing.id)
       .run();
     const peer = await env.DB
       .prepare("SELECT * FROM peers WHERE id = ?")
@@ -61,9 +73,9 @@ export async function registerPeer(request: Request, env: Env): Promise<Response
     try {
       await env.DB
         .prepare(
-          "INSERT INTO peers (id, user_id, public_key, name, platform, last_seen, ip4, ip6) VALUES (?,?,?,?,?,?,?,?)"
+          "INSERT INTO peers (id, user_id, public_key, name, platform, last_seen, ip4, ip6, derp_node_key) VALUES (?,?,?,?,?,?,?,?,?)"
         )
-        .bind(id, userId, body.public_key, body.name ?? "", body.platform, now, candidate.ip4, candidate.ip6)
+        .bind(id, userId, body.public_key, body.name ?? "", body.platform, now, candidate.ip4, candidate.ip6, derpNodeKey)
         .run();
       inserted = { ip4: candidate.ip4, ip6: candidate.ip6 };
       // Best-effort persist the new high-water mark so peers don't all rescan from 2.

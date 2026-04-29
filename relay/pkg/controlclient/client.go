@@ -13,10 +13,14 @@ import (
 	"time"
 )
 
-// BanList holds the set of banned WireGuard public keys (base64 encoded).
+// BanList holds banned identities. WireGuard public keys (base64) are stored
+// in `keys`; their DERP NodePublic equivalents (tailcfg.NodePublic.String(),
+// "nodekey:HEX...") are stored in `derpKeys`. Two sets are needed because the
+// admit hook on the DERP server only sees the DERP node key — see G12.
 type BanList struct {
-	mu   sync.RWMutex
-	keys map[string]struct{}
+	mu       sync.RWMutex
+	keys     map[string]struct{}
+	derpKeys map[string]struct{}
 }
 
 func (b *BanList) IsBanned(publicKey string) bool {
@@ -26,13 +30,27 @@ func (b *BanList) IsBanned(publicKey string) bool {
 	return ok
 }
 
-func (b *BanList) Replace(keys []string) {
+// IsBannedDERP reports whether the given DERP NodePublic.String() value is
+// banned. Used by the DERP admit hook which only receives the DERP node key.
+func (b *BanList) IsBannedDERP(derpNodeKey string) bool {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	_, ok := b.derpKeys[derpNodeKey]
+	return ok
+}
+
+func (b *BanList) Replace(keys, derpKeys []string) {
 	m := make(map[string]struct{}, len(keys))
 	for _, k := range keys {
 		m[k] = struct{}{}
 	}
+	dm := make(map[string]struct{}, len(derpKeys))
+	for _, k := range derpKeys {
+		dm[k] = struct{}{}
+	}
 	b.mu.Lock()
 	b.keys = m
+	b.derpKeys = dm
 	b.mu.Unlock()
 }
 
@@ -69,7 +87,7 @@ func New(controlURL, authToken, relayID string, identity Identity) *Client {
 		controlURL: controlURL,
 		authToken:  authToken,
 		identity:   identity,
-		banList:    &BanList{keys: make(map[string]struct{})},
+		banList:    &BanList{keys: make(map[string]struct{}), derpKeys: make(map[string]struct{})},
 		httpClient: &http.Client{Timeout: 10 * time.Second},
 	}
 	if relayID != "" {
@@ -159,13 +177,14 @@ func (c *Client) syncBannedKeys(ctx context.Context) error {
 	}
 
 	var result struct {
-		Keys []string `json:"keys"`
+		Keys     []string `json:"keys"`
+		DERPKeys []string `json:"derp_keys"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return err
 	}
 
-	c.banList.Replace(result.Keys)
+	c.banList.Replace(result.Keys, result.DERPKeys)
 	return nil
 }
 

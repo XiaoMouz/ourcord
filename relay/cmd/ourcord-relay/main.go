@@ -140,7 +140,13 @@ func main() {
 			return
 		}
 		allow := true
-		if cc != nil && cc.BanList().IsBanned(req.NodePublic.String()) {
+		// G12: req.NodePublic is a Tailscale DERP node key (NodePublic.String()
+		// → "nodekey:HEX..."), NOT a WireGuard base64 public key. The control
+		// plane returns both sets via /api/relay/banned-keys (keys + derp_keys);
+		// we use the DERP-side set here so a banned user can't reconnect via
+		// pure DERP. The legacy IsBanned(WG-key) check is intentionally omitted
+		// here because the comparison would always miss.
+		if cc != nil && cc.BanList().IsBannedDERP(req.NodePublic.String()) {
 			allow = false
 		}
 		w.Header().Set("Content-Type", "application/json")

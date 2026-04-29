@@ -16,7 +16,13 @@ CREATE TABLE IF NOT EXISTS peers (
   platform TEXT NOT NULL DEFAULT 'unknown',
   last_seen INTEGER NOT NULL DEFAULT 0,
   ip4 TEXT NOT NULL DEFAULT '' UNIQUE,
-  ip6 TEXT NOT NULL DEFAULT '' UNIQUE
+  ip6 TEXT NOT NULL DEFAULT '' UNIQUE,
+  -- DERP node public key (Tailscale tailcfg.NodePublic.String() format,
+  -- "nodekey:HEX..."). Reported by daemons that also speak DERP. Empty for
+  -- legacy registrations. Used by relay /api/relay/banned-keys to translate
+  -- WG-key bans into DERP-key admit denials so banned users can't fall back
+  -- to plain DERP to keep talking. See G12 in audit notes.
+  derp_node_key TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS relay_servers (
@@ -29,7 +35,13 @@ CREATE TABLE IF NOT EXISTS relay_servers (
   capacity_kbps INTEGER NOT NULL DEFAULT 10000,
   active INTEGER NOT NULL DEFAULT 1,
   registered_at INTEGER NOT NULL,
-  last_heartbeat INTEGER NOT NULL DEFAULT 0
+  last_heartbeat INTEGER NOT NULL DEFAULT 0,
+  -- One relay per (owner, hostname, port). Without this, every restart of a
+  -- relay that can't recover its persisted relay-id would leak a duplicate
+  -- relay_servers row, eventually flooding /api/relay/map ranking with
+  -- inactive ghosts. Combined with state.SaveRelayID on the relay side this
+  -- guarantees idempotent registration. See G7/G8 in audit notes.
+  UNIQUE(owner_id, hostname, port)
 );
 
 CREATE TABLE IF NOT EXISTS relay_lobby_bindings (

@@ -59,12 +59,21 @@ export async function registerRelay(request: Request, env: Env): Promise<Respons
     return json({ id: body.id, updated: true });
   }
 
-  // New registration
+  // New registration. UPSERT against UNIQUE(owner_id,hostname,port) so a
+  // relay that lost its persisted relay-id and re-registers reuses the same
+  // row instead of creating a duplicate (then we look up the canonical id).
+  // INSERT-OR-IGNORE keeps the original id stable.
   const id = generateId();
   await env.DB
     .prepare(
       `INSERT INTO relay_servers (id, owner_id, region, hostname, port, mode, capacity_kbps, active, registered_at, last_heartbeat)
-       VALUES (?,?,?,?,?,?,?,1,?,?)`
+       VALUES (?,?,?,?,?,?,?,1,?,?)
+       ON CONFLICT(owner_id, hostname, port) DO UPDATE SET
+         region = excluded.region,
+         mode = excluded.mode,
+         capacity_kbps = excluded.capacity_kbps,
+         active = 1,
+         last_heartbeat = excluded.last_heartbeat`
     )
     .bind(
       id, ownerId, body.region, body.hostname,
@@ -73,8 +82,15 @@ export async function registerRelay(request: Request, env: Env): Promise<Respons
     )
     .run();
 
+  // Resolve the canonical id (existing if conflict, otherwise the new one).
+  const row = await env.DB
+    .prepare("SELECT id FROM relay_servers WHERE owner_id = ? AND hostname = ? AND port = ?")
+    .bind(ownerId, body.hostname, body.port ?? 443)
+    .first<{ id: string }>();
+  const canonicalId = row?.id ?? id;
+
   await invalidateRelayCache(env);
-  return json({ id }, 201);
+  return json({ id: canonicalId }, 201);
 }
 
 // GET /api/relay/map — return relay server map (public, cached in KV).
@@ -99,6 +115,14 @@ export async function getRelayMap(request: Request, env: Env): Promise<Response>
 // GET /api/relay/banned-keys — relay server pulls its denylist.
 // Returns the union of global bans (target_type peer/user) and the per-relay
 // denylist when ?relay_id=<id> is supplied. Authenticated by relay token.
+//
+// Response shape:
+//   { keys: [...wg_pub...], derp_keys: [...nodekey:HEX...] }
+// `keys` is the WireGuard public key list (used to filter direct WG peers).
+// `derp_keys` is the same set of users translated to DERP NodePublic format
+// so the relay can reject banned clients at the DERP admit hook (see G12).
+// Per-relay denylist entries are added to `keys`; their DERP equivalents
+// are looked up via the peers table when present.
 export async function getBannedKeys(request: Request, env: Env): Promise<Response> {
   const authResult = await requireAuth(request, env);
   if (authResult instanceof Response) return authResult;
@@ -109,29 +133,42 @@ export async function getBannedKeys(request: Request, env: Env): Promise<Respons
   const now = Math.floor(Date.now() / 1000);
   const banned = await env.DB
     .prepare(
-      `SELECT p.public_key FROM peers p
+      `SELECT p.public_key, p.derp_node_key FROM peers p
        JOIN bans b ON b.target_type = 'peer' AND b.target_id = p.id
        WHERE (b.expires_at IS NULL OR b.expires_at > ?)
        UNION
-       SELECT p.public_key FROM peers p
+       SELECT p.public_key, p.derp_node_key FROM peers p
        JOIN users u ON p.user_id = u.id
        JOIN bans b ON b.target_type = 'user' AND b.target_id = u.id
        WHERE (b.expires_at IS NULL OR b.expires_at > ?)`
     )
     .bind(now, now)
-    .all<{ public_key: string }>();
+    .all<{ public_key: string; derp_node_key: string }>();
 
-  const keys = new Set(banned.results.map((r) => r.public_key));
+  const keys = new Set<string>();
+  const derpKeys = new Set<string>();
+  for (const r of banned.results) {
+    keys.add(r.public_key);
+    if (r.derp_node_key) derpKeys.add(r.derp_node_key);
+  }
 
   if (relayId) {
     const denied = await env.DB
-      .prepare("SELECT public_key FROM relay_denied_peers WHERE relay_id = ?")
+      .prepare(
+        `SELECT d.public_key, p.derp_node_key
+         FROM relay_denied_peers d
+         LEFT JOIN peers p ON p.public_key = d.public_key
+         WHERE d.relay_id = ?`
+      )
       .bind(relayId)
-      .all<{ public_key: string }>();
-    for (const r of denied.results) keys.add(r.public_key);
+      .all<{ public_key: string; derp_node_key: string | null }>();
+    for (const r of denied.results) {
+      keys.add(r.public_key);
+      if (r.derp_node_key) derpKeys.add(r.derp_node_key);
+    }
   }
 
-  return json({ keys: [...keys] });
+  return json({ keys: [...keys], derp_keys: [...derpKeys] });
 }
 
 // POST /api/relay/:relay_id/deny — relay owner adds a peer-key to its denylist.
