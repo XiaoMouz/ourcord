@@ -124,9 +124,23 @@ export async function createInvite(request: Request, env: Env, lobbyId: string):
   try { body = await request.json(); } catch { /* empty body ok */ }
 
   const now = Math.floor(Date.now() / 1000);
-  const expiresAt = body.expires_in_seconds === 0
-    ? null
-    : now + (body.expires_in_seconds ?? 7 * 86400);
+  // K11: clamp expires_in_seconds to a sane window. Preserves the existing
+  // "0 means no expiry" semantic, but defends against negative values
+  // (instant expiry → invite born dead) and absurd futures (Number.MAX_VALUE
+  // → integer overflow on the timestamp arithmetic). undefined falls back
+  // to the previous 7-day default.
+  const raw = body.expires_in_seconds;
+  let expiresAt: number | null;
+  if (raw === undefined) {
+    expiresAt = now + 7 * 86400;
+  } else if (raw === 0 || raw === null) {
+    expiresAt = null;
+  } else if (Number.isFinite(raw) && raw > 0) {
+    const clamped = Math.min(Math.max(raw, 60), 365 * 86400);
+    expiresAt = Math.floor(now + clamped);
+  } else {
+    return err("expires_in_seconds must be a non-negative finite number");
+  }
   const maxUses = body.max_uses ?? 1;
   // 8-byte URL-safe code; collisions on PRIMARY KEY would 500, accept it.
   const arr = new Uint8Array(8);

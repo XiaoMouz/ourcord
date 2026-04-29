@@ -277,9 +277,12 @@ export async function getDownloadUrl(
     return new Response(obj.body, { headers });
   }
 
-  // For user_server/lobby_server: the storage_key contains an external URL
-  const externalUrl = file.storage_key.split(":").slice(2).join(":");
-  return json({ url: externalUrl, filename: file.filename });
+  // K9: non-R2 storage tiers (user_server / lobby_server) never had a real
+  // download path — initiateUpload writes `external:<tier>:<id>` as a marker,
+  // not a URL. Returning that string as `url` was actively misleading. Phase-2
+  // owns the real federated-download protocol; until then return 501 so
+  // clients fall back gracefully instead of attempting a broken redirect.
+  return json({ error: "non-R2 download not implemented" }, 501);
 }
 
 // GET /api/lobbies/:lobbyId/file-policy — get file policy

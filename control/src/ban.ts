@@ -19,7 +19,19 @@ export async function createBan(request: Request, env: Env): Promise<Response> {
 
   const now = Math.floor(Date.now() / 1000);
   const id = generateId();
-  const expiresAt = body.expires_in_seconds ? now + body.expires_in_seconds : null;
+  // K12: only treat finite positive expires_in_seconds as effective; absent /
+  // 0 / null → permanent ban (NULL). Reject negative or non-finite numbers so
+  // a typo doesn't either auto-expire a ban instantly (negative) or NaN-out
+  // the timestamp arithmetic.
+  const rawExp = body.expires_in_seconds;
+  let expiresAt: number | null;
+  if (rawExp === undefined || rawExp === null || rawExp === 0) {
+    expiresAt = null;
+  } else if (Number.isFinite(rawExp) && rawExp > 0) {
+    expiresAt = now + rawExp;
+  } else {
+    return json({ error: "expires_in_seconds must be a non-negative finite number" }, 400);
+  }
 
   await env.DB
     .prepare("INSERT INTO bans (id, target_type, target_id, reason, created_at, expires_at) VALUES (?,?,?,?,?,?)")
