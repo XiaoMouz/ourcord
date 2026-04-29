@@ -52,15 +52,20 @@ func (t *Table) All() []*PeerRoute {
 
 // BuildIPCConfig generates the WireGuard IPC peer configuration for all routes.
 // This string is passed to device.IpcSet().
+//
+// AllowedIPs include each peer's own VPN addresses and, when this peer is the
+// next hop for an A-B-C relay chain, the CIDRs of the peers it must forward
+// to. Pass the result of AddRelayChainRoutes to wire those in.
 func (t *Table) BuildIPCConfig(privateKey wgtypes.Key) string {
-	var sb strings.Builder
+	chainExtra := t.AddRelayChainRoutes()
 
+	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("private_key=%x\n", privateKey[:]))
 
 	for _, r := range t.routes {
 		sb.WriteString(fmt.Sprintf("public_key=%x\n", r.PublicKey[:]))
 
-		// AllowedIPs: always include the peer's own VPN addresses
+		// AllowedIPs: the peer's own VPN addresses plus any chain-routed CIDRs.
 		allowedIPs := []string{}
 		if r.VPN4.IsValid() {
 			allowedIPs = append(allowedIPs, r.VPN4.String()+"/32")
@@ -68,13 +73,16 @@ func (t *Table) BuildIPCConfig(privateKey wgtypes.Key) string {
 		if r.VPN6.IsValid() {
 			allowedIPs = append(allowedIPs, r.VPN6.String()+"/128")
 		}
-		// If this peer acts as next-hop for others, their IPs are added elsewhere
+		if extras, ok := chainExtra[r.PublicKey.String()]; ok {
+			allowedIPs = append(allowedIPs, extras...)
+		}
 		if len(allowedIPs) > 0 {
 			sb.WriteString(fmt.Sprintf("allowed_ip=%s\n", strings.Join(allowedIPs, ",")))
 		}
 
-		// Endpoint (if hole punch succeeded)
-		if r.DirectAddr != nil {
+		// Endpoint: only set for direct or next-hop targets, not for the
+		// "virtual" remote peer we reach via someone else.
+		if r.NextHop == nil && r.DirectAddr != nil {
 			sb.WriteString(fmt.Sprintf("endpoint=%s\n", r.DirectAddr.String()))
 		}
 
@@ -85,13 +93,14 @@ func (t *Table) BuildIPCConfig(privateKey wgtypes.Key) string {
 	return sb.String()
 }
 
-// AddRelayChainRoutes updates AllowedIPs for intermediate peers to enable A-B-C routing.
-// For each route where NextHop is non-nil, the intermediate peer (NextHop) gets
-// the unreachable peer's VPN IPs added to its AllowedIPs.
-func (t *Table) AddRelayChainRoutes() {
-	// Collect which IPs need to be routed through which next-hop
-	nextHopRoutes := make(map[string][]string) // nextHop pubKey -> []CIDR
-
+// AddRelayChainRoutes computes, for each peer that acts as a next hop in an
+// A-B-C chain, the list of CIDRs it must forward (the unreachable peers'
+// VPN IPs). The returned map is keyed by the next-hop peer's public key string.
+//
+// This used to be a side-effecting method that did nothing; it is now pure and
+// consumed by BuildIPCConfig.
+func (t *Table) AddRelayChainRoutes() map[string][]string {
+	nextHopRoutes := make(map[string][]string)
 	for _, r := range t.routes {
 		if r.NextHop == nil {
 			continue
@@ -104,8 +113,5 @@ func (t *Table) AddRelayChainRoutes() {
 			nextHopRoutes[nhKey] = append(nextHopRoutes[nhKey], r.VPN6.String()+"/128")
 		}
 	}
-
-	// Add the relay-chain IPs to the next-hop peer's allowed IPs
-	// (This is handled by BuildIPCConfig in a real implementation)
-	_ = nextHopRoutes
+	return nextHopRoutes
 }

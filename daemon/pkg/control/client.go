@@ -31,11 +31,12 @@ type ICEOffer struct {
 
 // Client manages the daemon's connection to the control plane.
 type Client struct {
-	controlURL  string
-	authToken   string
-	publicKey   string
-	ws          *websocket.Conn
-	onSignal    func(msg SignalMessage)
+	controlURL string
+	authToken  string
+	publicKey  string
+	ws         *websocket.Conn
+	onSignal   func(msg SignalMessage)
+	onClose    func() // invoked by readLoop when the connection terminates (used by Run)
 }
 
 // New creates a new control plane client.
@@ -63,6 +64,13 @@ func (c *Client) Connect(ctx context.Context, roomID string) error {
 	wsURL.Path = "/api/signal/" + roomID
 	q := wsURL.Query()
 	q.Set("pk", c.publicKey)
+	// SignalDO route requires the JWT in the query string because browsers
+	// can't send custom WebSocket headers. Native clients still get an
+	// Authorization header below for any non-WS upgrade redirect, but the
+	// query param is the load-bearing one.
+	if c.authToken != "" {
+		q.Set("token", c.authToken)
+	}
 	wsURL.RawQuery = q.Encode()
 
 	ws, _, err := websocket.Dial(ctx, wsURL.String(), &websocket.DialOptions{
@@ -75,6 +83,59 @@ func (c *Client) Connect(ctx context.Context, roomID string) error {
 
 	go c.readLoop(ctx)
 	return nil
+}
+
+// Run keeps the signal connection alive across transient failures.
+// It calls Connect; if readLoop exits (control plane restart, network drop),
+// it reconnects with exponential backoff capped at 60s. Run blocks until
+// ctx is done. Use this instead of bare Connect when you want auto-recovery.
+func (c *Client) Run(ctx context.Context, roomID string) {
+	const (
+		minBackoff = 1 * time.Second
+		maxBackoff = 60 * time.Second
+	)
+	backoff := minBackoff
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		done := make(chan struct{})
+		c.onClose = func() { close(done) }
+
+		if err := c.Connect(ctx, roomID); err != nil {
+			fmt.Printf("[control] connect failed: %v (retry in %s)\n", err, backoff)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(backoff):
+			}
+			backoff = nextBackoff(backoff, maxBackoff)
+			continue
+		}
+		backoff = minBackoff
+
+		select {
+		case <-ctx.Done():
+			_ = c.Close()
+			return
+		case <-done:
+			fmt.Printf("[control] disconnected, reconnecting in %s\n", backoff)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(backoff):
+			}
+			backoff = nextBackoff(backoff, maxBackoff)
+		}
+	}
+}
+
+func nextBackoff(cur, max time.Duration) time.Duration {
+	next := cur * 2
+	if next > max {
+		next = max
+	}
+	return next
 }
 
 // SendSignal sends a signaling message to a specific peer or broadcasts.
@@ -106,15 +167,18 @@ func (c *Client) SendICEAnswer(ctx context.Context, targetKey string, answer ICE
 }
 
 func (c *Client) readLoop(ctx context.Context) {
+	defer func() {
+		if c.onClose != nil {
+			c.onClose()
+		}
+	}()
 	for {
 		var msg SignalMessage
 		if err := wsjson.Read(ctx, c.ws, &msg); err != nil {
-			if ctx.Err() != nil {
-				return
+			if ctx.Err() == nil {
+				fmt.Printf("[control] read error: %v\n", err)
 			}
-			fmt.Printf("[control] read error: %v, reconnecting in 5s\n", err)
-			time.Sleep(5 * time.Second)
-			return // caller should reconnect
+			return
 		}
 		if c.onSignal != nil {
 			c.onSignal(msg)

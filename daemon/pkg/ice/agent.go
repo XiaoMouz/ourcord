@@ -51,14 +51,18 @@ func NewAgent(cfg Config) (*Agent, error) {
 	}
 
 	iceAgent, err := pionice.NewAgent(&pionice.AgentConfig{
-		Urls:             urls,
-		NetworkTypes:     []pionice.NetworkType{
+		Urls: urls,
+		// UDP only by default. pion/ice v4 requires explicit TCPMux/TCP4Listener
+		// to actually use TCP candidates; advertising NetworkTypeTCP{4,6} without
+		// configuring a TCP mux silently does nothing. If a future deployment
+		// needs TCP fallback, set up a TCPMux on a bound listener and append
+		// the TCP types here. For now, UDP IPv6 → UDP IPv4 → DERP relay covers
+		// our bases.
+		NetworkTypes: []pionice.NetworkType{
 			pionice.NetworkTypeUDP4,
 			pionice.NetworkTypeUDP6,
-			pionice.NetworkTypeTCP4,
-			pionice.NetworkTypeTCP6,
 		},
-		CandidateTypes:   []pionice.CandidateType{
+		CandidateTypes: []pionice.CandidateType{
 			pionice.CandidateTypeHost,
 			pionice.CandidateTypeServerReflexive,
 			pionice.CandidateTypePeerReflexive,
