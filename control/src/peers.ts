@@ -1,5 +1,5 @@
 import { Env, Peer } from "./types";
-import { requireAuth, generateId } from "./auth";
+import { requireAuth, generateId, checkBodySize } from "./auth";
 import { buildRelayMap } from "./relay";
 import {
   ipsForOffset,
@@ -11,6 +11,8 @@ import {
 // POST /api/peers/register — register a new device/peer
 // Body: { public_key: string, name: string, platform: string }
 export async function registerPeer(request: Request, env: Env): Promise<Response> {
+  const tooBig = checkBodySize(request, 4 * 1024);
+  if (tooBig) return tooBig;
   const authResult = await requireAuth(request, env);
   if (authResult instanceof Response) return authResult;
   const { sub: userId } = authResult;

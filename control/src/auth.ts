@@ -38,6 +38,34 @@ function b64urlDecode(str: string): string {
 // of the longer input, with no early termination. HMAC verification must
 // avoid the JS `===` shortcut to neutralize timing side channels that would
 // otherwise let an attacker recover the signature byte-by-byte.
+// M4: enforce a Worker-side cap on request body size for handlers that read
+// JSON. CF Workers default to a ~100 MB body cap, far larger than any legit
+// JSON payload the control plane accepts. Returning 413 early on Content-Length
+// avoids spending CPU/memory parsing attacker-chosen sizes.
+//
+// Note: Content-Length is advisory — chunked uploads can omit it. Workers in
+// practice rejects chunked encoding from clients, so this header is reliable
+// for the public Worker entrypoints. Defense-in-depth callers can still
+// re-check string lengths after parse (already done on user-content fields).
+export function checkBodySize(request: Request, maxBytes: number): Response | null {
+  const cl = request.headers.get("content-length");
+  if (cl === null) return null;
+  const n = parseInt(cl, 10);
+  if (!Number.isFinite(n) || n < 0) {
+    return new Response(JSON.stringify({ error: "invalid content-length" }), {
+      status: 400,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+  if (n > maxBytes) {
+    return new Response(JSON.stringify({ error: "request body too large" }), {
+      status: 413,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+  return null;
+}
+
 function constantTimeEqual(a: string, b: string): boolean {
   const al = a.length, bl = b.length;
   let diff = al ^ bl;

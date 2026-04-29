@@ -1,8 +1,10 @@
 import { Env, Lobby, Room, LobbyMember } from "./types";
-import { requireAuth, generateId, json, err } from "./auth";
+import { requireAuth, generateId, json, err, checkBodySize } from "./auth";
 
 // POST /api/lobbies — create a lobby
 export async function createLobby(request: Request, env: Env): Promise<Response> {
+  const tooBig = checkBodySize(request, 4 * 1024);
+  if (tooBig) return tooBig;
   const auth = await requireAuth(request, env);
   if (auth instanceof Response) return auth;
   const userId = auth.sub;
@@ -68,6 +70,8 @@ export async function getLobby(request: Request, env: Env, lobbyId: string): Pro
 // POST /api/lobbies/:id/join — requires an invite code (?code=XXX or { code }).
 // Owner/admin can grant invites via POST /api/lobbies/:id/invites.
 export async function joinLobby(request: Request, env: Env, lobbyId: string): Promise<Response> {
+  const tooBig = checkBodySize(request, 1024);
+  if (tooBig) return tooBig;
   const auth = await requireAuth(request, env);
   if (auth instanceof Response) return auth;
 
@@ -117,6 +121,8 @@ export async function joinLobby(request: Request, env: Env, lobbyId: string): Pr
 // POST /api/lobbies/:id/invites — owner/admin creates an invite code.
 // Body: { expires_in_seconds?, max_uses? } (default: 7d expiry, single use)
 export async function createInvite(request: Request, env: Env, lobbyId: string): Promise<Response> {
+  const tooBig = checkBodySize(request, 1024);
+  if (tooBig) return tooBig;
   const auth = await requireAuth(request, env);
   if (auth instanceof Response) return auth;
 
@@ -207,6 +213,8 @@ export async function listMembers(request: Request, env: Env, lobbyId: string): 
 export async function updateMemberRole(
   request: Request, env: Env, lobbyId: string, targetUserId: string
 ): Promise<Response> {
+  const tooBig = checkBodySize(request, 256);
+  if (tooBig) return tooBig;
   const auth = await requireAuth(request, env);
   if (auth instanceof Response) return auth;
 

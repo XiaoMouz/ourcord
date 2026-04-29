@@ -21,6 +21,27 @@ export function getJwtSecret(env: Env): string {
   throw new Error("JWT_SECRET is not configured (>=16 bytes required in production)");
 }
 
+// M4: see control/src/auth.ts for the rationale. Mirror here so service-layer
+// handlers can guard their own JSON inputs without crossing module boundaries.
+export function checkBodySize(request: Request, maxBytes: number): Response | null {
+  const cl = request.headers.get("content-length");
+  if (cl === null) return null;
+  const n = parseInt(cl, 10);
+  if (!Number.isFinite(n) || n < 0) {
+    return new Response(JSON.stringify({ error: "invalid content-length" }), {
+      status: 400,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+  if (n > maxBytes) {
+    return new Response(JSON.stringify({ error: "request body too large" }), {
+      status: 413,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+  return null;
+}
+
 async function hmacSign(secret: string, data: string): Promise<string> {
   const key = await crypto.subtle.importKey(
     "raw",

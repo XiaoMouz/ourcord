@@ -1,8 +1,10 @@
 import { Env } from "./types";
-import { requireAuth, requireAdmin, generateId } from "./auth";
+import { requireAuth, requireAdmin, generateId, checkBodySize } from "./auth";
 
 // POST /api/ban — admin: ban a user, peer, or relay
 export async function createBan(request: Request, env: Env): Promise<Response> {
+  const tooBig = checkBodySize(request, 2 * 1024);
+  if (tooBig) return tooBig;
   const auth = await requireAdmin(request, env);
   if (auth instanceof Response) return auth;
 

@@ -1,5 +1,5 @@
 import { Env, StunServer } from "./types";
-import { requireAuth, requireAdmin, generateId } from "./auth";
+import { requireAuth, requireAdmin, generateId, checkBodySize } from "./auth";
 
 // Public-STUN fallback. Used when the operator hasn't seeded stun_servers
 // yet (fresh deploy, post-migration, dev sandbox). Without this the daemon's
@@ -41,6 +41,8 @@ export async function getStunServers(request: Request, env: Env): Promise<Respon
 
 // POST /api/stun/servers — admin: add a STUN server
 export async function addStunServer(request: Request, env: Env): Promise<Response> {
+  const tooBig = checkBodySize(request, 1024);
+  if (tooBig) return tooBig;
   const auth = await requireAdmin(request, env);
   if (auth instanceof Response) return auth;
   const body = await request.json<{ host: string; port?: number; region?: string }>();

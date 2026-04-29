@@ -1,5 +1,5 @@
 import { Env, Message } from "./types";
-import { requireAuth, generateId, json, err } from "./auth";
+import { requireAuth, generateId, json, err, checkBodySize } from "./auth";
 
 // GET /api/rooms/:roomId/messages?before=<id>&limit=50
 export async function getMessages(request: Request, env: Env, roomId: string): Promise<Response> {
@@ -42,6 +42,8 @@ export async function getMessages(request: Request, env: Env, roomId: string): P
 
 // POST /api/rooms/:roomId/messages
 export async function sendMessage(request: Request, env: Env, roomId: string): Promise<Response> {
+  const tooBig = checkBodySize(request, 16 * 1024);
+  if (tooBig) return tooBig;
   const auth = await requireAuth(request, env);
   if (auth instanceof Response) return auth;
 

@@ -1,5 +1,5 @@
 import { Env } from "./types";
-import { signToken, makeToken, generateOTP, generateId, getJwtSecret } from "./auth";
+import { signToken, makeToken, generateOTP, generateId, getJwtSecret, checkBodySize } from "./auth";
 
 const OTP_TTL = 10 * 60; // 10 minutes
 // OAuth `state` lifetime: long enough for an interactive consent flow (incl.
@@ -8,6 +8,8 @@ const OAUTH_STATE_TTL = 10 * 60;
 
 // POST /api/auth/otp/request — send OTP to email
 export async function requestOTP(request: Request, env: Env): Promise<Response> {
+  const tooBig = checkBodySize(request, 1024);
+  if (tooBig) return tooBig;
   const body = await request.json<{ email: string }>();
   if (!body.email || !body.email.includes("@")) {
     return json({ error: "valid email required" }, 400);
@@ -36,6 +38,8 @@ export async function requestOTP(request: Request, env: Env): Promise<Response> 
 
 // POST /api/auth/otp/verify — verify OTP and issue token
 export async function verifyOTP(request: Request, env: Env): Promise<Response> {
+  const tooBig = checkBodySize(request, 1024);
+  if (tooBig) return tooBig;
   const body = await request.json<{ email: string; otp: string }>();
   if (!body.email || !body.otp) return json({ error: "email and otp required" }, 400);
 
