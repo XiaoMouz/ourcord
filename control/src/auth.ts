@@ -17,12 +17,37 @@ async function hmacSign(secret: string, data: string): Promise<string> {
 }
 
 function b64url(str: string): string {
-  return btoa(unescape(encodeURIComponent(str)))
+  // Encode as UTF-8 bytes then base64; avoids the deprecated unescape() path.
+  const bytes = new TextEncoder().encode(str);
+  let bin = "";
+  for (const b of bytes) bin += String.fromCharCode(b);
+  return btoa(bin)
     .replace(/\+/g, "-").replace(/\//g, "_").replace(/=/g, "");
 }
 
 function b64urlDecode(str: string): string {
-  return decodeURIComponent(escape(atob(str.replace(/-/g, "+").replace(/_/g, "/"))));
+  const padded = str.replace(/-/g, "+").replace(/_/g, "/");
+  const padLen = (4 - (padded.length % 4)) % 4;
+  const bin = atob(padded + "=".repeat(padLen));
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return new TextDecoder().decode(bytes);
+}
+
+// constantTimeEqual compares two strings in time proportional to the length
+// of the longer input, with no early termination. HMAC verification must
+// avoid the JS `===` shortcut to neutralize timing side channels that would
+// otherwise let an attacker recover the signature byte-by-byte.
+function constantTimeEqual(a: string, b: string): boolean {
+  const al = a.length, bl = b.length;
+  let diff = al ^ bl;
+  const max = Math.max(al, bl);
+  for (let i = 0; i < max; i++) {
+    const ca = i < al ? a.charCodeAt(i) : 0;
+    const cb = i < bl ? b.charCodeAt(i) : 0;
+    diff |= ca ^ cb;
+  }
+  return diff === 0;
 }
 
 export interface TokenPayload {
@@ -45,7 +70,7 @@ export async function verifyToken(token: string, secret: string): Promise<TokenP
   if (parts.length !== 2) return null;
   const [data, sig] = parts;
   const expected = await hmacSign(secret, data);
-  if (sig !== expected) return null;
+  if (!constantTimeEqual(sig, expected)) return null;
   try {
     const payload: TokenPayload = JSON.parse(b64urlDecode(data));
     if (payload.exp < Math.floor(Date.now() / 1000)) return null;

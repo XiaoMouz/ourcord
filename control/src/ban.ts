@@ -26,8 +26,12 @@ export async function createBan(request: Request, env: Env): Promise<Response> {
     .bind(id, body.target_type, body.target_id, body.reason ?? "", now, expiresAt)
     .run();
 
-  // Notify relay servers by invalidating cached banned keys
-  await env.KV.delete("banned_keys_cache");
+  // H4: relay servers poll /api/relay/banned-keys on a fixed cadence (30s by
+  // default). There is no KV cache layer for the banned-keys feed — earlier
+  // code wrote KV.delete("banned_keys_cache") here but nothing ever populated
+  // that key, leaving the misleading impression that bans propagated faster
+  // than the relay sync interval. Worst-case ban propagation = relay sync
+  // period; documented in AGENTS.md §3.7.
 
   return json({ id, target_type: body.target_type, target_id: body.target_id }, 201);
 }
@@ -37,7 +41,6 @@ export async function removeBan(request: Request, env: Env, banId: string): Prom
   const auth = await requireAdmin(request, env);
   if (auth instanceof Response) return auth;
   await env.DB.prepare("DELETE FROM bans WHERE id = ?").bind(banId).run();
-  await env.KV.delete("banned_keys_cache");
   return json({ removed: true });
 }
 

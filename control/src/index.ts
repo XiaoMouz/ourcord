@@ -131,7 +131,7 @@ export default {
         const now = Math.floor(Date.now() / 1000);
         const [users, peers, relays, bans] = await Promise.all([
           env.DB.prepare("SELECT COUNT(*) AS c FROM users").first<{ c: number }>(),
-          env.DB.prepare("SELECT COUNT(*) AS c FROM peers WHERE last_seen > ?").bind((now - 300) * 1000).first<{ c: number }>(),
+          env.DB.prepare("SELECT COUNT(*) AS c FROM peers WHERE last_seen > ?").bind(now - 300).first<{ c: number }>(),
           env.DB.prepare("SELECT COUNT(*) AS c FROM relay_servers WHERE active = 1 AND last_heartbeat > ?").bind(now - 120).first<{ c: number }>(),
           env.DB.prepare("SELECT COUNT(*) AS c FROM bans WHERE expires_at IS NULL OR expires_at > ?").bind(now).first<{ c: number }>(),
         ]);

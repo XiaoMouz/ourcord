@@ -14,6 +14,8 @@ CREATE TABLE IF NOT EXISTS peers (
   public_key TEXT UNIQUE NOT NULL,
   name TEXT NOT NULL DEFAULT '',
   platform TEXT NOT NULL DEFAULT 'unknown',
+  -- All timestamp columns in this schema are UNIX seconds (Math.floor(Date.now()/1000)).
+  -- peers.last_seen historically used milliseconds; H7 unified everything to seconds.
   last_seen INTEGER NOT NULL DEFAULT 0,
   ip4 TEXT NOT NULL DEFAULT '' UNIQUE,
   ip6 TEXT NOT NULL DEFAULT '' UNIQUE,

@@ -208,7 +208,6 @@ export async function denyPeerOnRelay(request: Request, env: Env, relayId: strin
     )
     .bind(relayId, body.public_key, body.reason ?? "", Math.floor(Date.now() / 1000))
     .run();
-  await env.KV.delete("banned_keys_cache");
   return json({ denied: true });
 }
 
@@ -227,7 +226,6 @@ export async function allowPeerOnRelay(request: Request, env: Env, relayId: stri
     .prepare("DELETE FROM relay_denied_peers WHERE relay_id = ? AND public_key = ?")
     .bind(relayId, publicKey)
     .run();
-  await env.KV.delete("banned_keys_cache");
   return json({ removed: true });
 }
 
