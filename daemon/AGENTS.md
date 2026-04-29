@@ -37,6 +37,7 @@
 - **A-B-C 中继链路由**走 WireGuard `AllowedIPs`：
   - `routing.AddRelayChainRoutes()` 必须把计算出的 nextHopRoutes 真正应用到 `BuildIPCConfig`，不能只算不用。
 - **控制面断线要自动重连**（`pkg/control/client.go` readLoop 退出后指数退避重连）。
+- **`pkg/control/client.go SendSignal` 用 `wsMu.RLock()` 取出 `*websocket.Conn` 后直接 `wsjson.Write`**：这是有意为之，不是 bug。`nhooyr.io/websocket` 对单个 Conn 的 Write 已自带串行化（内部锁），所以 RLock 仅用来防止与 `Connect`/`Close` 替换 `c.ws` 指针发生竞争，并不需要升级成 Lock 来串行 Write。后续 reviewer 看到「读锁里写」请勿改为写锁，会无谓地序列化所有发送方。
 
 ## ICE 注意
 
