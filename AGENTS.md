@@ -131,6 +131,8 @@ go work sync
 6. **pion/ice v4 默认只 UDP**；要 TCP 必须显式配置 TCPMux，否则 `NetworkTypeTCP4/6` 静默无效。
 7. **CF Workers 的 `crypto.subtle`** 与 Node 不完全一致；HMAC 验签按 `control/src/auth.ts` 的写法即可，别引 `jose`。
 8. **R2 没有 TTL**——过期文件需要 cron 显式删除，元数据的 `expires_at` 只是标记。
+9. **`/api/relay/map` 是按调用者作用域的**（J2）：`mode='personal'` 的中转只对 owner 可见。响应不再使用全局 KV 缓存，因为它依赖 caller 身份。`relay_servers` 表规模小（操作者数量级），buildRelayMap 没有 LIMIT，规模化前要补。
+10. **`/api/relay/register` 的 admin/auth 网关由 peek + clone 决定**（J10）：先 peek 一次 body 看 mode，再用 clone 走 requireAdmin/requireAuth。peek 解析失败会降级到 requireAuth（fail-secure：requireAuth 仍然成立，并且后续真读 body 也会失败被外层 catch），不是绕过点。
 
 ---
 
