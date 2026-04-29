@@ -52,6 +52,12 @@ const MAX_MESSAGE_BYTES = 16 * 1024;
 // saturate the DO's CPU or fan out a broadcast storm to room peers.
 const RATE_TOKENS_PER_SEC = 50;
 const RATE_BURST = 100;
+// J12: hard cap on replay-cache entries per DO. Without this a malicious peer
+// can spam offer/answer with unique cacheKey values (varying msg.to) to grow
+// the Map until DO memory is exhausted. The cap is enforced FIFO-by-insertion
+// (Map iteration order is insertion order in JS), evicting the oldest entry
+// when a new one would exceed the cap. 256 fits ~5MB at 16KiB max each.
+const MAX_REPLAY_CACHE_ENTRIES = 256;
 
 export class SignalDO implements DurableObject {
   private sessions = new Map<string, PeerSession>();
@@ -201,6 +207,14 @@ export class SignalDO implements DurableObject {
     // share offer) don't overwrite each other.
     if (msg.type === "offer" || msg.type === "answer") {
       const cacheKey = `${msg.type}:${fromKey}->${msg.to ?? "*"}`;
+      // J12: evict oldest before insert if at capacity. Map iteration order
+      // is insertion order, so the first key is the oldest. Refresh-on-update
+      // is achieved by deleting then setting (cheap; bounded by cap).
+      this.replayCache.delete(cacheKey);
+      if (this.replayCache.size >= MAX_REPLAY_CACHE_ENTRIES) {
+        const oldest = this.replayCache.keys().next().value;
+        if (oldest !== undefined) this.replayCache.delete(oldest);
+      }
       this.replayCache.set(cacheKey, { msg, cachedAt: Date.now() });
     }
 

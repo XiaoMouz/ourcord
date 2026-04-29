@@ -254,7 +254,9 @@ func main() {
 		log.Println("Shutting down...")
 		shutCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
-		srv.Shutdown(shutCtx)
+		if err := srv.Shutdown(shutCtx); err != nil {
+			log.Printf("HTTP shutdown: %v", err)
+		}
 		rootCancel()
 	}()
 

@@ -115,9 +115,11 @@ func (d *daemon) HandleIPC(ctx context.Context, req ipc.IPCRequest) ipc.IPCRespo
 }
 
 func (d *daemon) connect(ctx context.Context) error {
-	// TODO Phase 1: register peer with control plane, get config,
-	// start ICE + DERP, configure WireGuard tun interface
-	d.vpnActive.Store(true)
-	log.Printf("VPN connect requested (control: %s)", d.controlURL)
-	return nil
+	// J9: connect() is intentionally NOT marked successful until the full
+	// pipeline (G1: control register → IPC → ICE/DERP/WG) lands. Returning
+	// nil + setting vpnActive=true here would have downstream UI/integration
+	// tests reporting "VPN active" while no packets actually flow. Fail loud.
+	_ = ctx
+	log.Printf("VPN connect requested (control: %s) — G1 pipeline not yet wired", d.controlURL)
+	return fmt.Errorf("connect not implemented; awaiting G1 (control register + ICE/DERP/WG wiring)")
 }

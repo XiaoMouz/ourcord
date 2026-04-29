@@ -116,10 +116,22 @@ func (a *Agent) GatherCandidates() error {
 }
 
 // AddRemoteCandidate adds a remote ICE candidate received via signaling.
+//
+// J7: reject candidates whose advertised address is loopback or link-local.
+// A malicious peer could otherwise enumerate `127.0.0.1` / `169.254.x.x`
+// candidates and trick our local STUN check into probing host services or
+// link-local devices on our behalf. RFC1918 / ULA ranges remain accepted
+// because same-LAN P2P is a normal mode for OurCord (5–10 person groups
+// with at least two members on the same office/home network).
 func (a *Agent) AddRemoteCandidate(candidateStr string) error {
 	c, err := pionice.UnmarshalCandidate(candidateStr)
 	if err != nil {
 		return fmt.Errorf("unmarshal candidate: %w", err)
+	}
+	if ip := net.ParseIP(c.Address()); ip != nil {
+		if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsUnspecified() || ip.IsMulticast() {
+			return fmt.Errorf("ice: rejecting unsafe remote candidate address %s", c.Address())
+		}
 	}
 	return a.agent.AddRemoteCandidate(c)
 }
