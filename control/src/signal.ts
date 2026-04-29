@@ -27,6 +27,11 @@ interface PeerSession {
   publicKey: string;
   joinedAt: number;
   lastSeen: number;
+  // Token bucket for inbound signaling (H12). Tokens regenerate at
+  // RATE_TOKENS_PER_SEC, capped at RATE_BURST. Each handled message costs 1
+  // token; running dry closes the socket with 1008.
+  tokens: number;
+  tokensUpdatedAt: number;
 }
 
 interface CachedSignal {
@@ -41,6 +46,12 @@ const ALARM_INTERVAL_MS = 30_000;
 // ICE candidates are <2 KiB in practice; anything beyond this is a malicious
 // or misbehaving client trying to exhaust DO memory or saturate forward fanout.
 const MAX_MESSAGE_BYTES = 16 * 1024;
+// H12: per-session token bucket. Sustained 50 msg/s with burst capacity of
+// 100 comfortably covers ICE candidate flurries (typically <30 candidates per
+// peer per gather) while shutting down a misbehaving client before it can
+// saturate the DO's CPU or fan out a broadcast storm to room peers.
+const RATE_TOKENS_PER_SEC = 50;
+const RATE_BURST = 100;
 
 export class SignalDO implements DurableObject {
   private sessions = new Map<string, PeerSession>();
@@ -75,7 +86,14 @@ export class SignalDO implements DurableObject {
     server.accept();
 
     const now = Date.now();
-    const session: PeerSession = { ws: server, publicKey, joinedAt: now, lastSeen: now };
+    const session: PeerSession = {
+      ws: server,
+      publicKey,
+      joinedAt: now,
+      lastSeen: now,
+      tokens: RATE_BURST,
+      tokensUpdatedAt: now,
+    };
     this.sessions.set(publicKey, session);
 
     // Tell the new peer who's already here, then announce them to everyone.
@@ -153,11 +171,24 @@ export class SignalDO implements DurableObject {
       this.dropSession(fromKey);
       return;
     }
+    const session = this.sessions.get(fromKey);
+    if (session) {
+      // Refill bucket based on time elapsed since the last message.
+      const now = Date.now();
+      const elapsedSec = (now - session.tokensUpdatedAt) / 1000;
+      session.tokens = Math.min(RATE_BURST, session.tokens + elapsedSec * RATE_TOKENS_PER_SEC);
+      session.tokensUpdatedAt = now;
+      if (session.tokens < 1) {
+        try { session.ws.close(1008, "rate limit exceeded"); } catch { /* ignore */ }
+        this.dropSession(fromKey);
+        return;
+      }
+      session.tokens -= 1;
+    }
     let msg: SignalMessage;
     try { msg = JSON.parse(raw); } catch { return; }
 
     msg.from = fromKey; // override: clients can't spoof
-    const session = this.sessions.get(fromKey);
     if (session) session.lastSeen = Date.now();
 
     if (msg.type === "ping") {
