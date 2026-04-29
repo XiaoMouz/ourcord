@@ -78,9 +78,13 @@ func NewAgent(cfg Config) (*Agent, error) {
 	a := &Agent{agent: iceAgent}
 
 	// Gather candidates and collect them. pion fires OnCandidate from its
-	// gather goroutine; the nil-candidate sentinel that triggers the user
-	// callback can race with concurrent appends, so guard the slice with
-	// a mutex and snapshot it before invoking the user callback.
+	// internal gather goroutine, and the nil-candidate sentinel signals end
+	// of gathering. Two concerns are addressed below:
+	//   1. (H13) The user callback is dispatched on a fresh goroutine so a
+	//      slow signaling-WS write doesn't stall pion's gather loop and
+	//      delay subsequent candidate enumeration.
+	//   2. The candidate slice is mutated from the gather goroutine and
+	//      read again at sentinel time; a mutex guards the snapshot.
 	var (
 		mu       sync.Mutex
 		gathered []string
@@ -92,7 +96,7 @@ func NewAgent(cfg Config) (*Agent, error) {
 			copy(snapshot, gathered)
 			mu.Unlock()
 			if cfg.OnCandidates != nil {
-				cfg.OnCandidates(snapshot)
+				go cfg.OnCandidates(snapshot)
 			}
 			return
 		}

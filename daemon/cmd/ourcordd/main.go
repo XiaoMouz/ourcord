@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sync/atomic"
 	"syscall"
 
 	"github.com/ourcord/ourcord/daemon/pkg/ipc"
@@ -80,7 +81,12 @@ type daemon struct {
 	controlURL string
 	keyPair    *wg.KeyPair
 	socketPath string
-	vpnActive  bool
+	// vpnActive is read by the IPC dispatch goroutine and written by both
+	// connect/disconnect handlers; using atomic.Bool keeps the access
+	// race-free without a mutex around the whole struct. Once G-B lands and
+	// the connect pipeline runs in its own goroutine this is the contract
+	// it observes.
+	vpnActive atomic.Bool
 }
 
 func (d *daemon) HandleIPC(ctx context.Context, req ipc.IPCRequest) ipc.IPCResponse {
@@ -90,7 +96,7 @@ func (d *daemon) HandleIPC(ctx context.Context, req ipc.IPCRequest) ipc.IPCRespo
 			OK: true,
 			Data: ipc.DaemonStatus{
 				Running:   true,
-				VPNActive: d.vpnActive,
+				VPNActive: d.vpnActive.Load(),
 			},
 		}
 	case ipc.CmdConnect:
@@ -99,7 +105,7 @@ func (d *daemon) HandleIPC(ctx context.Context, req ipc.IPCRequest) ipc.IPCRespo
 		}
 		return ipc.IPCResponse{OK: true}
 	case ipc.CmdDisconnect:
-		d.vpnActive = false
+		d.vpnActive.Store(false)
 		return ipc.IPCResponse{OK: true}
 	case ipc.CmdPing:
 		return ipc.IPCResponse{OK: true, Data: map[string]string{"pong": "ok"}}
@@ -111,7 +117,7 @@ func (d *daemon) HandleIPC(ctx context.Context, req ipc.IPCRequest) ipc.IPCRespo
 func (d *daemon) connect(ctx context.Context) error {
 	// TODO Phase 1: register peer with control plane, get config,
 	// start ICE + DERP, configure WireGuard tun interface
-	d.vpnActive = true
+	d.vpnActive.Store(true)
 	log.Printf("VPN connect requested (control: %s)", d.controlURL)
 	return nil
 }

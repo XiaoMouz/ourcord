@@ -60,6 +60,15 @@ func (s *Server) Serve(ctx context.Context) error {
 				return err
 			}
 		}
+		// H11: refuse callers running as a different user. The IPC contract
+		// (status / connect / disconnect / shutdown) is privileged and must
+		// not be exposed to other local accounts. checkPeerCred is per-OS
+		// (server_unix.go for Linux/Darwin; server_other.go is a no-op
+		// fallback so the build still works on platforms without ucred).
+		if err := checkPeerCred(conn); err != nil {
+			conn.Close()
+			continue
+		}
 		go s.handleConn(ctx, conn)
 	}
 }

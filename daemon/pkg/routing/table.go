@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/netip"
 	"strings"
+	"sync"
 
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
@@ -22,7 +23,13 @@ type PeerRoute struct {
 }
 
 // Table holds the routing table for all VPN peers.
+//
+// Concurrency: once G-B's connect pipeline lands, the mesh poller will Upsert
+// routes from one goroutine while the signal callback Removes/Upserts from
+// another. RWMutex guards the map; readers (BuildIPCConfig, All) take RLock,
+// mutators take Lock.
 type Table struct {
+	mu     sync.RWMutex
 	routes map[string]*PeerRoute // publicKey (hex) -> route
 }
 
@@ -33,16 +40,22 @@ func NewTable() *Table {
 
 // Upsert adds or updates a route.
 func (t *Table) Upsert(r *PeerRoute) {
+	t.mu.Lock()
 	t.routes[r.PublicKey.String()] = r
+	t.mu.Unlock()
 }
 
 // Remove deletes a route.
 func (t *Table) Remove(publicKey wgtypes.Key) {
+	t.mu.Lock()
 	delete(t.routes, publicKey.String())
+	t.mu.Unlock()
 }
 
-// All returns all routes.
+// All returns a snapshot of all routes.
 func (t *Table) All() []*PeerRoute {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
 	out := make([]*PeerRoute, 0, len(t.routes))
 	for _, r := range t.routes {
 		out = append(out, r)
@@ -58,6 +71,9 @@ func (t *Table) All() []*PeerRoute {
 // to. Pass the result of AddRelayChainRoutes to wire those in.
 func (t *Table) BuildIPCConfig(privateKey wgtypes.Key) string {
 	chainExtra := t.AddRelayChainRoutes()
+
+	t.mu.RLock()
+	defer t.mu.RUnlock()
 
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("private_key=%x\n", privateKey[:]))
@@ -104,6 +120,8 @@ func (t *Table) BuildIPCConfig(privateKey wgtypes.Key) string {
 // This used to be a side-effecting method that did nothing; it is now pure and
 // consumed by BuildIPCConfig.
 func (t *Table) AddRelayChainRoutes() map[string][]string {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
 	nextHopRoutes := make(map[string][]string)
 	for _, r := range t.routes {
 		if r.NextHop == nil {
