@@ -127,7 +127,11 @@ export default {
       return json({ error: "Not found" }, 404);
     } catch (e) {
       console.error("Unhandled error:", e);
-      return json({ error: "Internal server error" }, 500);
+      // I7: development gets the message; production keeps it generic.
+      const detail = (env.ENVIRONMENT ?? "production") === "development"
+        ? { error: "Internal server error", detail: (e as Error).message }
+        : { error: "Internal server error" };
+      return json(detail, 500);
     }
   },
 

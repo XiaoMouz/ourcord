@@ -78,8 +78,9 @@ export async function registerPeer(request: Request, env: Env): Promise<Response
         .bind(id, userId, body.public_key, body.name ?? "", body.platform, now, candidate.ip4, candidate.ip6, derpNodeKey)
         .run();
       inserted = { ip4: candidate.ip4, ip6: candidate.ip6 };
-      // Best-effort persist the new high-water mark so peers don't all rescan from 2.
-      env.KV && (await commitOffset(env.KV, offset));
+      // env.KV is a required binding so the previous `env.KV && ...` guard
+      // (I8) was dead — drop it.
+      await commitOffset(env.KV, offset);
       break;
     } catch (err) {
       if (!isUniqueViolation(err)) throw err;

@@ -2,7 +2,6 @@
 package wg
 
 import (
-	"crypto/rand"
 	"encoding/base64"
 	"fmt"
 	"net/netip"
@@ -67,7 +66,7 @@ func PeerFromConfig(pubKeyB64 string, allowedIPs []string) (*Peer, error) {
 
 // PreSharedKey generates a random 32-byte pre-shared key.
 func GeneratePSK() (wgtypes.Key, error) {
-	var psk wgtypes.Key
-	_, err := rand.Read(psk[:])
-	return psk, err
+	// I10: keep style consistent with GenerateKeyPair (uses wgctrl helpers
+	// throughout). wgtypes.GenerateKey reads from crypto/rand under the hood.
+	return wgtypes.GenerateKey()
 }

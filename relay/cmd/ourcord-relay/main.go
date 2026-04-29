@@ -99,10 +99,14 @@ func main() {
 		if *hostname == "" {
 			log.Fatalf("--hostname required when --control-url is set")
 		}
-		// Parse port out of addr (best effort) for heartbeat reporting
+		// Parse port out of addr (best effort) for heartbeat reporting.
+		// I9: log Sscanf parse failures instead of swallowing them, so a
+		// mis-typed --addr is visible in the logs (port stays at 443).
 		port := 443
 		if _, p, err := net.SplitHostPort(*addr); err == nil {
-			fmt.Sscanf(p, "%d", &port)
+			if _, serr := fmt.Sscanf(p, "%d", &port); serr != nil {
+				log.Printf("warn: could not parse port %q from --addr (defaulting to %d): %v", p, port, serr)
+			}
 		}
 		cc = controlclient.New(*controlURL, *authToken, *relayID, controlclient.Identity{
 			Region:       *region,

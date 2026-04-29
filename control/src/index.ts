@@ -182,7 +182,12 @@ export default {
       return json({ error: "Not found" }, 404);
     } catch (e) {
       console.error("Unhandled error:", e);
-      return json({ error: "Internal server error" }, 500);
+      // I7: only leak stack/message in development; production keeps the
+      // generic 500 to avoid information disclosure.
+      const detail = (env.ENVIRONMENT ?? "production") === "development"
+        ? { error: "Internal server error", detail: (e as Error).message }
+        : { error: "Internal server error" };
+      return json(detail, 500);
     }
   },
 } satisfies ExportedHandler<Env>;
