@@ -93,8 +93,33 @@ export async function registerPeer(request: Request, env: Env): Promise<Response
       break;
     } catch (err) {
       if (!isUniqueViolation(err)) throw err;
-      // Race or stale counter — bump and retry.
-      offset++;
+      // O2: only the ip4/ip6 columns are racy here — the IP pool is the only
+      // thing the loop knows how to fix by bumping `offset`. Other UNIQUE
+      // collisions (most commonly `peers.public_key` from a register-vs-
+      // register race that slipped past the SELECT above; theoretically
+      // `peers.id`) need different handling, otherwise we burn 16 attempts
+      // and surface a misleading 503 "VPN IP pool" error.
+      const msg = err instanceof Error ? err.message : String(err);
+      if (/UNIQUE constraint failed:\s*peers\.(ip4|ip6)/i.test(msg)) {
+        offset++;
+        continue;
+      }
+      if (/UNIQUE constraint failed:\s*peers\.public_key/i.test(msg)) {
+        // Lost a register-register race; the other side won. Re-fetch and
+        // return the existing row exactly like the pre-loop fast path.
+        const winner = await env.DB
+          .prepare("SELECT * FROM peers WHERE public_key = ?")
+          .bind(body.public_key)
+          .first<Peer>();
+        if (winner && winner.user_id === userId) {
+          return json({ peer: winner, config: buildWireGuardConfig(winner) });
+        }
+        return json({ error: "Public key already registered to another user" }, 409);
+      }
+      // Unknown unique constraint (e.g. peers.id ULID collision, or some
+      // future column we don't know about). Don't burn the offset budget
+      // pretending it's a pool issue.
+      return json({ error: "constraint conflict" }, 409);
     }
   }
 
@@ -156,8 +181,12 @@ export async function getPeerConfig(request: Request, env: Env): Promise<Respons
       try {
         // Defense in depth: encodeURIComponent even though the regex above
         // already excludes "/" and other reserved characters.
+        // O1: 3s timeout matches the signal-route fetch (index.ts K7). Without
+        // it a slow/half-dead service worker would stall every daemon's mesh
+        // refresh up to the CF Worker 30s wall.
         const resp = await fetch(`${env.SERVICE_URL}/api/internal/rooms/${encodeURIComponent(roomId)}/member-ids`, {
           headers: { "X-Internal-Token": env.SERVICE_INTERNAL_TOKEN },
+          signal: AbortSignal.timeout(3000),
         });
         if (!resp.ok) {
           scopeWarning = `service returned ${resp.status} for room ${roomId}`;
@@ -174,8 +203,13 @@ export async function getPeerConfig(request: Request, env: Env): Promise<Respons
         // internal hostnames / IPs / connection-refused details) into a
         // response header. Emit a stable opaque code; full detail goes to
         // worker logs only.
+        // O1: distinguish timeout (TimeoutError / AbortError) from generic
+        // failure so client-side mesh refresh can back off appropriately.
         console.warn(`[peers] service fetch failed for room ${roomId}:`, e);
-        scopeWarning = "service-fetch-failed";
+        const name = (e as { name?: string } | null)?.name;
+        scopeWarning = name === "TimeoutError" || name === "AbortError"
+          ? "service-fetch-timeout"
+          : "service-fetch-failed";
       }
     }
   }
