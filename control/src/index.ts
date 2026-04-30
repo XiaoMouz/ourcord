@@ -6,6 +6,7 @@ import { createBan, removeBan, checkBan } from "./ban";
 import { requestOTP, verifyOTP, oauthRedirect, oauthCallback } from "./authHandler";
 import { checkRateLimit } from "./ratelimit";
 import { log, newRequestId } from "./log";
+import { json as jsonBase } from "./auth";
 
 export { SignalDO } from "./signal";
 
@@ -205,6 +206,28 @@ export default {
         if (env.ENVIRONMENT !== "development") {
           return json({ error: "Only available in development" }, 403);
         }
+        const adminToken = (env as Env & { ADMIN_TOKEN?: string }).ADMIN_TOKEN;
+        if (!adminToken) {
+          log({
+            event: "admin.init_db.misconfigured",
+            level: "error",
+            request_id: requestId,
+          });
+          return json({ error: "ADMIN_TOKEN not configured" }, 503);
+        }
+        const authHeader = request.headers.get("Authorization") ?? "";
+        const presented = authHeader.startsWith("Bearer ")
+          ? authHeader.slice("Bearer ".length).trim()
+          : "";
+        if (!presented || presented !== adminToken) {
+          log({
+            event: "admin.init_db.unauthorized",
+            level: "warn",
+            request_id: requestId,
+            has_header: authHeader.length > 0,
+          });
+          return json({ error: "unauthorized" }, 401);
+        }
         return json({
           ok: true,
           msg: "schema is managed via 'wrangler d1 migrations apply'",
@@ -229,12 +252,10 @@ export default {
   },
 } satisfies ExportedHandler<Env>;
 
+// Wraps auth.ts's json() to add the CORS header required by browser clients
+// hitting the control plane directly. Behavior otherwise identical.
 function json(data: unknown, status = 200): Response {
-  return new Response(JSON.stringify(data), {
-    status,
-    headers: {
-      "Content-Type": "application/json",
-      "Access-Control-Allow-Origin": "*",
-    },
-  });
+  const res = jsonBase(data, status);
+  res.headers.set("Access-Control-Allow-Origin", "*");
+  return res;
 }
