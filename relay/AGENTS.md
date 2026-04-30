@@ -1,6 +1,6 @@
 # relay/ — DERP 中继 AGENTS
 
-> 顶层契约见根 [`AGENTS.md`](../../AGENTS.md)。
+> 顶层契约见根 [`AGENTS.md`](../AGENTS.md)。
 
 ## 职责
 
@@ -35,8 +35,9 @@ OurCord 的 DERP 中继节点。基于 Tailscale derper 复用，加上控制面
   - `id`（自身 relay id）
   - `region`、`hostname`、`port`
   - `mode`：`personal` / `lobby` / `rental`
-  - `capacity_kbps`、当前连接数
+  - `capacity_kbps`、当前连接数、`load_pct`
 - 启动 + 每 5min 拉 `/api/relay/banned-keys` 同步封禁列表，对照本地连接做断开。
+- **封禁双 key**：`/api/relay/banned-keys` 返回 `{keys, derp_keys}`；`controlclient.BanList.IsBanned`（WireGuard pk）与 `IsBannedDERP`（`nodekey:HEX...`）必须分别用对地方，不要交叉传。
 
 ## 构建/检查
 
@@ -55,5 +56,6 @@ GOOS=linux GOARCH=arm64 go build -o ourcord-relay-arm64 ./cmd/ourcord-relay
 
 ## 已知技术债
 
-- `cmd/ourcord-relay/main.go` 中 limiter Manager 已构建但**未真正包装** DERP 写路径（`fix-relay-limiter` todo）。
-- 心跳字段不全（`fix-relay-heartbeat` todo）。
+- 限速 manager 已通过 `limiter.WrapListener` 包到底层 `net.Listener`，DERP 写路径继承这层 wrap；如果未来改成 HTTP/3 或 QUIC 直传，要重新核对包装点。
+- 长连接 idle 清理（G10）已加 `lm.GCLoop`，仍然依赖 limiter map key 与连接生命周期一致；新引入的连接类型要确认正确 release。
+- Relay 自检（探活、容量上报准确性）尚无独立测试套件，依赖控制层 fleet 监控指标兜底。

@@ -90,18 +90,18 @@ R2 配额由后端控制（大小、永久/临时数量、保存天数）。元�
 
 ```bash
 # Workers TypeScript
-(cd control && npx tsc --noEmit)
+(cd control && npx tsc --noEmit && npx vitest run)
 (cd service && npx tsc --noEmit)
 
 # Go modules
-(cd relay  && go build ./... && go vet ./...)
-(cd daemon && go build ./... && go vet ./...)
+(cd relay  && go build ./... && go vet ./... && go test ./...)
+(cd daemon && go build ./... && go vet ./... && go test -race ./...)
 
 # 整工作区
 go work sync
 ```
 
-测试目前几乎为空（阶段一脚手架），新增逻辑请同步加 `_test.go` 或 vitest（待引入）。
+测试矩阵已成形（control 31+ vitest、daemon 多包 race tests、relay 单测）；新增逻辑请同步加 `_test.go` 或 vitest，不再算"脚手架"阶段。
 
 ---
 
@@ -114,10 +114,11 @@ go work sync
   ```
   Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>
   ```
-- **本机 git 配置启用了 1Password GPG 签名**，AI 助手用以下命令绕过：
+- **本机 git 配置启用了 1Password ssh-sign**，非交互 shell 会因 1Password agent prompt 卡死。AI 助手提交时统一加 `--no-gpg-sign`：
   ```bash
-  git -c gpg.format=openpgp -c commit.gpgsign=false commit -m "..."
+  git commit --no-gpg-sign -m "..."
   ```
+  （`-c gpg.format=openpgp -c commit.gpgsign=false` 也可，但更长。）
 - 一个逻辑变更一个 commit，不要把 docs + 修 bug + 重构混在一起。
 
 ---
@@ -149,9 +150,10 @@ go work sync
 
 ## 8. 当前阶段
 
-- ✅ 阶段一：VPN 核心 + 控制层 + DERP 节点（脚手架完成）
-- 🚧 阶段二：服务层完善（大厅/房间/权限/消息/文件实际打通）
-- 📋 阶段三：媒体层（Opus/H.264/H.265、远控）
-- 📋 阶段四：UI 层（Tauri/Flutter/React）
+- ✅ **阶段一**：VPN 核心 + 控制层 + DERP 节点 + 跨平台 daemon + IPC + ICE/DERP fallback + 路由（含 A-B-C 链）+ 限速 + 封禁双 key 体系 + IPAM 198.18/15+ULA + OrbStack 双 VM smoke 已通
+- 🚧 **阶段二**：服务层完善（大厅/房间/权限/消息/文件实际打通）
+- 📋 **阶段三**：媒体层（Opus/H.264/H.265、远控）
+- 📋 **阶段四**：UI 层（Tauri/Flutter/React）
+- 📋 **阶段二可选附加**：Minecraft LAN 联机（M 系列设计已存档，见 plan.md）
 
 判断改动归属哪个阶段，避免提前实现尚未冻结的设计。

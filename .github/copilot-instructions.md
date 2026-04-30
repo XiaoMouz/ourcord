@@ -8,16 +8,16 @@
   ```
   Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>
   ```
-- 本机启用了 1Password GPG 签名，使用以下命令绕过签名：
+- 本机启用 1Password ssh-sign，非交互 shell 会卡。统一加 `--no-gpg-sign`：
   ```bash
-  git -c gpg.format=openpgp -c commit.gpgsign=false commit -m "..."
+  git commit --no-gpg-sign -m "..."
   ```
 - Conventional Commits 风格，scope 标明模块（`control` / `service` / `relay` / `daemon`）。
 
 ## 工作流偏好
 
 1. 修改代码前 `grep` 确认跨文件影响范围（尤其涉及 `JWT_SECRET`、IP 池、wrangler env、proto 字段）。
-2. 改完后必须跑：`tsc --noEmit`（两个 worker）+ `go build ./...`（两个 Go module）+ `go vet ./...`。
+2. 改完后必须跑：`tsc --noEmit`（两个 worker）+ `vitest run`（control）+ `go build ./...` + `go vet ./...` + `go test -race ./...`。
 3. 一个 PR / 一个 commit 只做一件事；docs、fix、refactor 不要混。
 4. 不引入新的运行时依赖而不说明理由（Workers 包 ≤ 1MB；Go 二进制要全平台编译）。
 
@@ -28,7 +28,9 @@
 | JWT secret | `control` 与 `service` 共用 `JWT_SECRET` env | 不要回退到 `CONTROL_INTERNAL_SECRET` |
 | 信令鉴权 | `control/src/index.ts` SignalDO 路由 | `?token=<jwt>&pk=<key>`，DO 内不重复校验 |
 | 限速 | `relay/pkg/limiter` | `NewLimitedWriter(ctx, w, l)`，禁止 nil ctx |
-| IP 分配 | `control/src/peers.ts` | 必须原子（D1 UNIQUE + retry） |
+| IP 分配 | `control/src/ipam.ts` + `peers.ts` | `198.18.0.0/15` + 部署级随机 ULA `/48`；D1 UNIQUE + retry |
 | 中继链路由 | `daemon/pkg/routing/table.go` | A-B-C 通过 `AllowedIPs`，DERP 无感 |
+| TUN 路由 | `daemon/pkg/tun/`、`SyncPeerV4Routes` | 每 peer `/32`，不抢 `/15`；与 Tailscale 共存 |
+| 封禁双 key | control `/api/relay/banned-keys` 返回 `{keys, derp_keys}` | WireGuard pk 与 DERP nodekey 分别用 |
 
 详细背景见 `AGENTS.md` 第 3 节"关键设计契约"。

@@ -57,11 +57,21 @@ npx wrangler deploy    # 部署
 - **打洞信令成对语义**：`SignalDO` 双方登记后才广播 `paired`，30s offer/answer replay cache，重复 pk 上线时关旧连接；不是裸 WS 透传。
 - **getPeerConfig 默认仅返回该用户自己的 peers**；带 `?room_id=` 才跨 user 暴露同 room 成员的 peers。这就是"每个房间独立组网"的实现。
 - **relay map 按 region 过滤、按 headroom 排序**；daemon 自己挑前几个 relay 做候选。
-- **per-relay denylist 与全局 ban 解耦**：`/api/relay/banned-keys?relay_id=` 才返回合并集。
+- **per-relay denylist 与全局 ban 解耦**：`/api/relay/banned-keys?relay_id=` 才返回合并集。响应包含 `{keys, derp_keys}` 两数组，分别给 WireGuard 与 DERP admit 用——双 key 体系（G12），daemon 注册 peer 时必须同时上报 `public_key` + `derp_node_key`，否则 DERP 通道封禁失效。
 - **schema 加表只能用 `CREATE IF NOT EXISTS`**；现有部署需手工 `wrangler d1 execute` 应用 schema.ts diff（D5 迁移系统未上）。
 - **OAuth state 浏览器绑定（P1）**：`oauthRedirect` 同时下发 `state`（KV）与 `oauth_state` HttpOnly cookie；`oauthCallback` 必须常量时间比对二者。修改这条链路时不能去掉 cookie 校验，否则退化为登录 CSRF。
 - **OTP 暴力防护（P2）**：`otp_fails:<email>` KV 计数器达到 5 即作废 OTP；`otp_cooldown:<email>` 强制 60s 申请冷却。**KV 读改写非原子**——这是已知短板，并发错码可能漏计 1-2 次。Phase-2 切换 D1 计数行或 Durable Object 解决。新增 OTP 校验路径必须复用 fail counter 而非另起一套。
 - **`bans` 表强制生效点（P3）**：`requireAuth` 在 JWT 验签后追加 `isUserBanned`，让现有 30 天 token 在封禁后立即失效；`verifyOTP` / `oauthCallback` 同时检查以拒发新 token。新增登录入口/特权路径同样要补这一行。
+
+## IPAM（U 系列后）
+
+`src/ipam.ts` 是 VPN 地址分配的唯一入口：
+
+- **v4 池：`198.18.0.0/15`**（RFC 2544 基准段）。`VPN_SUBNET_START=0xC6120000`、`VPN_SUBNET_MASK=0x1FFFF`。**不再用** `100.64/10`（与 Tailscale + 中国 ISP CGNAT 冲突）。
+- **v6 池：部署级随机 ULA `/48`**。首次注册时 `getULAPrefix(env.KV)` 检测 `KV.vpn_ula_prefix` 为空 → `generateULAPrefix()` 用 `crypto.getRandomValues` 生成 `fd<XX>:<XXXX>:<XXXX>:` → 写回 KV。后续注册都读同一个 prefix。**绝不**硬编码 `fd7a:115c:a1e0::`（Tailscale 字面量）。
+- KV 写入 race：两个并发首次注册都看到 null → 都生成 → last write wins；接受这个一次性窗口（部署后只会触发一次）。
+- `ipsForOffset(offset, ulaPrefix)` 把 `offset (0..131071)` 映射到 `(v4, v6)` 元组；调用方先取 prefix 再循环。
+- 测试见 `src/ipam.test.ts`（21 cases）；改 IPAM 必须先跑 vitest。
 
 ## 已知技术债
 

@@ -4,7 +4,7 @@
 
 ## Claude Code 工作偏好
 
-- **复杂改动先用 PLAN 模式**写计划到 `~/.copilot/session-state/<id>/plan.md`，然后 `exit_plan_mode` 走审批，再进 autopilot。
+- **复杂改动先在 PLAN 模式（Shift+Tab）**写计划到 `~/.copilot/session-state/<id>/plan.md`，与用户对齐后再退出 plan 模式开干。
 - **优先并行工具调用**：读多个文件、跑多种 lint/build 时一次性发起，别串行。
 - **任务分发优先级**：简单文件改动自己做；多文件跨模块研究用 `explore` agent；非平凡设计/实现先过 `rubber-duck`。
 - **plan.md 是 session 私有的，永远不 commit**。
@@ -16,9 +16,9 @@
   ```
   Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>
   ```
-- 本机启用 1Password GPG 签名；用以下命令绕过：
+- 本机启用 1Password ssh-sign，非交互会卡。统一加 `--no-gpg-sign`：
   ```bash
-  git -c gpg.format=openpgp -c commit.gpgsign=false commit -m "..."
+  git commit --no-gpg-sign -m "..."
   ```
 
 ## 关键契约速查
@@ -45,4 +45,4 @@
 
 ## 当前阶段
 
-阶段一已完成；正在做"补全 + 修技术债"。改动前判断归属哪个阶段，不要提前实现阶段三/四（媒体、UI）的内容。
+阶段一已完成（含 OrbStack 双 VM smoke 验证）；正在做"补全 + 修技术债 + 阶段二准备"。改动前判断归属哪个阶段，不要提前实现阶段三/四（媒体、UI）的内容。Minecraft LAN（M 系列）属阶段二可选附加。
