@@ -4,6 +4,7 @@ import { createLobby, getLobby, joinLobby, listMembers, updateMemberRole, create
 import { getMessages, sendMessage, deleteMessage } from "./messages";
 import { initiateUpload, uploadToR2, listFiles, getDownloadUrl, getFilePolicy, updateFilePolicy, runR2Cleanup } from "./files";
 import { json, constantTimeEqual } from "./auth";
+import { checkRateLimit } from "./ratelimit";
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -27,7 +28,11 @@ export default {
 
     try {
       // ── Lobbies ────────────────────────────────────────────────────────────
-      if (method === "POST" && path === "/api/lobbies") return createLobby(request, env);
+      if (method === "POST" && path === "/api/lobbies") {
+        const rl = await checkRateLimit(request, env, "lobby-create", 5, 60);
+        if (rl) return rl;
+        return createLobby(request, env);
+      }
       if (method === "GET" && parts[0] === "api" && parts[1] === "lobbies" && parts[2] && !parts[3]) {
         return getLobby(request, env, parts[2]);
       }
@@ -41,6 +46,8 @@ export default {
         return updateMemberRole(request, env, parts[2], parts[4]);
       }
       if (method === "POST" && parts[1] === "lobbies" && parts[3] === "invites") {
+        const rl = await checkRateLimit(request, env, "invite-create", 10, 60);
+        if (rl) return rl;
         return createInvite(request, env, parts[2]);
       }
       if (method === "DELETE" && parts[1] === "lobbies" && parts[3] === "invites" && parts[4]) {
@@ -49,6 +56,8 @@ export default {
 
       // ── Rooms (CRUD) ───────────────────────────────────────────────────────
       if (method === "POST" && parts[1] === "lobbies" && parts[3] === "rooms" && !parts[4]) {
+        const rl = await checkRateLimit(request, env, "room-create", 10, 60);
+        if (rl) return rl;
         return createRoom(request, env, parts[2]);
       }
       if (method === "PATCH" && parts[1] === "rooms" && parts[2] && !parts[3]) {
@@ -71,6 +80,8 @@ export default {
         return getMessages(request, env, parts[2]);
       }
       if (method === "POST" && parts[1] === "rooms" && parts[3] === "messages") {
+        const rl = await checkRateLimit(request, env, "msg-send", 120, 60);
+        if (rl) return rl;
         return sendMessage(request, env, parts[2]);
       }
       if (method === "DELETE" && parts[1] === "rooms" && parts[3] === "messages" && parts[4]) {
@@ -79,6 +90,8 @@ export default {
 
       // ── Files ──────────────────────────────────────────────────────────────
       if (method === "POST" && parts[1] === "rooms" && parts[3] === "files" && !parts[4]) {
+        const rl = await checkRateLimit(request, env, "file-init", 30, 60);
+        if (rl) return rl;
         return initiateUpload(request, env, parts[2]);
       }
       if (method === "PUT" && parts[1] === "rooms" && parts[3] === "files" && parts[5] === "upload") {

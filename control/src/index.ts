@@ -5,6 +5,7 @@ import { getStunServers, addStunServer } from "./stun";
 import { registerRelay, getRelayMap, getBannedKeys, denyPeerOnRelay, allowPeerOnRelay } from "./relay";
 import { createBan, removeBan, checkBan } from "./ban";
 import { requestOTP, verifyOTP, oauthRedirect, oauthCallback } from "./authHandler";
+import { checkRateLimit } from "./ratelimit";
 
 export { SignalDO } from "./signal";
 
@@ -28,8 +29,16 @@ export default {
 
     try {
       // ── Auth ───────────────────────────────────────────────────────────────
-      if (method === "POST" && path === "/api/auth/otp/request") return requestOTP(request, env);
-      if (method === "POST" && path === "/api/auth/otp/verify") return verifyOTP(request, env);
+      if (method === "POST" && path === "/api/auth/otp/request") {
+        const rl = await checkRateLimit(request, env, "otp-req", 5, 60);
+        if (rl) return rl;
+        return requestOTP(request, env);
+      }
+      if (method === "POST" && path === "/api/auth/otp/verify") {
+        const rl = await checkRateLimit(request, env, "otp-verify", 10, 60);
+        if (rl) return rl;
+        return verifyOTP(request, env);
+      }
       if (method === "GET" && path.startsWith("/api/auth/oauth/")) {
         const parts = path.split("/").filter(Boolean); // ["api","auth","oauth","google"]
         const provider = parts[3];
@@ -38,12 +47,22 @@ export default {
       }
 
       // ── Peers ──────────────────────────────────────────────────────────────
-      if (method === "POST" && path === "/api/peers/register") return registerPeer(request, env);
-      if (method === "POST" && path === "/api/peers/lookup") return lookupPeers(request, env);
+      if (method === "POST" && path === "/api/peers/register") {
+        const rl = await checkRateLimit(request, env, "peers-reg", 10, 60);
+        if (rl) return rl;
+        return registerPeer(request, env);
+      }
+      if (method === "POST" && path === "/api/peers/lookup") {
+        const rl = await checkRateLimit(request, env, "peers-lookup", 60, 60);
+        if (rl) return rl;
+        return lookupPeers(request, env);
+      }
       if (method === "GET" && path === "/api/peers/config") return getPeerConfig(request, env);
 
       // ── Hole-punching signal (WebSocket via Durable Object) ─────────────────
       if (path.startsWith("/api/signal/")) {
+        const rl = await checkRateLimit(request, env, "signal", 60, 60);
+        if (rl) return rl;
         const rawRoomId = path.split("/")[3];
         if (!rawRoomId) return json({ error: "room_id required" }, 400);
         // I4: normalize service-room ids so case variants ("Room1" vs "room1")
