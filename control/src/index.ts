@@ -1,5 +1,4 @@
 import { Env } from "./types";
-import { SCHEMA_SQL } from "./schema";
 import { registerPeer, getPeerConfig, lookupPeers } from "./peers";
 import { getStunServers, addStunServer } from "./stun";
 import { registerRelay, getRelayMap, getBannedKeys, denyPeerOnRelay, allowPeerOnRelay } from "./relay";
@@ -199,12 +198,17 @@ export default {
       }
 
       // ── Admin: init DB schema ──────────────────────────────────────────────
+      // Schema itself is managed via `wrangler d1 migrations apply DB`
+      // (see control/migrations/). This route is kept as a no-op hook for
+      // future seed data (admin user, default lobby, etc.).
       if (method === "POST" && path === "/api/admin/init-db") {
         if (env.ENVIRONMENT !== "development") {
           return json({ error: "Only available in development" }, 403);
         }
-        await env.DB.exec(SCHEMA_SQL);
-        return json({ message: "Schema initialized" });
+        return json({
+          ok: true,
+          msg: "schema is managed via 'wrangler d1 migrations apply'",
+        });
       }
 
       // ── Health check ───────────────────────────────────────────────────────

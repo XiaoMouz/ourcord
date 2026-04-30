@@ -1,5 +1,6 @@
-// D1 schema initialization SQL for the control layer
-export const SCHEMA_SQL = `
+-- Initial schema for the ourcord control layer.
+-- Applied with `npx wrangler d1 migrations apply DB --local|--remote`.
+
 CREATE TABLE IF NOT EXISTS users (
   id TEXT PRIMARY KEY,
   email TEXT UNIQUE NOT NULL,
@@ -93,4 +94,3 @@ CREATE TABLE IF NOT EXISTS relay_load (
   bytes_per_sec INTEGER NOT NULL DEFAULT 0,
   reported_at INTEGER NOT NULL DEFAULT 0
 );
-`;

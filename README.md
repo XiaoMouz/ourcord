@@ -39,8 +39,9 @@ cd control
 npm install
 # 配置 wrangler.toml 中的 D1/KV 资源 ID
 npx wrangler deploy
-# 初始化数据库
-curl -X POST https://your-control.workers.dev/api/admin/init-db
+# 应用数据库迁移（schema 由 control/migrations/ 管理）
+npx wrangler d1 migrations apply DB --local    # 本地开发
+npx wrangler d1 migrations apply DB --remote   # 远程生产
 ```
 
 ### 服务层部署
