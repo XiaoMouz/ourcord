@@ -116,7 +116,7 @@ export async function verifyOTP(request: Request, env: Env): Promise<Response> {
   // written to but `bans` rows from /api/ban with target_type='user' must
   // block fresh-token issuance.
   if (await isUserBanned(user.id, env.DB)) {
-    return json({ error: "Account banned" }, 403);
+    return json({ error: "User is banned" }, 403);
   }
 
   const payload = makeToken(user.id, email);
@@ -265,7 +265,7 @@ export async function oauthCallback(request: Request, env: Env, provider: string
   if (user.banned_at) return jsonWithCookie({ error: "Account banned" }, 403, clearCookie);
   // P3: bans table check (see verifyOTP for rationale).
   if (await isUserBanned(user.id, env.DB)) {
-    return jsonWithCookie({ error: "Account banned" }, 403, clearCookie);
+    return jsonWithCookie({ error: "User is banned" }, 403, clearCookie);
   }
 
   const payload = makeToken(user.id, email);

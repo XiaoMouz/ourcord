@@ -85,7 +85,13 @@ export interface TokenPayload {
   exp: number;
 }
 
-const TOKEN_TTL = 30 * 24 * 60 * 60; // 30 days
+// X1: cap JWT lifetime at 1 hour. Bans are stored in D1 on the control plane
+// only — the service worker can't see them directly. By forcing tokens to be
+// refreshed via control every hour, we bound worst-case ban propagation to
+// ~1h: at refresh time, requireAuth + the OTP/OAuth issuance paths consult
+// isUserBanned and reject the user, after which their old token expires
+// naturally on its own.
+const TOKEN_TTL = 60 * 60; // 1 hour
 
 export async function signToken(payload: TokenPayload, secret: string): Promise<string> {
   const data = b64url(JSON.stringify(payload));
@@ -147,13 +153,15 @@ export async function requireAuth(request: Request, env: Env): Promise<TokenPayl
       headers: { "Content-Type": "application/json" },
     });
   }
-  // P3: enforce active user-bans even for tokens issued before the ban.
-  // JWTs live for 30 days; without this check, a banned user keeps their
-  // pre-ban token usable until natural expiry. The single D1 lookup is
-  // acceptable on the control plane (low QPS, indexed by target_id+type).
+  // X1: enforce active user-bans even for tokens issued before the ban.
+  // We deliberately respond with 401/Unauthorized (not 403/banned) so the
+  // ban itself isn't disclosed to the holder of the now-revoked token; from
+  // the client's perspective the credential is simply no longer valid and
+  // the standard "re-authenticate" path applies — at which point the OTP
+  // and OAuth issuers refuse the ban explicitly.
   if (await isUserBanned(payload.sub, env.DB)) {
-    return new Response(JSON.stringify({ error: "Account banned" }), {
-      status: 403,
+    return new Response(JSON.stringify({ error: "Unauthorized" }), {
+      status: 401,
       headers: { "Content-Type": "application/json" },
     });
   }
@@ -188,10 +196,20 @@ export async function isUserBanned(userId: string, db: D1Database): Promise<bool
   return !!ban;
 }
 
-// Generate a cryptographically random 6-digit OTP
+// Generate a cryptographically random 6-digit OTP.
+//
+// X2: rejection sampling removes the modulo bias that `% 1_000_000` on a
+// Uint32 would otherwise introduce. 2^32 is not divisible by 1_000_000, so
+// the last partial bucket (4_294_000_000 .. 4_294_967_295) over-represents
+// codes 0..967_295 by ~0.0008%. Negligible cryptographically but easy to
+// avoid: discard draws in that tail and try again.
 export function generateOTP(): string {
   const arr = new Uint32Array(1);
-  crypto.getRandomValues(arr);
+  // Largest multiple of 1_000_000 that fits in Uint32 (4294 * 1_000_000).
+  const limit = 4_294_000_000;
+  do {
+    crypto.getRandomValues(arr);
+  } while (arr[0] >= limit);
   return String(arr[0] % 1_000_000).padStart(6, "0");
 }
 
