@@ -66,7 +66,7 @@ export function checkBodySize(request: Request, maxBytes: number): Response | nu
   return null;
 }
 
-function constantTimeEqual(a: string, b: string): boolean {
+export function constantTimeEqual(a: string, b: string): boolean {
   const al = a.length, bl = b.length;
   let diff = al ^ bl;
   const max = Math.max(al, bl);
@@ -144,6 +144,16 @@ export async function requireAuth(request: Request, env: Env): Promise<TokenPayl
   if (!payload) {
     return new Response(JSON.stringify({ error: "Unauthorized" }), {
       status: 401,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+  // P3: enforce active user-bans even for tokens issued before the ban.
+  // JWTs live for 30 days; without this check, a banned user keeps their
+  // pre-ban token usable until natural expiry. The single D1 lookup is
+  // acceptable on the control plane (low QPS, indexed by target_id+type).
+  if (await isUserBanned(payload.sub, env.DB)) {
+    return new Response(JSON.stringify({ error: "Account banned" }), {
+      status: 403,
       headers: { "Content-Type": "application/json" },
     });
   }
