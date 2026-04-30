@@ -136,6 +136,8 @@ go build -o ourcord-cli ./cmd/ourcord-cli
 ./ourcord-cli status
 ```
 
+详见 [docs/PLATFORMS.md](docs/PLATFORMS.md) 了解各 OS 的权限/部署细节。
+
 ## 开发路线图
 
 - [x] **阶段一** — VPN 核心 + 控制层 + DERP 节点（当前）
