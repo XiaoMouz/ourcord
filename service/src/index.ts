@@ -1,6 +1,6 @@
 import { Env } from "./types";
 import { SCHEMA_SQL } from "./schema";
-import { createLobby, getLobby, joinLobby, listMembers, updateMemberRole, createInvite, revokeInvite } from "./lobby";
+import { createLobby, getLobby, joinLobby, listMembers, updateMemberRole, createInvite, revokeInvite, createRoom, updateRoom, deleteRoom } from "./lobby";
 import { getMessages, sendMessage, deleteMessage } from "./messages";
 import { initiateUpload, uploadToR2, listFiles, getDownloadUrl, getFilePolicy, updateFilePolicy, runR2Cleanup } from "./files";
 import { json, constantTimeEqual } from "./auth";
@@ -11,7 +11,7 @@ export default {
       return new Response(null, {
         headers: {
           "Access-Control-Allow-Origin": "*",
-          "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+          "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
           "Access-Control-Allow-Headers": "Content-Type, Authorization",
           "Access-Control-Max-Age": "86400",
         },
@@ -45,6 +45,17 @@ export default {
       }
       if (method === "DELETE" && parts[1] === "lobbies" && parts[3] === "invites" && parts[4]) {
         return revokeInvite(request, env, parts[2], parts[4]);
+      }
+
+      // ── Rooms (CRUD) ───────────────────────────────────────────────────────
+      if (method === "POST" && parts[1] === "lobbies" && parts[3] === "rooms" && !parts[4]) {
+        return createRoom(request, env, parts[2]);
+      }
+      if (method === "PATCH" && parts[1] === "rooms" && parts[2] && !parts[3]) {
+        return updateRoom(request, env, parts[2]);
+      }
+      if (method === "DELETE" && parts[1] === "rooms" && parts[2] && !parts[3]) {
+        return deleteRoom(request, env, parts[2]);
       }
 
       // ── File policies ──────────────────────────────────────────────────────

@@ -232,6 +232,170 @@ export async function listMembers(request: Request, env: Env, lobbyId: string): 
   return json({ members: members.results });
 }
 
+// Room name policy: 1..80 chars, no ASCII control characters. Same length
+// budget as lobby names so we don't blow past D1's 1MB row limit on absurd
+// concatenations (e.g., when assembled into vpn_namespace).
+function validateRoomName(raw: unknown): string | Response {
+  if (typeof raw !== "string") return err("name required");
+  const name = raw.trim();
+  if (!name) return err("name required");
+  if (name.length > 80) return err("name too long (max 80)", 413);
+  // eslint-disable-next-line no-control-regex
+  if (/[\x00-\x1f\x7f]/.test(name)) return err("name contains control characters");
+  return name;
+}
+
+const ROOM_TYPES = new Set(["text", "voice", "video", "file"]);
+
+// POST /api/lobbies/:id/rooms — owner/admin creates a room.
+// vpn_namespace is auto-derived for voice/video/file so the daemon can
+// parse `lobby-{lobbyId}-{roomId}-{type}` without us threading more state.
+export async function createRoom(request: Request, env: Env, lobbyId: string): Promise<Response> {
+  const tooBig = checkBodySize(request, 4 * 1024);
+  if (tooBig) return tooBig;
+  const auth = await requireAuth(request, env);
+  if (auth instanceof Response) return auth;
+
+  const member = await env.DB
+    .prepare("SELECT role FROM lobby_members WHERE lobby_id = ? AND user_id = ?")
+    .bind(lobbyId, auth.sub)
+    .first<{ role: string }>();
+  if (!member || (member.role !== "owner" && member.role !== "admin")) {
+    return err("Insufficient permissions", 403);
+  }
+
+  let body: { name?: string; type?: string; position?: number };
+  try {
+    body = await request.json<{ name?: string; type?: string; position?: number }>();
+  } catch {
+    return err("invalid JSON body");
+  }
+
+  const nameOrErr = validateRoomName(body.name);
+  if (nameOrErr instanceof Response) return nameOrErr;
+  const name = nameOrErr;
+
+  const type = body.type;
+  if (typeof type !== "string" || !ROOM_TYPES.has(type)) {
+    return err("type must be one of text, voice, video, file");
+  }
+
+  let position: number;
+  if (body.position === undefined || body.position === null) {
+    const row = await env.DB
+      .prepare("SELECT COALESCE(MAX(position), -1) AS m FROM rooms WHERE lobby_id = ?")
+      .bind(lobbyId)
+      .first<{ m: number }>();
+    position = (row?.m ?? -1) + 1;
+  } else if (Number.isInteger(body.position) && body.position >= 0 && body.position <= 100000) {
+    position = body.position;
+  } else {
+    return err("position must be a non-negative integer");
+  }
+
+  const id = generateId();
+  const vpnNamespace = type === "text" ? null : `lobby-${lobbyId}-${id}-${type}`;
+
+  await env.DB
+    .prepare("INSERT INTO rooms (id, lobby_id, name, type, position, vpn_namespace) VALUES (?,?,?,?,?,?)")
+    .bind(id, lobbyId, name, type, position, vpnNamespace)
+    .run();
+
+  const room: Room = {
+    id,
+    lobby_id: lobbyId,
+    name,
+    type: type as Room["type"],
+    position,
+    vpn_namespace: vpnNamespace ?? undefined,
+  };
+  return json(room, 201);
+}
+
+// PATCH /api/rooms/:roomId — owner/admin renames or reorders.
+export async function updateRoom(request: Request, env: Env, roomId: string): Promise<Response> {
+  const tooBig = checkBodySize(request, 4 * 1024);
+  if (tooBig) return tooBig;
+  const auth = await requireAuth(request, env);
+  if (auth instanceof Response) return auth;
+
+  const room = await env.DB
+    .prepare("SELECT * FROM rooms WHERE id = ?")
+    .bind(roomId)
+    .first<Room>();
+  if (!room) return err("Room not found", 404);
+
+  const member = await env.DB
+    .prepare("SELECT role FROM lobby_members WHERE lobby_id = ? AND user_id = ?")
+    .bind(room.lobby_id, auth.sub)
+    .first<{ role: string }>();
+  if (!member || (member.role !== "owner" && member.role !== "admin")) {
+    return err("Insufficient permissions", 403);
+  }
+
+  let body: { name?: string; position?: number };
+  try {
+    body = await request.json<{ name?: string; position?: number }>();
+  } catch {
+    return err("invalid JSON body");
+  }
+
+  let newName = room.name;
+  if (body.name !== undefined) {
+    const nameOrErr = validateRoomName(body.name);
+    if (nameOrErr instanceof Response) return nameOrErr;
+    newName = nameOrErr;
+  }
+
+  let newPosition = room.position;
+  if (body.position !== undefined) {
+    if (!Number.isInteger(body.position) || body.position < 0 || body.position > 100000) {
+      return err("position must be a non-negative integer");
+    }
+    newPosition = body.position;
+  }
+
+  await env.DB
+    .prepare("UPDATE rooms SET name = ?, position = ? WHERE id = ?")
+    .bind(newName, newPosition, roomId)
+    .run();
+
+  return json({ ...room, name: newName, position: newPosition });
+}
+
+// DELETE /api/rooms/:roomId — owner only. Refuses to delete the last room
+// in a lobby so clients always have somewhere to land. FK ON DELETE CASCADE
+// on messages/files cleans up child rows.
+export async function deleteRoom(request: Request, env: Env, roomId: string): Promise<Response> {
+  const auth = await requireAuth(request, env);
+  if (auth instanceof Response) return auth;
+
+  const room = await env.DB
+    .prepare("SELECT lobby_id FROM rooms WHERE id = ?")
+    .bind(roomId)
+    .first<{ lobby_id: string }>();
+  if (!room) return err("Room not found", 404);
+
+  const member = await env.DB
+    .prepare("SELECT role FROM lobby_members WHERE lobby_id = ? AND user_id = ?")
+    .bind(room.lobby_id, auth.sub)
+    .first<{ role: string }>();
+  if (!member || member.role !== "owner") {
+    return err("Insufficient permissions", 403);
+  }
+
+  const count = await env.DB
+    .prepare("SELECT COUNT(*) AS c FROM rooms WHERE lobby_id = ?")
+    .bind(room.lobby_id)
+    .first<{ c: number }>();
+  if ((count?.c ?? 0) <= 1) {
+    return err("lobby must have at least one room");
+  }
+
+  await env.DB.prepare("DELETE FROM rooms WHERE id = ?").bind(roomId).run();
+  return json({ deleted: true });
+}
+
 // PUT /api/lobbies/:id/members/:userId — update member role
 export async function updateMemberRole(
   request: Request, env: Env, lobbyId: string, targetUserId: string

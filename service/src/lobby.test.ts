@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { joinLobby } from "./lobby";
+import { joinLobby, createRoom, updateRoom, deleteRoom } from "./lobby";
 import type { Env } from "./types";
 
 const SECRET = "test-secret-1234567890abcdef";
@@ -127,5 +127,190 @@ describe("joinLobby", () => {
     expect(resp.status).toBe(200);
     const body = await resp.json<{ joined: boolean }>();
     expect(body.joined).toBe(true);
+  });
+});
+
+function jsonReq(url: string, method: string, token: string, body: unknown): Request {
+  const b = JSON.stringify(body);
+  return new Request(url, {
+    method,
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "content-type": "application/json",
+      "content-length": String(b.length),
+    },
+    body: b,
+  });
+}
+
+function delReq(url: string, token: string): Request {
+  return new Request(url, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+}
+
+describe("createRoom", () => {
+  it("creates a text room with no vpn_namespace", async () => {
+    const token = await makeToken();
+    const env = {
+      ENVIRONMENT: "production",
+      JWT_SECRET: SECRET,
+      DB: makeDB([
+        { first: { role: "owner" } },        // membership
+        { first: { m: 2 } },                  // MAX(position)
+        { run: { meta: { changes: 1 } } },    // INSERT
+      ]),
+    } as Env;
+    const req = jsonReq("https://x/api/lobbies/L1/rooms", "POST", token, { name: "chat", type: "text" });
+    const resp = await createRoom(req, env, "L1");
+    expect(resp.status).toBe(201);
+    const b = await resp.json<{ name: string; type: string; position: number; vpn_namespace?: string }>();
+    expect(b.name).toBe("chat");
+    expect(b.type).toBe("text");
+    expect(b.position).toBe(3);
+    expect(b.vpn_namespace).toBeUndefined();
+  });
+
+  it("creates a voice room and auto-fills vpn_namespace", async () => {
+    const token = await makeToken();
+    const env = {
+      ENVIRONMENT: "production",
+      JWT_SECRET: SECRET,
+      DB: makeDB([
+        { first: { role: "admin" } },
+        { first: { m: 0 } },
+        { run: { meta: { changes: 1 } } },
+      ]),
+    } as Env;
+    const req = jsonReq("https://x/api/lobbies/L1/rooms", "POST", token, { name: "huddle", type: "voice" });
+    const resp = await createRoom(req, env, "L1");
+    expect(resp.status).toBe(201);
+    const b = await resp.json<{ vpn_namespace?: string; type: string }>();
+    expect(b.type).toBe("voice");
+    expect(b.vpn_namespace).toMatch(/^lobby-L1-.+-voice$/);
+  });
+
+  it("rejects when caller is a plain member (403)", async () => {
+    const token = await makeToken();
+    const env = {
+      ENVIRONMENT: "production",
+      JWT_SECRET: SECRET,
+      DB: makeDB([{ first: { role: "member" } }]),
+    } as Env;
+    const req = jsonReq("https://x/api/lobbies/L1/rooms", "POST", token, { name: "x", type: "text" });
+    const resp = await createRoom(req, env, "L1");
+    expect(resp.status).toBe(403);
+  });
+
+  it("rejects empty/invalid name (400)", async () => {
+    const token = await makeToken();
+    const env = {
+      ENVIRONMENT: "production",
+      JWT_SECRET: SECRET,
+      DB: makeDB([{ first: { role: "owner" } }]),
+    } as Env;
+    const req = jsonReq("https://x/api/lobbies/L1/rooms", "POST", token, { name: "   ", type: "text" });
+    const resp = await createRoom(req, env, "L1");
+    expect(resp.status).toBe(400);
+  });
+
+  it("rejects unknown type (400)", async () => {
+    const token = await makeToken();
+    const env = {
+      ENVIRONMENT: "production",
+      JWT_SECRET: SECRET,
+      DB: makeDB([{ first: { role: "owner" } }]),
+    } as Env;
+    const req = jsonReq("https://x/api/lobbies/L1/rooms", "POST", token, { name: "x", type: "stream" });
+    const resp = await createRoom(req, env, "L1");
+    expect(resp.status).toBe(400);
+  });
+});
+
+describe("updateRoom", () => {
+  it("renames a room (happy)", async () => {
+    const token = await makeToken();
+    const env = {
+      ENVIRONMENT: "production",
+      JWT_SECRET: SECRET,
+      DB: makeDB([
+        { first: { id: "R1", lobby_id: "L1", name: "old", type: "text", position: 0 } },
+        { first: { role: "admin" } },
+        { run: { meta: { changes: 1 } } },
+      ]),
+    } as Env;
+    const req = jsonReq("https://x/api/rooms/R1", "PATCH", token, { name: "new" });
+    const resp = await updateRoom(req, env, "R1");
+    expect(resp.status).toBe(200);
+    const b = await resp.json<{ name: string; position: number }>();
+    expect(b.name).toBe("new");
+    expect(b.position).toBe(0);
+  });
+
+  it("rejects non-owner/admin (403)", async () => {
+    const token = await makeToken();
+    const env = {
+      ENVIRONMENT: "production",
+      JWT_SECRET: SECRET,
+      DB: makeDB([
+        { first: { id: "R1", lobby_id: "L1", name: "old", type: "text", position: 0 } },
+        { first: { role: "member" } },
+      ]),
+    } as Env;
+    const req = jsonReq("https://x/api/rooms/R1", "PATCH", token, { name: "new" });
+    const resp = await updateRoom(req, env, "R1");
+    expect(resp.status).toBe(403);
+  });
+});
+
+describe("deleteRoom", () => {
+  it("deletes when owner and >1 rooms (happy)", async () => {
+    const token = await makeToken();
+    const env = {
+      ENVIRONMENT: "production",
+      JWT_SECRET: SECRET,
+      DB: makeDB([
+        { first: { lobby_id: "L1" } },
+        { first: { role: "owner" } },
+        { first: { c: 2 } },
+        { run: { meta: { changes: 1 } } },
+      ]),
+    } as Env;
+    const resp = await deleteRoom(delReq("https://x/api/rooms/R1", token), env, "R1");
+    expect(resp.status).toBe(200);
+    const b = await resp.json<{ deleted: boolean }>();
+    expect(b.deleted).toBe(true);
+  });
+
+  it("admin cannot delete (403)", async () => {
+    const token = await makeToken();
+    const env = {
+      ENVIRONMENT: "production",
+      JWT_SECRET: SECRET,
+      DB: makeDB([
+        { first: { lobby_id: "L1" } },
+        { first: { role: "admin" } },
+      ]),
+    } as Env;
+    const resp = await deleteRoom(delReq("https://x/api/rooms/R1", token), env, "R1");
+    expect(resp.status).toBe(403);
+  });
+
+  it("refuses to delete the last remaining room (400)", async () => {
+    const token = await makeToken();
+    const env = {
+      ENVIRONMENT: "production",
+      JWT_SECRET: SECRET,
+      DB: makeDB([
+        { first: { lobby_id: "L1" } },
+        { first: { role: "owner" } },
+        { first: { c: 1 } },
+      ]),
+    } as Env;
+    const resp = await deleteRoom(delReq("https://x/api/rooms/R1", token), env, "R1");
+    expect(resp.status).toBe(400);
+    const b = await resp.json<{ error: string }>();
+    expect(b.error).toMatch(/at least one room/i);
   });
 });
