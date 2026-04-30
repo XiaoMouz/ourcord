@@ -1,4 +1,5 @@
 import { Env, User } from "./types";
+import { log } from "./log";
 
 // Simple JWT-like token using HMAC-SHA256
 // Format: base64url(payload).base64url(signature)
@@ -134,7 +135,7 @@ export function makeToken(userId: string, email: string): TokenPayload {
 export function getJwtSecret(env: Env): string {
   if (env.JWT_SECRET && env.JWT_SECRET.length >= 16) return env.JWT_SECRET;
   if ((env.ENVIRONMENT ?? "development") === "development") {
-    if (!env.JWT_SECRET) console.warn("[auth] JWT_SECRET unset; using dev fallback");
+    if (!env.JWT_SECRET) log({ event: "auth.jwt_secret_unset_dev_fallback", level: "warn" });
     return env.JWT_SECRET || "dev-secret-change-me-dev-only-not-for-prod";
   }
   throw new Error("JWT_SECRET is not configured (>=16 bytes required in production)");

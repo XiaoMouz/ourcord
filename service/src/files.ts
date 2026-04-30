@@ -1,5 +1,6 @@
 import { Env, FileRecord, FilePolicy } from "./types";
 import { requireAuth, generateId, json, err, checkBodySize } from "./auth";
+import { log } from "./log";
 
 // POST /api/rooms/:roomId/files — initiate file upload
 // Client sends metadata; server returns a pre-signed URL or storage target
@@ -388,7 +389,7 @@ export async function runR2Cleanup(env: Env, batchSize = 200): Promise<{ deleted
       await env.DB.prepare("DELETE FROM files WHERE id = ?").bind(row.id).run();
       deleted++;
     } catch (e) {
-      console.error(`[r2-cleanup] failed to delete ${row.id}:`, e);
+      log({ event: "r2_cleanup.delete_failed", level: "error", file_id: row.id, error: String(e) });
       failed++;
     }
   }

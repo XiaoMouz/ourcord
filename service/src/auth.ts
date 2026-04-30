@@ -2,6 +2,7 @@
 // Validates the same JWT format as control layer (shared JWT_SECRET).
 
 import type { Env } from "./types";
+import { log } from "./log";
 
 export interface TokenPayload {
   sub: string;
@@ -15,7 +16,7 @@ export interface TokenPayload {
 export function getJwtSecret(env: Env): string {
   if (env.JWT_SECRET && env.JWT_SECRET.length >= 16) return env.JWT_SECRET;
   if ((env.ENVIRONMENT ?? "development") === "development") {
-    if (!env.JWT_SECRET) console.warn("[service/auth] JWT_SECRET unset; using dev fallback");
+    if (!env.JWT_SECRET) log({ event: "service_auth.jwt_secret_unset_dev_fallback", level: "warn" });
     return env.JWT_SECRET || "dev-secret-change-me-dev-only-not-for-prod";
   }
   throw new Error("JWT_SECRET is not configured (>=16 bytes required in production)");

@@ -6,11 +6,13 @@ import { registerRelay, getRelayMap, getBannedKeys, denyPeerOnRelay, allowPeerOn
 import { createBan, removeBan, checkBan } from "./ban";
 import { requestOTP, verifyOTP, oauthRedirect, oauthCallback } from "./authHandler";
 import { checkRateLimit } from "./ratelimit";
+import { log, newRequestId } from "./log";
 
 export { SignalDO } from "./signal";
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    const requestId = newRequestId();
     // CORS preflight
     if (request.method === "OPTIONS") {
       return new Response(null, {
@@ -26,6 +28,8 @@ export default {
     const url = new URL(request.url);
     const path = url.pathname;
     const method = request.method;
+
+    log({ event: "request.start", request_id: requestId, method, path });
 
     try {
       // ── Auth ───────────────────────────────────────────────────────────────
@@ -87,7 +91,7 @@ export default {
         try {
           claims = await verifyToken(token, getJwtSecret(env));
         } catch (e) {
-          console.error("signal route: token verification failed:", e);
+          log({ event: "signal.token_verify_failed", level: "error", request_id: requestId, error: String(e) });
           return json({ error: "invalid token" }, 401);
         }
         if (!claims) return json({ error: "invalid token" }, 401);
@@ -123,7 +127,7 @@ export default {
               signal: AbortSignal.timeout(3000),
             });
           } catch (e) {
-            console.error("signal route: service fetch failed:", e);
+            log({ event: "signal.service_fetch_failed", level: "error", request_id: requestId, room_id: roomId, error: String(e) });
             return json({ error: "service unavailable" }, 502);
           }
           if (r.status === 404) return json({ error: "room not found" }, 404);
@@ -134,7 +138,7 @@ export default {
               return json({ error: "not a member of this room" }, 403);
             }
           } catch (e) {
-            console.error("signal route: service response parse failed:", e);
+            log({ event: "signal.service_response_parse_failed", level: "error", request_id: requestId, room_id: roomId, error: String(e) });
             return json({ error: "service unavailable" }, 502);
           }
         }
@@ -210,7 +214,7 @@ export default {
 
       return json({ error: "Not found" }, 404);
     } catch (e) {
-      console.error("Unhandled error:", e);
+      log({ event: "request.error", level: "error", request_id: requestId, method, path, error: String(e) });
       // I7: only leak stack/message in development; production keeps the
       // generic 500 to avoid information disclosure.
       const detail = (env.ENVIRONMENT ?? "production") === "development"

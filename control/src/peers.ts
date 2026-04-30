@@ -1,6 +1,7 @@
 import { Env, Peer } from "./types";
 import { requireAuth, generateId, checkBodySize } from "./auth";
 import { buildRelayMap } from "./relay";
+import { log } from "./log";
 import {
   ipsForOffset,
   nextCandidateOffset,
@@ -207,7 +208,7 @@ export async function getPeerConfig(request: Request, env: Env): Promise<Respons
         // worker logs only.
         // O1: distinguish timeout (TimeoutError / AbortError) from generic
         // failure so client-side mesh refresh can back off appropriately.
-        console.warn(`[peers] service fetch failed for room ${roomId}:`, e);
+        log({ event: "peers.service_fetch_failed", level: "warn", room_id: roomId, error: String(e) });
         const name = (e as { name?: string } | null)?.name;
         scopeWarning = name === "TimeoutError" || name === "AbortError"
           ? "service-fetch-timeout"

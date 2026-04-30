@@ -5,9 +5,11 @@ import { getMessages, sendMessage, deleteMessage } from "./messages";
 import { initiateUpload, uploadToR2, listFiles, getDownloadUrl, getFilePolicy, updateFilePolicy, runR2Cleanup } from "./files";
 import { json, constantTimeEqual } from "./auth";
 import { checkRateLimit } from "./ratelimit";
+import { log, newRequestId } from "./log";
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    const requestId = newRequestId();
     if (request.method === "OPTIONS") {
       return new Response(null, {
         headers: {
@@ -25,6 +27,8 @@ export default {
 
     // Parse path segments
     const parts = path.split("/").filter(Boolean); // ["api","lobbies","<id>","rooms",...]
+
+    log({ event: "request.start", request_id: requestId, method, path });
 
     try {
       // ── Lobbies ────────────────────────────────────────────────────────────
@@ -158,7 +162,7 @@ export default {
 
       return json({ error: "Not found" }, 404);
     } catch (e) {
-      console.error("Unhandled error:", e);
+      log({ event: "request.error", level: "error", request_id: requestId, method, path, error: String(e) });
       // I7: development gets the message; production keeps it generic.
       const detail = (env.ENVIRONMENT ?? "production") === "development"
         ? { error: "Internal server error", detail: (e as Error).message }
@@ -172,6 +176,6 @@ export default {
   // backends are left alone because we don't own those bytes.
   async scheduled(_controller: ScheduledController, env: Env, _ctx: ExecutionContext): Promise<void> {
     const result = await runR2Cleanup(env);
-    console.log(`[cron] r2 cleanup: deleted=${result.deleted} failed=${result.failed}`);
+    log({ event: "cron.r2_cleanup", deleted: result.deleted, failed: result.failed });
   },
 } satisfies ExportedHandler<Env>;

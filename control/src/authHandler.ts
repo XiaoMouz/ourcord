@@ -1,5 +1,6 @@
 import { Env } from "./types";
 import { signToken, makeToken, generateOTP, generateId, getJwtSecret, checkBodySize, constantTimeEqual, isUserBanned } from "./auth";
+import { log } from "./log";
 
 const OTP_TTL = 10 * 60; // 10 minutes
 // P2: cap online brute-force against OTP. After this many wrong submissions
@@ -50,7 +51,7 @@ export async function requestOTP(request: Request, env: Env): Promise<Response> 
   try {
     await sendOTPEmail(env, email, otp);
   } catch (e) {
-    console.error(`[otp] sendOTPEmail failed for ${email}:`, e);
+    log({ event: "otp.send_failed", level: "error", email, error: String(e) });
     return json({ error: "OTP delivery not configured" }, 503);
   }
 
@@ -237,7 +238,7 @@ export async function oauthCallback(request: Request, env: Env, provider: string
     // L1: do not leak provider error details (URLs, status codes, partial
     // tokens, stack frames) to the public client. Always log the full error
     // server-side; only echo the message in development.
-    console.error(`[oauth] ${provider} callback failed:`, e);
+    log({ event: "oauth.callback_failed", level: "error", provider, error: String(e) });
     const isDev = (env.ENVIRONMENT ?? "development") === "development";
     return jsonWithCookie(
       isDev ? { error: "OAuth failed", detail: String(e) } : { error: "OAuth failed" },
@@ -347,13 +348,13 @@ function b64urlDecode(s: string): string {
 async function sendOTPEmail(env: Env, email: string, otp: string): Promise<void> {
   // Dev short-circuit: log to console so local flows work without provider.
   if (env.ENVIRONMENT === "development") {
-    console.log(`[DEV] OTP for ${email}: ${otp}`);
+    log({ event: "otp.dev_print", email, otp, msg: `[DEV] OTP for ${email}: ${otp}` });
     return;
   }
   // V1: production must have a provider configured. Fail loud rather than
   // silently no-op'ing — caller (requestOTP) returns 503 on throw.
   if (!env.EMAIL_API_KEY) {
-    console.error(`[otp] EMAIL_API_KEY not configured; cannot deliver OTP to ${email}`);
+    log({ event: "otp.email_provider_unconfigured", level: "error", email });
     throw new Error("email provider not configured");
   }
   const from = env.EMAIL_FROM || "OurCord <noreply@ourcord.invalid>";
@@ -387,7 +388,7 @@ async function sendOTPEmail(env: Env, email: string, otp: string): Promise<void>
     // V1: never include the OTP itself in the upstream error log; the OTP is
     // already in the request body Resend received and our own log here is
     // about delivery failure mode, not credential leakage.
-    console.error(`[otp] resend failed status=${resp.status} body=${detail.slice(0, 200)}`);
+    log({ event: "otp.resend_failed", level: "error", status: resp.status, body: detail.slice(0, 200) });
     throw new Error(`resend api error: ${resp.status}`);
   }
   // Best-effort quota increment (non-atomic; see comment above).
