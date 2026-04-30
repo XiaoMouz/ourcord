@@ -1,5 +1,5 @@
 import { Env, RelayServer } from "./types";
-import { requireAuth, requireAdmin, generateId, checkBodySize } from "./auth";
+import { requireAuth, requireAdmin, generateId, checkBodySize, json } from "./auth";
 
 // POST /api/relay/register — relay server self-registration / heartbeat
 // Called by the relay server daemon itself (authenticated by server secret).
@@ -285,9 +285,4 @@ async function invalidateRelayCache(env: Env): Promise<void> {
   void env;
 }
 
-function json(data: unknown, status = 200): Response {
-  return new Response(JSON.stringify(data), {
-    status,
-    headers: { "Content-Type": "application/json" },
-  });
-}
+

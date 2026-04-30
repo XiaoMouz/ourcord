@@ -1,5 +1,5 @@
 import { Env, StunServer } from "./types";
-import { requireAuth, requireAdmin, generateId, checkBodySize } from "./auth";
+import { requireAuth, requireAdmin, generateId, checkBodySize, json } from "./auth";
 
 // Public-STUN fallback. Used when the operator hasn't seeded stun_servers
 // yet (fresh deploy, post-migration, dev sandbox). Without this the daemon's
@@ -57,9 +57,4 @@ export async function addStunServer(request: Request, env: Env): Promise<Respons
   return json({ id }, 201);
 }
 
-function json(data: unknown, status = 200): Response {
-  return new Response(JSON.stringify(data), {
-    status,
-    headers: { "Content-Type": "application/json" },
-  });
-}
+

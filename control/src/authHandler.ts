@@ -1,5 +1,5 @@
 import { Env } from "./types";
-import { signToken, makeToken, generateOTP, generateId, getJwtSecret, checkBodySize, constantTimeEqual, isUserBanned } from "./auth";
+import { signToken, makeToken, generateOTP, generateId, getJwtSecret, checkBodySize, constantTimeEqual, isUserBanned, json } from "./auth";
 import { log } from "./log";
 
 const OTP_TTL = 10 * 60; // 10 minutes
@@ -393,13 +393,6 @@ async function sendOTPEmail(env: Env, email: string, otp: string): Promise<void>
   }
   // Best-effort quota increment (non-atomic; see comment above).
   await env.KV.put(rlKey, String(sent + 1), { expirationTtl: 60 * 60 * 26 });
-}
-
-function json(data: unknown, status = 200): Response {
-  return new Response(JSON.stringify(data), {
-    status,
-    headers: { "Content-Type": "application/json" },
-  });
 }
 
 // jsonWithCookie returns a JSON response with a Set-Cookie header attached.
