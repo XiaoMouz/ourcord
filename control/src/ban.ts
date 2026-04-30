@@ -1,5 +1,5 @@
 import { Env } from "./types";
-import { requireAuth, requireAdmin, generateId, checkBodySize } from "./auth";
+import { requireAuth, requireAdmin, generateId, checkBodySize, json } from "./auth";
 
 // POST /api/ban — admin: ban a user, peer, or relay
 export async function createBan(request: Request, env: Env): Promise<Response> {
@@ -81,9 +81,3 @@ export async function checkBan(request: Request, env: Env): Promise<Response> {
   return json({ banned: !!ban, ban });
 }
 
-function json(data: unknown, status = 200): Response {
-  return new Response(JSON.stringify(data), {
-    status,
-    headers: { "Content-Type": "application/json" },
-  });
-}

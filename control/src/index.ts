@@ -1,6 +1,6 @@
 import { Env } from "./types";
 import { SCHEMA_SQL } from "./schema";
-import { registerPeer, getPeerConfig } from "./peers";
+import { registerPeer, getPeerConfig, lookupPeers } from "./peers";
 import { getStunServers, addStunServer } from "./stun";
 import { registerRelay, getRelayMap, getBannedKeys, denyPeerOnRelay, allowPeerOnRelay } from "./relay";
 import { createBan, removeBan, checkBan } from "./ban";
@@ -39,6 +39,7 @@ export default {
 
       // ── Peers ──────────────────────────────────────────────────────────────
       if (method === "POST" && path === "/api/peers/register") return registerPeer(request, env);
+      if (method === "POST" && path === "/api/peers/lookup") return lookupPeers(request, env);
       if (method === "GET" && path === "/api/peers/config") return getPeerConfig(request, env);
 
       // ── Hole-punching signal (WebSocket via Durable Object) ─────────────────

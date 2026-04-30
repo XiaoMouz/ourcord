@@ -247,6 +247,82 @@ interface RelayEntry {
   ipv6?: string;
 }
 
+// POST /api/peers/lookup — batch resolve user_ids to peer wireguard info.
+//
+// Body: { user_ids: string[] } (max 100, deduped server-side)
+// Response: { peers: { [user_id]: [{ public_key, ip4, ip6, derp_node_key, last_seen }, ...] } }
+//
+// Used by the daemon when joining a voice/video room: it gets the room
+// member user_ids from the service layer and needs to map them to peer
+// keys + endpoints in a single round-trip (replaces the old N+1 pattern).
+// Users with no registered peers are omitted from the map (callers
+// shouldn't need to distinguish "absent" from "empty array").
+export async function lookupPeers(request: Request, env: Env): Promise<Response> {
+  const tooBig = checkBodySize(request, 16 * 1024);
+  if (tooBig) return tooBig;
+  const authResult = await requireAuth(request, env);
+  if (authResult instanceof Response) return authResult;
+
+  let body: { user_ids?: unknown };
+  try {
+    body = await request.json<{ user_ids?: unknown }>();
+  } catch {
+    return json({ error: "invalid JSON body" }, 400);
+  }
+  if (!Array.isArray(body.user_ids)) {
+    return json({ error: "user_ids must be an array" }, 400);
+  }
+  if (body.user_ids.length === 0) {
+    return json({ error: "user_ids must be a non-empty array" }, 400);
+  }
+  if (body.user_ids.length > 100) {
+    return json({ error: "too many user_ids, max 100" }, 400);
+  }
+  // Skip non-strings rather than fail outright — keeps the API permissive
+  // for callers that mix ids from heterogeneous sources.
+  const ids = Array.from(
+    new Set(body.user_ids.filter((v): v is string => typeof v === "string")),
+  );
+  if (ids.length === 0) {
+    return json({ peers: {} });
+  }
+
+  const placeholders = ids.map(() => "?").join(",");
+  const rows = await env.DB
+    .prepare(
+      `SELECT user_id, public_key, ip4, ip6, derp_node_key, last_seen
+       FROM peers WHERE user_id IN (${placeholders})`,
+    )
+    .bind(...ids)
+    .all<{
+      user_id: string;
+      public_key: string;
+      ip4: string;
+      ip6: string;
+      derp_node_key: string;
+      last_seen: number;
+    }>();
+
+  const peers: Record<string, Array<{
+    public_key: string;
+    ip4: string;
+    ip6: string;
+    derp_node_key: string;
+    last_seen: number;
+  }>> = {};
+  for (const r of rows.results ?? []) {
+    const list = peers[r.user_id] ?? (peers[r.user_id] = []);
+    list.push({
+      public_key: r.public_key,
+      ip4: r.ip4,
+      ip6: r.ip6,
+      derp_node_key: r.derp_node_key,
+      last_seen: r.last_seen,
+    });
+  }
+  return json({ peers });
+}
+
 function buildWireGuardConfig(peer: Peer): string {
   return [
     "[Interface]",

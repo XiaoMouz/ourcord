@@ -66,6 +66,13 @@ export function checkBodySize(request: Request, maxBytes: number): Response | nu
   return null;
 }
 
+export function json(data: unknown, status = 200): Response {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
 export function constantTimeEqual(a: string, b: string): boolean {
   const al = a.length, bl = b.length;
   let diff = al ^ bl;
