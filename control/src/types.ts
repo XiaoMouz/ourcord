@@ -9,7 +9,9 @@ export interface Env {
   OAUTH_GOOGLE_CLIENT_SECRET?: string;
   OAUTH_GITHUB_CLIENT_ID?: string;
   OAUTH_GITHUB_CLIENT_SECRET?: string;
-  EMAIL_API_KEY?: string; // for sending OTP emails
+  EMAIL_API_KEY?: string; // Resend API key for OTP delivery
+  EMAIL_FROM?: string; // From address (e.g. "OurCord <noreply@yourdomain>")
+  EMAIL_RATE_LIMIT_PER_DAY?: string; // per-recipient cap (default "10")
   // Comma-separated list of user ids treated as global admins. Used to gate
   // /api/ban and other operator-only endpoints. Empty / missing = nobody.
   ADMIN_USER_IDS?: string;

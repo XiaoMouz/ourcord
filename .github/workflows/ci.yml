@@ -1,0 +1,84 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  workers:
+    name: Workers (TypeScript)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        pkg: [control, service]
+    defaults:
+      run:
+        working-directory: ${{ matrix.pkg }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: ${{ matrix.pkg }}/package-lock.json
+      - run: npm ci || npm install
+      - run: npx tsc --noEmit
+      - name: vitest (if configured)
+        run: |
+          if [ -f vitest.config.ts ] || [ -f vitest.config.js ] || [ -f vitest.config.mjs ]; then
+            npx vitest run
+          else
+            echo "no vitest config in $(pwd); skipping"
+          fi
+
+  go:
+    name: Go (build + vet + race tests)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        mod: [daemon, relay]
+    defaults:
+      run:
+        working-directory: ${{ matrix.mod }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: ${{ matrix.mod }}/go.mod
+          cache: true
+      - run: go build ./...
+      - run: go vet ./...
+      - run: go test -race ./...
+
+  cross-compile:
+    name: Cross-compile daemon
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - { goos: linux,   goarch: amd64 }
+          - { goos: linux,   goarch: arm64 }
+          - { goos: darwin,  goarch: arm64 }
+          - { goos: windows, goarch: amd64 }
+    defaults:
+      run:
+        working-directory: daemon
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: daemon/go.mod
+          cache: true
+      - name: build daemon for ${{ matrix.target.goos }}/${{ matrix.target.goarch }}
+        env:
+          GOOS: ${{ matrix.target.goos }}
+          GOARCH: ${{ matrix.target.goarch }}
+          CGO_ENABLED: "0"
+        run: go build ./...

@@ -345,23 +345,53 @@ function b64urlDecode(s: string): string {
 }
 
 async function sendOTPEmail(env: Env, email: string, otp: string): Promise<void> {
-  // Stub: integrate with Resend / Mailgun / SendGrid via env.EMAIL_API_KEY
-  // In development, log the OTP and short-circuit so local flows still work.
+  // Dev short-circuit: log to console so local flows work without provider.
   if (env.ENVIRONMENT === "development") {
     console.log(`[DEV] OTP for ${email}: ${otp}`);
     return;
   }
-  // K1: in production we have no email provider integration yet. Refuse
-  // honestly instead of returning success while never sending anything —
-  // a silent no-op here makes OTP login look working in staging/prod and
-  // locks every real user out. requestOTP catches this and returns 503.
+  // V1: production must have a provider configured. Fail loud rather than
+  // silently no-op'ing — caller (requestOTP) returns 503 on throw.
   if (!env.EMAIL_API_KEY) {
     console.error(`[otp] EMAIL_API_KEY not configured; cannot deliver OTP to ${email}`);
     throw new Error("email provider not configured");
   }
-  // TODO: implement email sending via configured provider
-  console.error(`[otp] EMAIL_API_KEY present but provider integration not implemented`);
-  throw new Error("email provider integration not implemented");
+  const from = env.EMAIL_FROM || "OurCord <noreply@ourcord.invalid>";
+
+  // Per-recipient daily rate limit. KV read-modify-write is non-atomic but
+  // acceptable here — worst case we let one extra email through under heavy
+  // concurrency. Cap defaults to 10/day; admins can raise via env.
+  const cap = parseInt(env.EMAIL_RATE_LIMIT_PER_DAY || "10", 10);
+  const rlKey = `email_quota:${email}:${new Date().toISOString().slice(0, 10)}`;
+  const sent = parseInt((await env.KV.get(rlKey)) || "0", 10);
+  if (sent >= cap) {
+    throw new Error(`recipient daily email quota (${cap}) exhausted`);
+  }
+
+  // Resend API: https://resend.com/docs/api-reference/emails/send-email
+  const resp = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${env.EMAIL_API_KEY}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      from,
+      to: [email],
+      subject: "Your OurCord login code",
+      text: `Your OurCord verification code is: ${otp}\n\nThis code expires in 5 minutes. If you did not request it, ignore this email.`,
+    }),
+  });
+  if (!resp.ok) {
+    const detail = await resp.text().catch(() => "");
+    // V1: never include the OTP itself in the upstream error log; the OTP is
+    // already in the request body Resend received and our own log here is
+    // about delivery failure mode, not credential leakage.
+    console.error(`[otp] resend failed status=${resp.status} body=${detail.slice(0, 200)}`);
+    throw new Error(`resend api error: ${resp.status}`);
+  }
+  // Best-effort quota increment (non-atomic; see comment above).
+  await env.KV.put(rlKey, String(sent + 1), { expirationTtl: 60 * 60 * 26 });
 }
 
 function json(data: unknown, status = 200): Response {
