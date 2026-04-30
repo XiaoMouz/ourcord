@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"sync"
@@ -40,6 +41,7 @@ type Client struct {
 	controlURL string
 	authToken  string
 	publicKey  string
+	http       *http.Client
 	wsMu       sync.RWMutex
 	ws         *websocket.Conn
 	// I5: protect onSignal — Run() ↔ SetSignalHandler can race once the
@@ -54,6 +56,7 @@ func New(controlURL, authToken, publicKey string) *Client {
 		controlURL: controlURL,
 		authToken:  authToken,
 		publicKey:  publicKey,
+		http:       &http.Client{Timeout: 10 * time.Second},
 	}
 }
 
@@ -245,4 +248,108 @@ type RelayEntry struct {
 	Hostname string `json:"hostname"`
 	Port     int    `json:"port"`
 	Region   string `json:"region"`
+}
+
+// RegisterRequest is the body sent to POST /api/peers/register.
+type RegisterRequest struct {
+	PublicKey   string `json:"public_key"`
+	Name        string `json:"name"`
+	Platform    string `json:"platform"`
+	DERPNodeKey string `json:"derp_node_key,omitempty"`
+}
+
+// PeerInfo is what control plane returns about *this* peer after register.
+type PeerInfo struct {
+	ID        string `json:"id"`
+	UserID    string `json:"user_id"`
+	PublicKey string `json:"public_key"`
+	Name      string `json:"name"`
+	Platform  string `json:"platform"`
+	IP4       string `json:"ip4"`
+	IP6       string `json:"ip6"`
+}
+
+// RegisterResponse is the JSON returned by /api/peers/register.
+type RegisterResponse struct {
+	Peer   PeerInfo `json:"peer"`
+	Config string   `json:"config"` // wg-quick formatted config snippet
+}
+
+// Register POSTs the daemon's identity to the control plane and receives the
+// allocated VPN IPv4/IPv6 plus a wg-quick config preview.
+func (c *Client) Register(ctx context.Context, req RegisterRequest) (*RegisterResponse, error) {
+	body, _ := json.Marshal(req)
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", c.controlURL+"/api/peers/register", bytesReader(body))
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Authorization", "Bearer "+c.authToken)
+	resp, err := c.http.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("control register: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		buf := make([]byte, 1024)
+		n, _ := resp.Body.Read(buf)
+		return nil, fmt.Errorf("control register: HTTP %d: %s", resp.StatusCode, string(buf[:n]))
+	}
+	var out RegisterResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("control register decode: %w", err)
+	}
+	return &out, nil
+}
+
+// FetchConfig calls GET /api/peers/config (optionally scoped to room_id) and
+// returns the peer mesh and relay entries the daemon should program into wg.
+func (c *Client) FetchConfig(ctx context.Context, roomID string) (*PeerConfig, error) {
+	u, err := url.Parse(c.controlURL + "/api/peers/config")
+	if err != nil {
+		return nil, err
+	}
+	if roomID != "" {
+		q := u.Query()
+		q.Set("room_id", roomID)
+		u.RawQuery = q.Encode()
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, "GET", u.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("Authorization", "Bearer "+c.authToken)
+	httpReq.Header.Set("X-Peer-Public-Key", c.publicKey)
+	resp, err := c.http.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("control fetch-config: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		buf := make([]byte, 1024)
+		n, _ := resp.Body.Read(buf)
+		return nil, fmt.Errorf("control fetch-config: HTTP %d: %s", resp.StatusCode, string(buf[:n]))
+	}
+	var out PeerConfig
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("control fetch-config decode: %w", err)
+	}
+	return &out, nil
+}
+
+// bytesReader is a tiny adapter to avoid importing bytes in client.go.
+func bytesReader(b []byte) *bytesBuf { return &bytesBuf{b: b} }
+
+type bytesBuf struct {
+	b   []byte
+	pos int
+}
+
+func (r *bytesBuf) Read(p []byte) (int, error) {
+	if r.pos >= len(r.b) {
+		return 0, io.EOF
+	}
+	n := copy(p, r.b[r.pos:])
+	r.pos += n
+	return n, nil
 }

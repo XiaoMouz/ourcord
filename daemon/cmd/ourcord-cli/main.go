@@ -22,7 +22,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	client, err := ipc.NewClient(*socketPath)
+	client, err := ipc.NewClientWithSecret(*socketPath, loadHMACKeyOrNil())
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: could not connect to daemon (%s): %v\n", *socketPath, err)
 		fmt.Fprintln(os.Stderr, "Is ourcordd running?")
@@ -61,4 +61,18 @@ func main() {
 
 	out, _ := json.MarshalIndent(resp.Data, "", "  ")
 	fmt.Println(string(out))
+}
+
+// loadHMACKeyOrNil returns the shared IPC HMAC secret if the file exists
+// and is readable. If absent, returns nil so the CLI keeps working against
+// daemons built without W3 HMAC enforcement (unlikely now, but allows graceful
+// rollout). A daemon with HMAC enabled will reject the connection if the key
+// is missing/wrong, surfacing a clear error to the user.
+func loadHMACKeyOrNil() []byte {
+	key, err := ipc.LoadOrCreateHMACKey(ipc.DefaultHMACKeyPath())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warn: could not load IPC key: %v\n", err)
+		return nil
+	}
+	return key
 }

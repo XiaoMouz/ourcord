@@ -22,19 +22,38 @@ type Interface struct {
 }
 
 // New creates a new TUN interface with the given name and VPN addresses.
+//
+// On Darwin the kernel chooses the actual `utunN` name; the returned
+// Interface.Name() reflects the assigned name regardless of what was
+// requested. The OS-level addresses in `addrs` are configured via
+// platform-specific helpers (see addr_linux.go / addr_darwin.go); failure
+// to assign addresses tears down the freshly created TUN to avoid leaving
+// a half-configured interface around.
 func New(name string, addrs []netip.Prefix) (*Interface, error) {
 	tunDev, err := tun.CreateTUN(name, DefaultMTU)
 	if err != nil {
 		return nil, fmt.Errorf("create tun %q: %w", name, err)
 	}
+	actualName, err := tunDev.Name()
+	if err != nil {
+		_ = tunDev.Close()
+		return nil, fmt.Errorf("tun name: %w", err)
+	}
 
-	logger := device.NewLogger(device.LogLevelError, fmt.Sprintf("[wg/%s] ", name))
+	if len(addrs) > 0 {
+		if err := assignAddrs(actualName, addrs); err != nil {
+			_ = tunDev.Close()
+			return nil, fmt.Errorf("assign addrs to %s: %w", actualName, err)
+		}
+	}
+
+	logger := device.NewLogger(device.LogLevelError, fmt.Sprintf("[wg/%s] ", actualName))
 	wgDev := device.NewDevice(tunDev, conn.NewDefaultBind(), logger)
 
 	iface := &Interface{
 		tun:    tunDev,
 		device: wgDev,
-		name:   name,
+		name:   actualName,
 		addrs:  addrs,
 	}
 

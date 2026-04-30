@@ -25,6 +25,7 @@ type Server struct {
 	socketPath string
 	listener   net.Listener
 	handler    Handler
+	hmacSecret []byte // optional; nil disables HMAC handshake
 }
 
 // Handler is called for each IPC command.
@@ -35,6 +36,12 @@ type Handler interface {
 // NewServer creates a new IPC server.
 func NewServer(socketPath string, handler Handler) *Server {
 	return &Server{socketPath: socketPath, handler: handler}
+}
+
+// SetHMACSecret enables W3 challenge-response HMAC auth on every accepted
+// connection. Pass nil (or don't call) to keep legacy behavior.
+func (s *Server) SetHMACSecret(secret []byte) {
+	s.hmacSecret = secret
 }
 
 // Listen starts listening on the Unix socket.
@@ -76,6 +83,16 @@ func (s *Server) Serve(ctx context.Context) error {
 		if err := checkPeerCred(conn); err != nil {
 			conn.Close()
 			continue
+		}
+		// W3: if a shared HMAC secret is configured, do a challenge-response
+		// handshake before any IPC command is dispatched. SO_PEERCRED already
+		// gates same-uid; HMAC ensures the caller also has read access to the
+		// (mode-0600) ipc.key file. Failed handshake → silent close.
+		if s.hmacSecret != nil {
+			if err := authHandshakeServer(conn, s.hmacSecret); err != nil {
+				conn.Close()
+				continue
+			}
 		}
 		go s.handleConn(ctx, conn)
 	}
@@ -121,11 +138,24 @@ type Client struct {
 	mu         sync.Mutex
 }
 
-// NewClient creates a new IPC client.
+// NewClient creates a new IPC client. If hmacSecret is non-nil, the client
+// performs the W3 HMAC handshake before returning.
 func NewClient(socketPath string) (*Client, error) {
+	return NewClientWithSecret(socketPath, nil)
+}
+
+// NewClientWithSecret dials and (if secret != nil) completes the HMAC
+// challenge-response handshake. Returns the connected Client ready for Call().
+func NewClientWithSecret(socketPath string, hmacSecret []byte) (*Client, error) {
 	conn, err := net.Dial("unix", socketPath)
 	if err != nil {
 		return nil, fmt.Errorf("dial unix %s: %w", socketPath, err)
+	}
+	if hmacSecret != nil {
+		if err := authHandshakeClient(conn, hmacSecret); err != nil {
+			conn.Close()
+			return nil, fmt.Errorf("ipc auth: %w", err)
+		}
 	}
 	return &Client{
 		socketPath: socketPath,
