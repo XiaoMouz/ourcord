@@ -61,11 +61,12 @@ curl -X POST https://your-service.workers.dev/api/admin/init-db
 |---|---|---|---|
 | `JWT_SECRET` | control | prod | ≥32 chars; HMAC-SHA256 key for JWT signing. Use `openssl rand -base64 48`. |
 | `ADMIN_USER_IDS` | control | prod | comma-separated user-id allowlist for `requireAdmin` (ban management). |
-| `ADMIN_TOKEN` | service | prod | shared secret for admin endpoints (cleanup-r2 etc). |
+| `ADMIN_TOKEN` | control + service | prod | shared bearer for admin endpoints — control: `/api/admin/init-db` (Y3); service: `cleanup-r2` etc. |
 | `EMAIL_API_KEY` | control | prod | Resend API key for OTP delivery. Falls back to console.log in dev. |
 | `EMAIL_FROM` | control | prod | sender address for OTP emails (e.g. `noreply@yourdomain.com`). |
 | `EMAIL_RATE_LIMIT_PER_DAY` | control | optional | per-recipient daily OTP cap (default 10). |
-| `INTERNAL_TOKEN` | control + service | phase-2 | shared HMAC for control↔service RPC (not used in phase-1). |
+| `SERVICE_URL` | control | prod (room-scoped peers) | service Worker base URL, e.g. `https://service.example.com`; required for room-scoped peer lookup. |
+| `SERVICE_INTERNAL_TOKEN` | control + service | prod (room-scoped peers) | shared bearer (header `X-Internal-Token`) for control→service internal RPC. Both Workers must hold the same value. HMAC upgrade is phase-2 (see `SECURITY.md`). |
 
 `wrangler secret put` 示例:
 
@@ -76,23 +77,40 @@ echo "user_id_1,user_id_2" | npx wrangler secret put ADMIN_USER_IDS
 echo "re_xxxxxxxxxxxx" | npx wrangler secret put EMAIL_API_KEY
 echo "noreply@yourdomain.com" | npx wrangler secret put EMAIL_FROM
 
-cd ../service
+echo "https://service.example.com" | npx wrangler secret put SERVICE_URL
+echo "$(openssl rand -base64 32)" | tee /tmp/internal-token | npx wrangler secret put SERVICE_INTERNAL_TOKEN
 echo "your-admin-token" | npx wrangler secret put ADMIN_TOKEN
+
+cd ../service
+cat /tmp/internal-token | npx wrangler secret put SERVICE_INTERNAL_TOKEN
+echo "your-admin-token" | npx wrangler secret put ADMIN_TOKEN
+rm /tmp/internal-token
 ```
+
+> `SERVICE_INTERNAL_TOKEN` 必须在 control 与 service 两侧设置同一值；任一侧缺失会让 room-scoped peer lookup 降级（控制层日志会标 `scopeWarning`）。
 
 #### D1 schema bootstrap
 
-- **Dev**: 启动 `npx wrangler dev` 后调用一次
-  ```bash
-  curl -X POST https://localhost:8787/api/admin/init-db
-  ```
-  即可基于 `src/schema.ts` 中导出的 `SCHEMA_SQL` 建表。
+Schema is managed via `wrangler d1 migrations` (Y2). Migration files live in `control/migrations/` (`0001_init.sql` ...).
 
-- **Prod** (until W7 迁移系统落地): 手动执行
+- **Local dev**:
   ```bash
-  npx wrangler d1 execute ourcord-control --file=src/schema.sql --remote
+  cd control
+  npx wrangler d1 migrations apply DB --local
   ```
-  ⚠️ 当前 schema 实际上以 TypeScript 常量 `SCHEMA_SQL` 形式存放在 `src/schema.ts`，并没有独立的 `.sql` 文件。在 W7 自动迁移系统就绪之前，运维需要手动把 `SCHEMA_SQL` 字符串复制到一个临时 `.sql` 文件，再喂给上面的命令。这个流程目前确实不优雅，等 W7 完成后会改成正式的 migrations 目录。
+
+- **Prod**:
+  ```bash
+  cd control
+  npx wrangler d1 migrations apply DB --remote
+  ```
+
+- **Optional seed** (post-migration, e.g. dev fixture data): the `POST /api/admin/init-db` route is guarded by `ADMIN_TOKEN` bearer (Y3) and only runs in `ENVIRONMENT=development`:
+  ```bash
+  curl -X POST https://localhost:8787/api/admin/init-db \
+    -H "Authorization: Bearer $ADMIN_TOKEN"
+  ```
+  In production the route returns 503 unless `ENVIRONMENT=development`; rely on `wrangler d1 migrations apply --remote` instead.
 
 ### 中继节点
 
