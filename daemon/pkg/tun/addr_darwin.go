@@ -31,7 +31,7 @@ func assignAddrs(ifname string, addrs []netip.Prefix) error {
 			return fmt.Errorf("ifconfig %v: %w (%s)", args, err, string(out))
 		}
 		if a.Addr().Is6() {
-			ula48 := netip.PrefixFrom(a.Addr(), 48).Masked()
+			ula48 := ULA48(a.Addr())
 			out, err := exec.Command("route", "-n", "add", "-inet6", "-net", ula48.String(), "-interface", ifname).CombinedOutput()
 			if err != nil && !routeExistsErr(out) {
 				return fmt.Errorf("route add -inet6 %s -interface %s: %w (%s)", ula48, ifname, err, string(out))
@@ -49,24 +49,14 @@ func syncPeerV4Routes(ifname string, want []netip.Addr) error {
 	if err != nil {
 		return err
 	}
-	wantSet := make(map[netip.Addr]struct{}, len(want))
-	for _, a := range want {
-		if !a.Is4() || !a.IsValid() {
-			continue
-		}
-		wantSet[a] = struct{}{}
-		if _, ok := have[a]; ok {
-			continue
-		}
+	toAdd, toDel := DiffV4Routes(have, want)
+	for _, a := range toAdd {
 		out, err := exec.Command("route", "-n", "add", "-inet", "-host", a.String(), "-interface", ifname).CombinedOutput()
 		if err != nil && !routeExistsErr(out) {
 			return fmt.Errorf("route add -host %s -interface %s: %w (%s)", a, ifname, err, string(out))
 		}
 	}
-	for a := range have {
-		if _, keep := wantSet[a]; keep {
-			continue
-		}
+	for _, a := range toDel {
 		out, err := exec.Command("route", "-n", "delete", "-inet", "-host", a.String(), "-interface", ifname).CombinedOutput()
 		if err != nil && !routeMissingErr(out) {
 			return fmt.Errorf("route delete -host %s -interface %s: %w (%s)", a, ifname, err, string(out))

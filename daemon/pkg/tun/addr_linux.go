@@ -30,7 +30,7 @@ func assignAddrs(ifname string, addrs []netip.Prefix) error {
 			return fmt.Errorf("ip %s addr add %s dev %s: %w (%s)", family, a, ifname, err, string(out))
 		}
 		if a.Addr().Is6() {
-			ula48 := netip.PrefixFrom(a.Addr(), 48).Masked()
+			ula48 := ULA48(a.Addr())
 			out, err := exec.Command("ip", "-6", "route", "add", ula48.String(), "dev", ifname).CombinedOutput()
 			// EEXIST is fine: route may persist across daemon restarts.
 			if err != nil && !routeExistsErr(out) {
@@ -48,24 +48,14 @@ func syncPeerV4Routes(ifname string, want []netip.Addr) error {
 	if err != nil {
 		return err
 	}
-	wantSet := make(map[netip.Addr]struct{}, len(want))
-	for _, a := range want {
-		if !a.Is4() || !a.IsValid() {
-			continue
-		}
-		wantSet[a] = struct{}{}
-		if _, ok := have[a]; ok {
-			continue
-		}
+	toAdd, toDel := DiffV4Routes(have, want)
+	for _, a := range toAdd {
 		out, err := exec.Command("ip", "-4", "route", "add", a.String()+"/32", "dev", ifname).CombinedOutput()
 		if err != nil && !routeExistsErr(out) {
 			return fmt.Errorf("ip route add %s/32 dev %s: %w (%s)", a, ifname, err, string(out))
 		}
 	}
-	for a := range have {
-		if _, keep := wantSet[a]; keep {
-			continue
-		}
+	for _, a := range toDel {
 		out, err := exec.Command("ip", "-4", "route", "del", a.String()+"/32", "dev", ifname).CombinedOutput()
 		if err != nil && !routeMissingErr(out) {
 			return fmt.Errorf("ip route del %s/32 dev %s: %w (%s)", a, ifname, err, string(out))
