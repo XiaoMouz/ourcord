@@ -34,6 +34,20 @@ export async function initiateUpload(request: Request, env: Env, roomId: string)
   }>();
 
   if (!body.filename) return err("filename required");
+  // O4: validate mime_type before it reaches D1, R2 metadata, or the
+  // Content-Type response header on download. Headers() rejects raw
+  // CR/LF, but unbounded/garbage values still cause MIME confusion and
+  // pollute storage metadata. RFC 6838: token-charset type/subtype, no
+  // parameters; cap length at 128. Invalid values silently fall back to
+  // application/octet-stream so clients with quirky uploads still work.
+  const MIME_RE = /^[A-Za-z0-9!#$&^_.+-]+\/[A-Za-z0-9!#$&^_.+-]+$/;
+  let mimeType = "application/octet-stream";
+  if (typeof body.mime_type === "string"
+      && body.mime_type.length > 0
+      && body.mime_type.length <= 128
+      && MIME_RE.test(body.mime_type)) {
+    mimeType = body.mime_type;
+  }
   // K3: validate filename charset/length before it goes into a storage_key
   // path component or a Content-Disposition header. Reject control chars,
   // quotes/backslashes (header injection / quote-escape in CD), forward
@@ -142,7 +156,7 @@ export async function initiateUpload(request: Request, env: Env, roomId: string)
       `INSERT INTO files (id, room_id, uploader_id, filename, size_bytes, mime_type, storage_location, storage_key, expires_at, created_at)
        VALUES (?,?,?,?,?,?,?,?,?,?)`
     )
-    .bind(id, roomId, auth.sub, body.filename, body.size_bytes, body.mime_type ?? "application/octet-stream",
+    .bind(id, roomId, auth.sub, body.filename, body.size_bytes, mimeType,
       storageLocation, storageKey, expiresAt, now)
     .run();
 

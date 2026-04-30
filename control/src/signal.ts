@@ -194,6 +194,17 @@ export class SignalDO implements DurableObject {
     let msg: SignalMessage;
     try { msg = JSON.parse(raw); } catch { return; }
 
+    // O3: only client-originated message types are honored. Without this
+    // check a peer could spoof server-origin events (paired/unpaired/
+    // join/leave/pong) to other peers in the room and corrupt their
+    // pairing state — `from` is overwritten below, but the type field
+    // would still be attacker-controlled. The TS union on SignalMessage
+    // is compile-time only and offers no runtime protection.
+    const ALLOWED_INBOUND = new Set(["ping", "offer", "answer", "candidate"]);
+    if (typeof msg.type !== "string" || !ALLOWED_INBOUND.has(msg.type)) {
+      return;
+    }
+
     msg.from = fromKey; // override: clients can't spoof
     if (session) session.lastSeen = Date.now();
 
