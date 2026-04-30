@@ -125,6 +125,10 @@ go build -o ourcord-cli ./cmd/ourcord-cli
 - [ ] **阶段三** — 媒体层（语音/视频/屏幕共享/远控）
 - [ ] **阶段四** — UI 层（Tauri/Flutter/React）
 
+### Phase 2 — Stretch（已从 Phase-1 推迟）
+
+- **M 系列：mDNS reflector + Minecraft LAN 联机** — 原列为 Phase-1 stretch；为聚焦 Phase-1 核心 mesh + 控制面，推迟至 Phase 2 实施。
+
 ## 协议与授权
 
 - WireGuard® 是 Jason A. Donenfeld 的注册商标
