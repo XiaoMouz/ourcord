@@ -29,8 +29,14 @@ type PeerRoute struct {
 // another. RWMutex guards the map; readers (BuildIPCConfig, All) take RLock,
 // mutators take Lock.
 type Table struct {
-	mu     sync.RWMutex
-	routes map[string]*PeerRoute // publicKey (hex) -> route
+	mu sync.RWMutex
+	// listenPort is the wg UDP port written as `listen_port=` in the UAPI
+	// config. 0 = let wireguard-go pick an ephemeral port (Phase-1 default
+	// when STUN/ICE will discover the reflexive address). Tests / smoke
+	// runbooks pin a known port via SetListenPort to enable manual endpoint
+	// hints before per-peer ICE lands.
+	listenPort uint16
+	routes     map[string]*PeerRoute // publicKey (hex) -> route
 }
 
 // NewTable creates an empty routing table.
@@ -63,6 +69,14 @@ func (t *Table) All() []*PeerRoute {
 	return out
 }
 
+// SetListenPort pins the WireGuard UDP listen port written into BuildIPCConfig.
+// Pass 0 to revert to ephemeral.
+func (t *Table) SetListenPort(p uint16) {
+	t.mu.Lock()
+	t.listenPort = p
+	t.mu.Unlock()
+}
+
 // BuildIPCConfig generates the WireGuard IPC peer configuration for all routes.
 // This string is passed to device.IpcSet().
 //
@@ -77,6 +91,9 @@ func (t *Table) BuildIPCConfig(privateKey wgtypes.Key) string {
 
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("private_key=%x\n", privateKey[:]))
+	if t.listenPort != 0 {
+		sb.WriteString(fmt.Sprintf("listen_port=%d\n", t.listenPort))
+	}
 
 	for _, r := range t.routes {
 		sb.WriteString(fmt.Sprintf("public_key=%x\n", r.PublicKey[:]))

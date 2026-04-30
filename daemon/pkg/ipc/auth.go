@@ -105,31 +105,40 @@ func constantTimeEqualHex(a, b string) bool {
 
 // authHandshakeServer issues a nonce, reads the client response, and returns
 // nil iff the HMAC is valid. Bounded by a 5s deadline.
-func authHandshakeServer(conn net.Conn, secret []byte) error {
+//
+// Returns any bytes the underlying json.Decoder buffered past the response
+// (json.Decoder uses bufio internally and can over-read into the very next
+// IPC request that the client pipelines after the handshake response). The
+// caller MUST use these leftover bytes (e.g. via io.MultiReader) when wiring
+// the post-handshake stream — otherwise the first IPC request is silently
+// dropped and the connection deadlocks (server waits for a request that has
+// already been transmitted but is sitting in this discarded buffer).
+func authHandshakeServer(conn net.Conn, secret []byte) ([]byte, error) {
 	if err := conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
-		return err
+		return nil, err
 	}
 	defer conn.SetDeadline(time.Time{})
 
 	nonceRaw := make([]byte, 16)
 	if _, err := rand.Read(nonceRaw); err != nil {
-		return err
+		return nil, err
 	}
 	nonce := hex.EncodeToString(nonceRaw)
 	enc := json.NewEncoder(conn)
 	if err := enc.Encode(authChallenge{Nonce: nonce}); err != nil {
-		return fmt.Errorf("send challenge: %w", err)
+		return nil, fmt.Errorf("send challenge: %w", err)
 	}
 	dec := json.NewDecoder(conn)
 	var resp authResponse
 	if err := dec.Decode(&resp); err != nil {
-		return fmt.Errorf("recv response: %w", err)
+		return nil, fmt.Errorf("recv response: %w", err)
 	}
 	expected := computeHMAC(secret, nonce)
 	if !constantTimeEqualHex(resp.HMAC, expected) {
-		return errors.New("invalid hmac")
+		return nil, errors.New("invalid hmac")
 	}
-	return nil
+	leftover, _ := io.ReadAll(dec.Buffered())
+	return leftover, nil
 }
 
 // authHandshakeClient reads the nonce, computes the HMAC, and sends the

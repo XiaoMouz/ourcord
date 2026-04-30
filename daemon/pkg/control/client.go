@@ -3,6 +3,7 @@
 package control
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -242,6 +243,11 @@ type RemotePeer struct {
 	IP4       string `json:"ip4"`
 	IP6       string `json:"ip6"`
 	Name      string `json:"name"`
+	// Endpoint is an optional wg UDP endpoint hint of the form host:port.
+	// Set by the control plane when the peer reported one on register
+	// (Phase-1 manual / smoke testing). Once per-peer ICE lands the daemons
+	// will discover endpoints themselves and this field will be ignored.
+	Endpoint string `json:"endpoint,omitempty"`
 }
 
 type RelayEntry struct {
@@ -256,6 +262,10 @@ type RegisterRequest struct {
 	Name        string `json:"name"`
 	Platform    string `json:"platform"`
 	DERPNodeKey string `json:"derp_node_key,omitempty"`
+	// WGEndpoint is the daemon's directly-reachable wg UDP endpoint
+	// (host:port), used by the smoke / manual mesh until per-peer ICE
+	// candidate exchange is implemented. Empty = no hint.
+	WGEndpoint string `json:"wg_endpoint,omitempty"`
 }
 
 // PeerInfo is what control plane returns about *this* peer after register.
@@ -337,19 +347,9 @@ func (c *Client) FetchConfig(ctx context.Context, roomID string) (*PeerConfig, e
 	return &out, nil
 }
 
-// bytesReader is a tiny adapter to avoid importing bytes in client.go.
-func bytesReader(b []byte) *bytesBuf { return &bytesBuf{b: b} }
-
-type bytesBuf struct {
-	b   []byte
-	pos int
-}
-
-func (r *bytesBuf) Read(p []byte) (int, error) {
-	if r.pos >= len(r.b) {
-		return 0, io.EOF
-	}
-	n := copy(p, r.b[r.pos:])
-	r.pos += n
-	return n, nil
-}
+// bytesReader returns an io.Reader for body bodies that ALSO implements io.Seeker
+// and a Len() method, so net/http will detect the body size and emit a proper
+// Content-Length header instead of falling back to chunked transfer encoding
+// (which some HTTP/1.0 servers — including Python BaseHTTPServer used by our
+// e2e mock control plane — do not support and will hang on indefinitely).
+func bytesReader(b []byte) io.Reader { return bytes.NewReader(b) }

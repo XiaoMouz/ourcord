@@ -1,9 +1,11 @@
 package ipc
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -89,18 +91,25 @@ func (s *Server) Serve(ctx context.Context) error {
 		// gates same-uid; HMAC ensures the caller also has read access to the
 		// (mode-0600) ipc.key file. Failed handshake → silent close.
 		if s.hmacSecret != nil {
-			if err := authHandshakeServer(conn, s.hmacSecret); err != nil {
+			leftover, err := authHandshakeServer(conn, s.hmacSecret)
+			if err != nil {
 				conn.Close()
 				continue
 			}
+			go s.handleConn(ctx, conn, leftover)
+			continue
 		}
-		go s.handleConn(ctx, conn)
+		go s.handleConn(ctx, conn, nil)
 	}
 }
 
-func (s *Server) handleConn(ctx context.Context, conn net.Conn) {
+func (s *Server) handleConn(ctx context.Context, conn net.Conn, prebuf []byte) {
 	defer conn.Close()
-	dec := json.NewDecoder(conn)
+	var r io.Reader = conn
+	if len(prebuf) > 0 {
+		r = io.MultiReader(bytes.NewReader(prebuf), conn)
+	}
+	dec := json.NewDecoder(r)
 	enc := json.NewEncoder(conn)
 	for {
 		var req IPCRequest

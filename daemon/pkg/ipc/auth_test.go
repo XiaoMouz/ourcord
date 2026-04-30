@@ -57,7 +57,7 @@ func TestAuthHandshake_ValidSecret(t *testing.T) {
 	defer b.Close()
 
 	errCh := make(chan error, 2)
-	go func() { errCh <- authHandshakeServer(a, secret) }()
+	go func() { _, err := authHandshakeServer(a, secret); errCh <- err }()
 	go func() { errCh <- authHandshakeClient(b, secret) }()
 	for i := 0; i < 2; i++ {
 		if err := <-errCh; err != nil {
@@ -78,7 +78,7 @@ func TestAuthHandshake_WrongSecret(t *testing.T) {
 
 	srvErr := make(chan error, 1)
 	cliErr := make(chan error, 1)
-	go func() { srvErr <- authHandshakeServer(a, srvSecret) }()
+	go func() { _, err := authHandshakeServer(a, srvSecret); srvErr <- err }()
 	go func() { cliErr <- authHandshakeClient(b, cliSecret) }()
 
 	if err := <-srvErr; err == nil {

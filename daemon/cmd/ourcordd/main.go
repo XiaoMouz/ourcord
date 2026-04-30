@@ -28,10 +28,12 @@ import (
 
 func main() {
 	var (
-		controlURL = flag.String("control-url", "https://control.ourcord.app", "Control plane URL")
-		socketPath = flag.String("socket", ipc.DefaultSocketPath(), "Unix socket path for IPC")
-		stateDir   = flag.String("state-dir", wg.DefaultStateDir(), "Persistent state directory (WireGuard private key, etc.)")
-		logLevel   = flag.String("log-level", "info", "Log level: debug, info, error")
+		controlURL    = flag.String("control-url", "https://control.ourcord.app", "Control plane URL")
+		socketPath    = flag.String("socket", ipc.DefaultSocketPath(), "Unix socket path for IPC")
+		stateDir      = flag.String("state-dir", wg.DefaultStateDir(), "Persistent state directory (WireGuard private key, etc.)")
+		logLevel      = flag.String("log-level", "info", "Log level: debug, info, error")
+		wgListenPort  = flag.Int("wg-listen-port", 0, "Pin WireGuard UDP listen port (0 = ephemeral; set for smoke/manual mesh)")
+		wgEndpointHint = flag.String("wg-endpoint", "", "Public host:port hint for our wg endpoint sent to control on register (empty = none)")
 	)
 	flag.Parse()
 
@@ -52,10 +54,12 @@ func main() {
 
 	// Build daemon
 	d := &daemon{
-		controlURL: *controlURL,
-		keyPair:    kp,
-		socketPath: *socketPath,
-		stateDir:   *stateDir,
+		controlURL:    *controlURL,
+		keyPair:       kp,
+		socketPath:    *socketPath,
+		stateDir:      *stateDir,
+		wgListenPort:  uint16(*wgListenPort),
+		wgEndpointHint: *wgEndpointHint,
 	}
 
 	// W3: load (or create) shared HMAC secret used by IPC clients (CLI, GUI)
@@ -97,19 +101,61 @@ func main() {
 
 // daemon implements ipc.Handler and coordinates VPN subsystems.
 type daemon struct {
-	controlURL string
-	keyPair    *wg.KeyPair
-	socketPath string
-	stateDir   string
+	controlURL    string
+	keyPair       *wg.KeyPair
+	socketPath    string
+	stateDir      string
+	wgListenPort  uint16 // 0 = ephemeral
+	wgEndpointHint string // host:port, sent on register
 
 	vpnActive atomic.Bool
 
 	connMu  sync.Mutex
 	connCtx context.Context
 	connCxl context.CancelFunc
-	tunIf   *tun.Interface
+	tunIf   tunIface
 	table   *routing.Table
-	cli     *control.Client
+	cli     controlClient
+
+	// Injectable factories (test seam). nil → real implementations.
+	newTun    func(name string, addrs []netip.Prefix) (tunIface, error)
+	newClient func(controlURL, token, pubkey string) controlClient
+}
+
+// tunIface is the subset of *tun.Interface that connect()/meshLoop touches;
+// kept small so tests can swap a fake without setting up an actual TUN device
+// (which requires root and pollutes the host network).
+type tunIface interface {
+	Up() error
+	Close() error
+	ConfigureIPC(string) error
+	Name() string
+}
+
+// controlClient is the subset of *control.Client that connect()/meshLoop
+// touches. Tests stub this to point at an httptest.Server-backed shim.
+type controlClient interface {
+	Register(ctx context.Context, req control.RegisterRequest) (*control.RegisterResponse, error)
+	FetchConfig(ctx context.Context, roomID string) (*control.PeerConfig, error)
+	Run(ctx context.Context, roomID string)
+}
+
+func (d *daemon) tunFactory() func(string, []netip.Prefix) (tunIface, error) {
+	if d.newTun != nil {
+		return d.newTun
+	}
+	return func(name string, addrs []netip.Prefix) (tunIface, error) {
+		return tun.New(name, addrs)
+	}
+}
+
+func (d *daemon) clientFactory() func(string, string, string) controlClient {
+	if d.newClient != nil {
+		return d.newClient
+	}
+	return func(url, token, pub string) controlClient {
+		return control.New(url, token, pub)
+	}
 }
 
 func (d *daemon) HandleIPC(ctx context.Context, req ipc.IPCRequest) ipc.IPCResponse {
@@ -162,14 +208,15 @@ func (d *daemon) connect(ctx context.Context) error {
 		return fmt.Errorf("load auth token: %w", err)
 	}
 
-	cli := control.New(d.controlURL, token, d.keyPair.PublicKeyBase64())
+	cli := d.clientFactory()(d.controlURL, token, d.keyPair.PublicKeyBase64())
 
 	regCtx, regCancel := context.WithTimeout(ctx, 15*time.Second)
 	hostname, _ := os.Hostname()
 	reg, err := cli.Register(regCtx, control.RegisterRequest{
-		PublicKey: d.keyPair.PublicKeyBase64(),
-		Name:      hostname,
-		Platform:  runtime.GOOS,
+		PublicKey:  d.keyPair.PublicKeyBase64(),
+		Name:       hostname,
+		Platform:   runtime.GOOS,
+		WGEndpoint: d.wgEndpointHint,
 	})
 	regCancel()
 	if err != nil {
@@ -182,7 +229,7 @@ func (d *daemon) connect(ctx context.Context) error {
 		return fmt.Errorf("parse assigned IPs: %w", err)
 	}
 
-	tunIf, err := tun.New("utun", prefixes)
+	tunIf, err := d.tunFactory()("utun", prefixes)
 	if err != nil {
 		return fmt.Errorf("create tun: %w", err)
 	}
@@ -193,6 +240,7 @@ func (d *daemon) connect(ctx context.Context) error {
 	log.Printf("TUN %s up; addrs=%v", tunIf.Name(), prefixes)
 
 	table := routing.NewTable()
+	table.SetListenPort(d.wgListenPort)
 
 	cfgCtx, cfgCancel := context.WithTimeout(ctx, 10*time.Second)
 	cfg, err := cli.FetchConfig(cfgCtx, "")
@@ -264,7 +312,7 @@ func (d *daemon) meshLoop(ctx context.Context) {
 // and pushes the WireGuard UAPI snapshot into the kernel device. The control
 // plane is the source of truth; we replace, not merge, so removed peers fall
 // out naturally.
-func applyConfig(iface *tun.Interface, table *routing.Table, priv wgtypes.Key, cfg *control.PeerConfig) error {
+func applyConfig(iface tunIface, table *routing.Table, priv wgtypes.Key, cfg *control.PeerConfig) error {
 	for _, p := range cfg.Peers {
 		pub, err := base64.StdEncoding.DecodeString(p.PublicKey)
 		if err != nil || len(pub) != wgtypes.KeyLen {
@@ -275,11 +323,19 @@ func applyConfig(iface *tun.Interface, table *routing.Table, priv wgtypes.Key, c
 		copy(pk[:], pub)
 		ip4, _ := netip.ParseAddr(p.IP4)
 		ip6, _ := netip.ParseAddr(p.IP6)
-		table.Upsert(&routing.PeerRoute{
+		route := &routing.PeerRoute{
 			PublicKey: pk,
 			VPN4:      ip4,
 			VPN6:      ip6,
-		})
+		}
+		if p.Endpoint != "" {
+			if ap, err := netip.ParseAddrPort(p.Endpoint); err == nil {
+				route.DirectAddr = &ap
+			} else {
+				log.Printf("peer %s: invalid endpoint %q: %v", p.ID, p.Endpoint, err)
+			}
+		}
+		table.Upsert(route)
 	}
 	return iface.ConfigureIPC(table.BuildIPCConfig(priv))
 }
