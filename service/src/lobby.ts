@@ -89,31 +89,43 @@ export async function joinLobby(request: Request, env: Env, lobbyId: string): Pr
   if (!lobby) return err("Lobby not found", 404);
 
   const now = Math.floor(Date.now() / 1000);
-  const invite = await env.DB
-    .prepare(
-      `SELECT * FROM lobby_invites
-       WHERE code = ? AND lobby_id = ? AND revoked = 0
-       AND (expires_at IS NULL OR expires_at > ?)
-       AND (max_uses = 0 OR uses < max_uses)`
-    )
-    .bind(code, lobbyId, now)
-    .first<{ code: string; uses: number; max_uses: number }>();
-  if (!invite) return err("invalid, revoked, or exhausted invite", 403);
 
+  // Short-circuit: if already a member, no need to consume an invite use.
   const existing = await env.DB
     .prepare("SELECT role FROM lobby_members WHERE lobby_id = ? AND user_id = ?")
     .bind(lobbyId, auth.sub)
     .first();
   if (existing) return json({ message: "Already a member" });
 
-  // Best-effort atomic-ish increment: bump uses first, then INSERT member.
-  // If the INSERT loses (race with concurrent join), the use count over-counts
-  // by at most that race window — acceptable since invite quotas are coarse.
-  await env.DB.batch([
-    env.DB.prepare("UPDATE lobby_invites SET uses = uses + 1 WHERE code = ?").bind(code),
-    env.DB.prepare("INSERT INTO lobby_members (lobby_id, user_id, role, joined_at) VALUES (?,?,?,?)")
-      .bind(lobbyId, auth.sub, "member", now),
-  ]);
+  // N1: atomic conditional UPDATE consumes one invite use only when the
+  // invite is still valid AND under quota. SQLite evaluates the WHERE clause
+  // and the increment as one row-level operation, so concurrent joiners that
+  // raced past the SELECT (the previous design) can no longer all "win" a
+  // single-use invite. meta.changes==0 means another joiner won the race or
+  // the invite expired/was revoked between requests.
+  const upd = await env.DB
+    .prepare(
+      `UPDATE lobby_invites
+          SET uses = uses + 1
+        WHERE code = ?
+          AND lobby_id = ?
+          AND revoked = 0
+          AND (expires_at IS NULL OR expires_at > ?)
+          AND (max_uses = 0 OR uses < max_uses)`
+    )
+    .bind(code, lobbyId, now)
+    .run();
+  if ((upd.meta?.changes ?? 0) === 0) {
+    return err("invalid, revoked, or exhausted invite", 403);
+  }
+
+  // INSERT OR IGNORE so a duplicate-member race (two requests both passed
+  // the existing check) doesn't 500. We've already consumed an invite use,
+  // which matches the user's intent (they tried to join twice).
+  await env.DB
+    .prepare("INSERT OR IGNORE INTO lobby_members (lobby_id, user_id, role, joined_at) VALUES (?,?,?,?)")
+    .bind(lobbyId, auth.sub, "member", now)
+    .run();
 
   return json({ joined: true });
 }
