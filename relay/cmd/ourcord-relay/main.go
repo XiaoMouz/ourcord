@@ -170,16 +170,20 @@ func main() {
 	if err != nil {
 		log.Fatalf("admit listen: %v", err)
 	}
-	go func() {
+	// Q2: keep admitSrv at function scope so the SIGTERM handler below can
+	// gracefully shut it down. Without this, the goroutine outlives the public
+	// server, the loopback listener stays bound, and any restart races against
+	// the lingering port + goroutine.
+	admitSrv := &http.Server{
 		// I6: cap header read + total write so a hung client (even on
 		// loopback) can't pin a goroutine forever. Admit requests are tiny
 		// JSON in/out, 5s is generous.
-		srv := &http.Server{
-			Handler:           admitMux,
-			ReadHeaderTimeout: 5 * time.Second,
-			WriteTimeout:      5 * time.Second,
-		}
-		_ = srv.Serve(admitLn)
+		Handler:           admitMux,
+		ReadHeaderTimeout: 5 * time.Second,
+		WriteTimeout:      5 * time.Second,
+	}
+	go func() {
+		_ = admitSrv.Serve(admitLn)
 	}()
 	admitURL := "http://" + admitLn.Addr().String() + "/internal/derp-admit"
 	log.Printf("DERP admission controller: %s", admitURL)
@@ -273,6 +277,12 @@ func main() {
 		if err := srv.Shutdown(shutCtx); err != nil {
 			log.Printf("HTTP shutdown: %v", err)
 		}
+		// Q2: shut down the loopback admit server too so the goroutine and
+		// listener don't outlive the main process during graceful exit.
+		if err := admitSrv.Shutdown(shutCtx); err != nil {
+			log.Printf("admit shutdown: %v", err)
+		}
+		_ = admitLn.Close()
 		rootCancel()
 	}()
 

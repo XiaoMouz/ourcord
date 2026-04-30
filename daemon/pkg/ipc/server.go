@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sync"
 )
 
 const (
@@ -105,11 +106,19 @@ func (s *Server) Close() error {
 }
 
 // Client connects to the daemon IPC socket.
+//
+// Q1: a single Client wraps one net.Conn with one Encoder/Decoder pair, and
+// the daemon side (`handleConn`) processes requests strictly serially per
+// connection. To preserve that invariant on the caller side we serialize
+// Call() and Close() with a mutex. If you need concurrent IPC throughput,
+// open multiple Clients (one connection each) — do NOT share a Client across
+// goroutines without this lock.
 type Client struct {
 	socketPath string
 	conn       net.Conn
 	enc        *json.Encoder
 	dec        *json.Decoder
+	mu         sync.Mutex
 }
 
 // NewClient creates a new IPC client.
@@ -126,8 +135,12 @@ func NewClient(socketPath string) (*Client, error) {
 	}, nil
 }
 
-// Call sends an IPC command and returns the response.
+// Call sends an IPC command and returns the response. Safe for concurrent
+// callers: the mutex enforces that one request fully completes (write +
+// read) before another begins on the same connection.
 func (c *Client) Call(cmd string, params map[string]string) (IPCResponse, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	req := IPCRequest{Cmd: cmd, Params: params}
 	if err := c.enc.Encode(req); err != nil {
 		return IPCResponse{}, err
@@ -139,5 +152,10 @@ func (c *Client) Call(cmd string, params map[string]string) (IPCResponse, error)
 	return resp, nil
 }
 
-// Close closes the connection.
-func (c *Client) Close() error { return c.conn.Close() }
+// Close closes the connection. Safe to call concurrently with Call: the mutex
+// orders the conn.Close() against any in-flight encode/decode on the same fd.
+func (c *Client) Close() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.conn.Close()
+}
