@@ -52,9 +52,20 @@ export async function registerRelay(request: Request, env: Env): Promise<Respons
     if (!existing) return json({ error: "Relay not found" }, 404);
     if (existing.owner_id !== ownerId) return json({ error: "Forbidden" }, 403);
 
+    // N2: in addition to liveness, refresh the operator-mutable metadata
+    // (region/capacity/mode) so /api/relay/map doesn't keep serving the
+    // values that were valid the day this row was first created. hostname
+    // and port are part of the UNIQUE key — if those change the relay
+    // would naturally fall through to the upsert path below, so we don't
+    // touch them here.
     await env.DB
-      .prepare("UPDATE relay_servers SET last_heartbeat = ?, active = 1 WHERE id = ?")
-      .bind(now, body.id)
+      .prepare(
+        `UPDATE relay_servers
+            SET last_heartbeat = ?, active = 1,
+                region = ?, mode = ?, capacity_kbps = ?
+          WHERE id = ?`
+      )
+      .bind(now, body.region, body.mode, body.capacity_kbps ?? 10000, body.id)
       .run();
 
     if (body.active_conns !== undefined || body.bytes_per_sec !== undefined) {

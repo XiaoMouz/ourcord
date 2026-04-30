@@ -167,6 +167,17 @@ export async function createInvite(request: Request, env: Env, lobbyId: string):
     return err("expires_in_seconds must be a non-negative finite number");
   }
   const maxUses = body.max_uses ?? 1;
+  // N3: max_uses must be a non-negative integer; 0 retains the "no quota"
+  // semantic. Negative or NaN inputs would either make the invite born
+  // exhausted or, after binding to NULL, accidentally make it unlimited
+  // depending on how SQLite coerces the OR branch.
+  if (
+    !Number.isInteger(maxUses) ||
+    maxUses < 0 ||
+    maxUses > 100000
+  ) {
+    return err("max_uses must be an integer between 0 and 100000");
+  }
   // 8-byte URL-safe code; collisions on PRIMARY KEY would 500, accept it.
   const arr = new Uint8Array(8);
   crypto.getRandomValues(arr);
