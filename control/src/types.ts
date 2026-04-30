@@ -36,7 +36,7 @@ export interface Peer {
   name: string;
   platform: "win" | "mac" | "linux" | "ios" | "android" | "web";
   last_seen: number;
-  ip4: string; // assigned VPN IPv4 (e.g. 100.64.x.x)
+  ip4: string; // assigned VPN IPv4 (e.g. 198.18.x.x)
   ip6: string; // assigned VPN IPv6
   derp_node_key: string; // optional Tailscale DERP NodePublic.String() (G12)
 }

@@ -88,3 +88,18 @@ func (i *Interface) ConfigureIPC(ipcConfig string) error {
 func (i *Interface) GetIPC() (string, error) {
 	return i.device.IpcGet()
 }
+
+// SyncPeerV4Routes installs OS-level /32 routes for each addr to dev <name>
+// and removes any /32 routes on the interface that aren't in `want`.
+//
+// Background: with userspace wireguard-go we don't get automatic kernel route
+// installation from AllowedIPs. The interface's own /32 (or /128) only covers
+// "self". For peer traffic to actually hit the tun, the kernel needs a route
+// for each peer's VPN IP. We deliberately add /32 host routes (instead of a
+// blanket /15 covering the whole pool) so that:
+//   - We don't shadow ISP CGNAT / Tailscale / other unrelated 198.18 use
+//   - Removing a peer cleanly unhooks its route
+//   - The route table reflects actual mesh membership for debugging
+func (i *Interface) SyncPeerV4Routes(want []netip.Addr) error {
+	return syncPeerV4Routes(i.name, want)
+}

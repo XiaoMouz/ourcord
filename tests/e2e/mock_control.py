@@ -24,8 +24,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 LOCK = threading.Lock()
 STATE_PATH = None
-V4_POOL = [f"100.64.0.{i}" for i in range(10, 100)]
-V6_POOL = [f"fd7a:115c:a1e0::{i:x}" for i in range(10, 100)]
+V4_POOL = [f"198.18.0.{i}" for i in range(10, 100)]
+V6_POOL = [f"fdab:cdef:123::{i:x}" for i in range(10, 100)]
 
 
 def load():

@@ -9,9 +9,11 @@ import (
 	"log"
 	"net/netip"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -92,6 +94,12 @@ func main() {
 
 	log.Printf("IPC socket: %s", *socketPath)
 	log.Printf("Control plane: %s", *controlURL)
+	if conflicts := detectVPNSubnetConflicts(); len(conflicts) > 0 {
+		for _, c := range conflicts {
+			log.Printf("WARN: VPN pool 198.18.0.0/15 may conflict with existing route: %s", c)
+		}
+		log.Printf("WARN: tunnel will still come up (we install per-peer /32 routes only) but specific peer IPs may be unreachable if shadowed.")
+	}
 	log.Println("Daemon ready. Waiting for IPC commands.")
 
 	if err := ipcSrv.Serve(ctx); err != nil {
@@ -117,6 +125,11 @@ type daemon struct {
 	table   *routing.Table
 	cli     controlClient
 
+	// assigned VPN addresses for status reporting (filled at connect, cleared
+	// at disconnect).
+	assignedIP4 string
+	assignedIP6 string
+
 	// Injectable factories (test seam). nil → real implementations.
 	newTun    func(name string, addrs []netip.Prefix) (tunIface, error)
 	newClient func(controlURL, token, pubkey string) controlClient
@@ -130,6 +143,7 @@ type tunIface interface {
 	Close() error
 	ConfigureIPC(string) error
 	Name() string
+	SyncPeerV4Routes([]netip.Addr) error
 }
 
 // controlClient is the subset of *control.Client that connect()/meshLoop
@@ -161,11 +175,21 @@ func (d *daemon) clientFactory() func(string, string, string) controlClient {
 func (d *daemon) HandleIPC(ctx context.Context, req ipc.IPCRequest) ipc.IPCResponse {
 	switch req.Cmd {
 	case ipc.CmdStatus:
+		d.connMu.Lock()
+		ip4, ip6 := d.assignedIP4, d.assignedIP6
+		var peerCount int
+		if d.table != nil {
+			peerCount = len(d.table.All())
+		}
+		d.connMu.Unlock()
 		return ipc.IPCResponse{
 			OK: true,
 			Data: ipc.DaemonStatus{
 				Running:   true,
 				VPNActive: d.vpnActive.Load(),
+				IP4:       ip4,
+				IP6:       ip6,
+				PeerCount: peerCount,
 			},
 		}
 	case ipc.CmdConnect:
@@ -260,6 +284,8 @@ func (d *daemon) connect(ctx context.Context) error {
 	d.cli = cli
 	d.connCtx = connCtx
 	d.connCxl = connCxl
+	d.assignedIP4 = reg.Peer.IP4
+	d.assignedIP6 = reg.Peer.IP6
 	d.vpnActive.Store(true)
 
 	go cli.Run(connCtx, "")
@@ -283,6 +309,8 @@ func (d *daemon) disconnect() {
 	d.tunIf = nil
 	d.table = nil
 	d.cli = nil
+	d.assignedIP4 = ""
+	d.assignedIP6 = ""
 	d.vpnActive.Store(false)
 }
 
@@ -313,6 +341,7 @@ func (d *daemon) meshLoop(ctx context.Context) {
 // plane is the source of truth; we replace, not merge, so removed peers fall
 // out naturally.
 func applyConfig(iface tunIface, table *routing.Table, priv wgtypes.Key, cfg *control.PeerConfig) error {
+	var v4Addrs []netip.Addr
 	for _, p := range cfg.Peers {
 		pub, err := base64.StdEncoding.DecodeString(p.PublicKey)
 		if err != nil || len(pub) != wgtypes.KeyLen {
@@ -336,8 +365,18 @@ func applyConfig(iface tunIface, table *routing.Table, priv wgtypes.Key, cfg *co
 			}
 		}
 		table.Upsert(route)
+		if ip4.IsValid() && ip4.Is4() {
+			v4Addrs = append(v4Addrs, ip4)
+		}
 	}
-	return iface.ConfigureIPC(table.BuildIPCConfig(priv))
+	if err := iface.ConfigureIPC(table.BuildIPCConfig(priv)); err != nil {
+		return err
+	}
+	if err := iface.SyncPeerV4Routes(v4Addrs); err != nil {
+		log.Printf("sync peer v4 routes: %v (non-fatal; v6 path may still work)", err)
+	}
+	log.Printf("applied wg config: %d peers, %d v4 routes", len(cfg.Peers), len(v4Addrs))
+	return nil
 }
 
 func parseAssignedPrefixes(ip4, ip6 string) ([]netip.Prefix, error) {
@@ -360,6 +399,43 @@ func parseAssignedPrefixes(ip4, ip6 string) ([]netip.Prefix, error) {
 		return nil, errors.New("control plane returned no VPN addresses")
 	}
 	return out, nil
+}
+
+// detectVPNSubnetConflicts returns a list of existing OS routes that overlap
+// with our VPN pool 198.18.0.0/15. Best-effort: warns the user but doesn't
+// abort, since we install per-peer /32 routes (which take precedence over a
+// generic /15 entry already in the table). Returns empty slice on Windows /
+// unknown OS.
+func detectVPNSubnetConflicts() []string {
+	switch runtime.GOOS {
+	case "linux":
+		out, err := exec.Command("ip", "-4", "route", "show").Output()
+		if err != nil {
+			return nil
+		}
+		return scanForOverlap(string(out), "198.18.")
+	case "darwin":
+		out, err := exec.Command("netstat", "-rn", "-f", "inet").Output()
+		if err != nil {
+			return nil
+		}
+		return scanForOverlap(string(out), "198.18")
+	}
+	return nil
+}
+
+func scanForOverlap(text, needle string) []string {
+	var hits []string
+	for _, line := range strings.Split(text, "\n") {
+		l := strings.TrimSpace(line)
+		if l == "" || strings.HasPrefix(l, "Destination") || strings.HasPrefix(l, "Routing") {
+			continue
+		}
+		if strings.Contains(l, needle) {
+			hits = append(hits, l)
+		}
+	}
+	return hits
 }
 
 // loadAuthToken reads the daemon's auth token. Order:

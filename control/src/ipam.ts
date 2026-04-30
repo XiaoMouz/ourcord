@@ -1,11 +1,23 @@
 import { Env } from "./types";
 
-// VPN address pool: 100.64.0.0/10 (CGNAT range, same as Tailscale)
-const VPN_SUBNET_START = (100 << 24) | (64 << 16); // 100.64.0.0
-const VPN_SUBNET_MASK = 0x3fffff; // /10 gives 4M addresses
-const VPN_IPV6_PREFIX = "fd7a:115c:a1e0:"; // ULA prefix for VPN
+// U1: VPN address pool: 198.18.0.0/15 (RFC 2544 benchmark range).
+// Chosen over 100.64.0.0/10 because:
+//   - 100.64/10 is the Tailscale default pool (same-host install would clash)
+//   - 100.64/10 is also actively used by Chinese ISPs for residential CGNAT,
+//     so the host kernel may already have a route for it that we'd shadow.
+//   - 198.18.0.0/15 (RFC 2544) is reserved for benchmarking and almost never
+//     deployed in production networks, so collisions are vanishingly rare.
+// 131072 addresses is plenty for our small-group product (5-10 users / lobby).
+const VPN_SUBNET_START = (198 << 24) | (18 << 16); // 198.18.0.0
+const VPN_SUBNET_MASK = 0x1ffff; // /15 → 2^17 - 1 = 131071
 
+// U1/U2: IPv6 ULA prefix is per-deployment, NOT a hardcoded constant.
+// fd7a:115c:a1e0::/48 is Tailscale's well-known prefix; we used to reuse it
+// (causing the same conflict as the v4 issue above). Each deployment now
+// generates its own random fd<XX>:<XXXX>:<XXXX>::/48 on first peer registration
+// and persists it in KV. Per RFC 4193: fd00::/8 + 40 random bits = /48.
 const COUNTER_KEY = "vpn_ip_counter";
+const ULA_PREFIX_KEY = "vpn_ula_prefix";
 
 export function uint32ToIPv4(n: number): string {
   return [(n >>> 24) & 0xff, (n >>> 16) & 0xff, (n >>> 8) & 0xff, n & 0xff].join(".");
@@ -18,15 +30,48 @@ export interface AllocatedIP {
 }
 
 // Build the {ip4, ip6} pair for a given offset within the pool.
-export function ipsForOffset(offset: number): AllocatedIP {
+// `ulaPrefix` MUST be a 3-group ULA prefix ending with ":" (e.g. "fd12:3456:789a:")
+// — the offset's high 16 bits become group 4 (subnet ID) and low 16 bits the
+// last v6 group (interface ID). Get one from `getULAPrefix(env)`.
+export function ipsForOffset(offset: number, ulaPrefix: string): AllocatedIP {
   if (offset < 2 || offset > VPN_SUBNET_MASK) {
     throw new Error(`offset ${offset} out of pool range`);
+  }
+  if (!/^fd[0-9a-f]{2}:[0-9a-f]{1,4}:[0-9a-f]{1,4}:$/i.test(ulaPrefix)) {
+    throw new Error(`invalid ULA prefix: ${ulaPrefix}`);
   }
   const ip4 = uint32ToIPv4(VPN_SUBNET_START + offset);
   const hi = (offset >> 16) & 0xffff;
   const lo = offset & 0xffff;
-  const ip6 = `${VPN_IPV6_PREFIX}${hi.toString(16).padStart(4, "0")}::${lo.toString(16).padStart(4, "0")}`;
+  const ip6 = `${ulaPrefix}${hi.toString(16).padStart(4, "0")}::${lo.toString(16).padStart(4, "0")}`;
   return { ip4, ip6, offset };
+}
+
+// generateULAPrefix returns a freshly random RFC 4193 ULA /48 prefix string
+// suitable for passing to ipsForOffset, e.g. "fdab:cdef:0123:".
+// Uses crypto.getRandomValues which is available in the Workers runtime.
+export function generateULAPrefix(): string {
+  const bytes = new Uint8Array(5);
+  crypto.getRandomValues(bytes);
+  const hex = (n: number) => n.toString(16).padStart(2, "0");
+  // fd<b0>:<b1b2>:<b3b4>:
+  return `fd${hex(bytes[0])}:${hex(bytes[1])}${hex(bytes[2])}:${hex(bytes[3])}${hex(bytes[4])}:`;
+}
+
+// getULAPrefix lazily initializes and returns the deployment-wide ULA prefix.
+// Persisted in KV so all peers in this deployment share the same /48.
+// Phase-2 will extend this to per-lobby allocation.
+export async function getULAPrefix(kv: KVNamespace): Promise<string> {
+  const existing = await kv.get(ULA_PREFIX_KEY);
+  if (existing && /^fd[0-9a-f]{2}:[0-9a-f]{1,4}:[0-9a-f]{1,4}:$/i.test(existing)) {
+    return existing;
+  }
+  const fresh = generateULAPrefix();
+  // Best-effort write; if a parallel registration also wrote one we re-read
+  // to converge on a single prefix (race window narrow but possible).
+  await kv.put(ULA_PREFIX_KEY, fresh);
+  const settled = await kv.get(ULA_PREFIX_KEY);
+  return settled ?? fresh;
 }
 
 // nextCandidateOffset returns the KV counter hint (or 2 on first call).

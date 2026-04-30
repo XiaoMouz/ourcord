@@ -44,10 +44,11 @@ OurCord 是一个面向 5–10 人小群体的通讯平台，**底层是自建�
 - ⚠️ 历史上 service 用过 `CONTROL_INTERNAL_SECRET` 作变量名，已统一为 `JWT_SECRET`。**不要回退。**
 - 未来如果引入"控制层 → 服务层"的服务对服务认证，应该新增独立变量（建议 `INTERNAL_S2S_SECRET`），不要复用 `JWT_SECRET`。
 
-### 3.2 VPN 地址池
-- IPv4：`100.64.0.0/10`（CGNAT 段，避免与用户家网冲突）
-- IPv6：`fd7a:115c:a1e0::/48`（ULA 段，与 Tailscale 默认相同段号便于排查）
+### 3.2 VPN 地址池（U 系列后已迁段）
+- IPv4：`198.18.0.0/15`（RFC 2544 基准段）。**不再用** `100.64.0.0/10`，因其与 Tailscale 默认池及中国部分大宽带 ISP 的家宽 CGNAT 同段，会被路由表/接口冲突。
+- IPv6：**部署级随机 ULA `/48`**（首次注册时由 `ipam.generateULAPrefix` 生成、`KV.vpn_ula_prefix` 持久化）。**不再用** Tailscale 的 `fd7a:115c:a1e0::/48` 字面量。
 - 分配在 `control/src/peers.ts` 完成，**必须保证原子性**（DB UNIQUE + 事务 retry）。不要用纯 KV 计数器。
+- 路由策略：daemon 在 connect/applyConfig 时用 `tun.SyncPeerV4Routes` 给每个 peer 装 v4 `/32` 路由（不抢 `/15` 整段），v6 在 TUN 上线时一次性装 `/48` 路由。这样与 Tailscale / ZeroTier / 任何同机 VPN 工具完全互不干扰。
 
 ### 3.3 中继链拓扑
 - 控制层维护连通性矩阵；当无法直连时计算路径（最多 1 跳中继节点 = A-B-C 链）。

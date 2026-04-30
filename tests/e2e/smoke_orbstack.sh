@@ -157,7 +157,7 @@ for p in d['peers'].values():
     if 'token-b' in p['name'] or p['ip4'].endswith('.11'):
         print(p['ip4']); break
 " 2>/dev/null)"
-[[ -z "$B_VPN_IP" ]] && B_VPN_IP="100.64.0.11"
+[[ -z "$B_VPN_IP" ]] && B_VPN_IP="198.18.0.11"
 
 echo "==> ping $B_VPN_IP from $VM_A (over the VPN tunnel):"
 if vm_run "$VM_A" ping -c 3 -W 3 "$B_VPN_IP" | tee /dev/stderr | grep -q "0% packet loss\|1 received\|2 received\|3 received"; then

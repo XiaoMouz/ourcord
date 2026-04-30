@@ -43,7 +43,7 @@ func TestPublicKeyBase64RoundTrip(t *testing.T) {
 
 func TestPeerFromConfig_Valid(t *testing.T) {
 	kp, _ := GenerateKeyPair()
-	peer, err := PeerFromConfig(kp.PublicKeyBase64(), []string{"100.64.0.5/32", "fd7a::5/128"})
+	peer, err := PeerFromConfig(kp.PublicKeyBase64(), []string{"198.18.0.5/32", "fdab::5/128"})
 	if err != nil {
 		t.Fatalf("PeerFromConfig: %v", err)
 	}
@@ -56,7 +56,7 @@ func TestPeerFromConfig_Valid(t *testing.T) {
 }
 
 func TestPeerFromConfig_InvalidBase64(t *testing.T) {
-	_, err := PeerFromConfig("not-base64!!", []string{"100.64.0.5/32"})
+	_, err := PeerFromConfig("not-base64!!", []string{"198.18.0.5/32"})
 	if err == nil {
 		t.Fatal("expected error for invalid base64")
 	}
@@ -86,7 +86,7 @@ func TestPeerFromConfig_WrongLength(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			b64 := base64.StdEncoding.EncodeToString(tc.raw)
-			_, err := PeerFromConfig(b64, []string{"100.64.0.5/32"})
+			_, err := PeerFromConfig(b64, []string{"198.18.0.5/32"})
 			if err == nil {
 				t.Fatalf("expected error for %d-byte key, got nil", len(tc.raw))
 			}

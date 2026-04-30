@@ -28,7 +28,7 @@
 | `JWT_SECRET` | control + service 共用 | 不要再叫 `CONTROL_INTERNAL_SECRET` |
 | SignalDO WS 鉴权 | `control/src/index.ts` | `?token&pk`，DO 假设上游已校验 |
 | limiter ctx | `relay/pkg/limiter` | 禁止 nil context |
-| VPN IP 池 | `100.64.0.0/10` + `fd7a:115c:a1e0::/48` | CGNAT + ULA |
+| VPN IP 池 | `198.18.0.0/15` + 部署级随机 ULA `/48` | RFC2544 v4 + 自生成 ULA；避 Tailscale/ISP CGNAT 冲突 |
 | 中继链 | WireGuard `AllowedIPs` | DERP 不感知拓扑 |
 | 文件优先级 | 自建 → 分享 → 大厅 → R2 | R2 受配额控制 |
 

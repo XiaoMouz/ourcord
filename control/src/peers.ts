@@ -5,6 +5,7 @@ import {
   ipsForOffset,
   nextCandidateOffset,
   commitOffset,
+  getULAPrefix,
   isUniqueViolation,
 } from "./ipam";
 
@@ -70,12 +71,13 @@ export async function registerPeer(request: Request, env: Env): Promise<Response
   const now = Math.floor(Date.now() / 1000);
   const MAX_ATTEMPTS = 16;
   let offset = await nextCandidateOffset(env.KV);
+  const ulaPrefix = await getULAPrefix(env.KV);
   let inserted: { ip4: string; ip6: string } | null = null;
 
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
     let candidate;
     try {
-      candidate = ipsForOffset(offset);
+      candidate = ipsForOffset(offset, ulaPrefix);
     } catch {
       return json({ error: "VPN IP pool exhausted" }, 507);
     }

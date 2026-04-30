@@ -44,23 +44,23 @@ func TestBuildIPCConfig_AllowedIPPerLine(t *testing.T) {
 	pub := mustKey(t, 0xAA)
 	tbl.Upsert(&PeerRoute{
 		PublicKey: pub,
-		VPN4:      mustAddr(t, "100.64.0.10"),
-		VPN6:      mustAddr(t, "fd7a::10"),
+		VPN4:      mustAddr(t, "198.18.0.10"),
+		VPN6:      mustAddr(t, "fdab::10"),
 	})
 
 	got := tbl.BuildIPCConfig(priv)
 
 	// Must have two distinct allowed_ip lines, never a comma.
-	if strings.Contains(got, "allowed_ip=100.64.0.10/32,") || strings.Contains(got, ",fd7a::10/128") {
+	if strings.Contains(got, "allowed_ip=198.18.0.10/32,") || strings.Contains(got, ",fdab::10/128") {
 		t.Fatalf("comma-joined allowed_ip detected:\n%s", got)
 	}
 	if c := strings.Count(got, "allowed_ip="); c != 2 {
 		t.Fatalf("want 2 allowed_ip lines, got %d:\n%s", c, got)
 	}
-	if !strings.Contains(got, "allowed_ip=100.64.0.10/32\n") {
+	if !strings.Contains(got, "allowed_ip=198.18.0.10/32\n") {
 		t.Errorf("missing v4 line:\n%s", got)
 	}
-	if !strings.Contains(got, "allowed_ip=fd7a::10/128\n") {
+	if !strings.Contains(got, "allowed_ip=fdab::10/128\n") {
 		t.Errorf("missing v6 line:\n%s", got)
 	}
 }
@@ -70,7 +70,7 @@ func TestBuildIPCConfig_DirectPeerEmitsEndpoint(t *testing.T) {
 	priv, _ := wgtypes.GeneratePrivateKey()
 	tbl.Upsert(&PeerRoute{
 		PublicKey:  mustKey(t, 0xBB),
-		VPN4:       mustAddr(t, "100.64.0.20"),
+		VPN4:       mustAddr(t, "198.18.0.20"),
 		DirectAddr: mustAddrPort(t, "203.0.113.5:51820"),
 	})
 	got := tbl.BuildIPCConfig(priv)
@@ -88,7 +88,7 @@ func TestBuildIPCConfig_IndirectPeerNoEndpoint(t *testing.T) {
 	hop := mustKey(t, 0xCC)
 	tbl.Upsert(&PeerRoute{
 		PublicKey:  mustKey(t, 0xDD),
-		VPN4:       mustAddr(t, "100.64.0.30"),
+		VPN4:       mustAddr(t, "198.18.0.30"),
 		NextHop:    &hop,
 		DirectAddr: mustAddrPort(t, "203.0.113.5:51820"), // ignored: NextHop != nil
 	})
@@ -104,20 +104,20 @@ func TestAddRelayChainRoutes_TwoPeers(t *testing.T) {
 	// Peer A is reached via hopKey
 	tbl.Upsert(&PeerRoute{
 		PublicKey: mustKey(t, 0xAA),
-		VPN4:      mustAddr(t, "100.64.0.10"),
-		VPN6:      mustAddr(t, "fd7a::10"),
+		VPN4:      mustAddr(t, "198.18.0.10"),
+		VPN6:      mustAddr(t, "fdab::10"),
 		NextHop:   &hopKey,
 	})
 	// Peer C is reached via hopKey
 	tbl.Upsert(&PeerRoute{
 		PublicKey: mustKey(t, 0xEE),
-		VPN4:      mustAddr(t, "100.64.0.30"),
+		VPN4:      mustAddr(t, "198.18.0.30"),
 		NextHop:   &hopKey,
 	})
 	// Peer B (the hop) itself
 	tbl.Upsert(&PeerRoute{
 		PublicKey: hopKey,
-		VPN4:      mustAddr(t, "100.64.0.20"),
+		VPN4:      mustAddr(t, "198.18.0.20"),
 	})
 
 	chain := tbl.AddRelayChainRoutes()
@@ -131,7 +131,7 @@ func TestAddRelayChainRoutes_DirectPeersIgnored(t *testing.T) {
 	tbl := NewTable()
 	tbl.Upsert(&PeerRoute{
 		PublicKey:  mustKey(t, 0xAA),
-		VPN4:       mustAddr(t, "100.64.0.10"),
+		VPN4:       mustAddr(t, "198.18.0.10"),
 		DirectAddr: mustAddrPort(t, "203.0.113.1:51820"),
 	})
 	chain := tbl.AddRelayChainRoutes()
@@ -143,7 +143,7 @@ func TestAddRelayChainRoutes_DirectPeersIgnored(t *testing.T) {
 func TestUpsertRemove(t *testing.T) {
 	tbl := NewTable()
 	pk := mustKey(t, 0x01)
-	tbl.Upsert(&PeerRoute{PublicKey: pk, VPN4: mustAddr(t, "100.64.0.1")})
+	tbl.Upsert(&PeerRoute{PublicKey: pk, VPN4: mustAddr(t, "198.18.0.1")})
 	if len(tbl.All()) != 1 {
 		t.Fatalf("expected 1 route")
 	}

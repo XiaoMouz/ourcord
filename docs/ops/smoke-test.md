@@ -24,7 +24,7 @@ bash tests/e2e/smoke_two_node.sh
 3. 起两个 daemon (`A`/`B`)，各自独立 state dir / IPC socket / `XDG_CONFIG_HOME`
 4. 对两个 daemon 各 `ourcord-cli connect`
 5. 检查 `status` 显示 `vpnActive=true`
-6. 用 `ip addr` (Linux) / `ifconfig` (macOS) 验 TUN 上确实有 `100.64.0.x` + `fd7a:115c:a1e0::x` 地址
+6. 用 `ip addr` (Linux) / `ifconfig` (macOS) 验 TUN 上确实有 `198.18.0.x` + `fd<XX>:<XXXX>:<XXXX>::x` 地址（v4 = RFC2544 基准段；v6 = 部署级随机 ULA /48，由 control 在首次注册时生成并存 KV）
 
 ## 通过标准
 
@@ -75,9 +75,9 @@ for k,v in d['peers'].items():
     if v['name']=='ourcord-a': v['endpoint']='$A_HOST:51820'
 json.dump(d, open(p,'w'), indent=2)"
 
-# 在 A 内打通到 B 的 VPN 子网路由（Phase-1 daemon 不自动写）
-orb run -m ourcord-a sudo ip route add 100.64.0.0/10 dev utun
-orb run -m ourcord-b sudo ip route add 100.64.0.0/10 dev utun
+# 在 A/B 内打通到对端的 VPN /32 路由 — 现在 daemon 自动做（U6），手工命令仅作 fallback：
+#   sudo ip route add 198.18.0.10/32 dev utun
+#   sudo ip route add 198.18.0.11/32 dev utun
 
 # 强制 B 重新拉 config（学到 A endpoint）
 orb run -m ourcord-b sudo XDG_CONFIG_HOME=/home/xiaomouz/.config \
@@ -86,8 +86,8 @@ orb run -m ourcord-b sudo XDG_CONFIG_HOME=/home/xiaomouz/.config \
   /home/xiaomouz/ourcord-cli --socket /tmp/ourcord.sock connect
 
 # 互 ping
-orb run -m ourcord-a sudo ping -c 4 100.64.0.10   # ourcord-b
-orb run -m ourcord-b sudo ping -c 4 100.64.0.11   # ourcord-a
+orb run -m ourcord-a sudo ping -c 4 198.18.0.10   # ourcord-b
+orb run -m ourcord-b sudo ping -c 4 198.18.0.11   # ourcord-a
 ```
 
 预期：4 packets transmitted, 4 received, 0% packet loss。
@@ -99,7 +99,35 @@ orb run -m ourcord-b sudo ping -c 4 100.64.0.11   # ourcord-a
 - **ipc.key 路径**：daemon 与 CLI 都必须读 `XDG_CONFIG_HOME=/home/xiaomouz/.config`，否则 HMAC 失配 → 静默断连。
 - **mock control 是 HTTP/1.0**：daemon 的 `control` HTTP body 必须是 `bytes.Reader`（非自定义 io.Reader），否则 net/http 走 chunked transfer-encoding，Python BaseHTTPServer 解析不了会挂死。本仓库已修复 (`daemon/pkg/control/client.go bytesReader`)。
 - **IPC handshake 拖尾字节**：服务端 HMAC handshake 用 `json.Decoder` 时其 bufio 会预读到 client 紧随其后的第一个 IPC 请求；handleConn 必须用 `dec.Buffered()` 拼回 `io.MultiReader`，否则首条请求丢失、连接挂死。本仓库已修复 (`daemon/pkg/ipc/{auth,server}.go`)。
-- **v6 暂不通**：默认路由表配置只通 v4，v6 路径需要自行 `ip -6 route add fd7a:115c:a1e0::/48 dev utun` 但 wg AllowedIPs 也要含对端 /128（当前由 control 下发的 ip6 已是 /128，应通；若不通见 `daemon/pkg/routing/table.go`）。
+- **v6 暂不通**（已知，记入 follow-up）：默认 daemon 已自动 `route add fd<XX>::/48 dev utun`（U6），但 wg AllowedIPs 必须含对端 /128。当前由 control 下发的 ip6 已是 /128，理论应通；若不通见 `daemon/pkg/routing/table.go`。
+
+### 与 Tailscale 共存测试
+
+OurCord 自 U 系列起 v4 改 `198.18.0.0/15`、v6 改部署级随机 ULA `/48`，与
+Tailscale 默认池（v4 `100.64.0.0/10` + v6 `fd7a:115c:a1e0::/48`）完全无交集。
+
+验收方法（macOS 上同时装两者）：
+
+```bash
+# Tailscale 上线（如已登）
+sudo tailscale up
+
+# OurCord 上线
+sudo /usr/local/bin/ourcordd --wg-listen-port 51820 &
+ourcord-cli connect
+
+# 预期：两条接口共存
+ifconfig | grep -E "utun|tailscale" -A1
+# utun7  inet 100.64.x.y    (Tailscale)
+# utun8  inet 198.18.0.10   (OurCord)
+
+# Tailscale 节点照常可达，OurCord 节点照常可达，互不影响
+ping -c 1 100.64.x.y    # Tailscale peer
+ping -c 1 198.18.0.11   # OurCord peer
+```
+
+如启动 daemon 时 stderr 出现 `WARN: VPN pool 198.18.0.0/15 may conflict with existing route: …`
+说明本机已有 198.18 段使用者（极罕见，通常是测试桩或刻意配置）；Phase-1 不自动切段，可手动停掉冲突源。
 
 ### 清理
 

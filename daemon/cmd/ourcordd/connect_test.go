@@ -24,10 +24,11 @@ import (
 // fakeTun records IpcSet calls so the test can assert the wg UAPI string the
 // connect pipeline produced.
 type fakeTun struct {
-	mu       sync.Mutex
-	upCalled bool
-	closed   bool
-	ipcCalls []string
+	mu          sync.Mutex
+	upCalled    bool
+	closed      bool
+	ipcCalls    []string
+	v4RouteSync [][]netip.Addr
 }
 
 func (f *fakeTun) Up() error            { f.mu.Lock(); defer f.mu.Unlock(); f.upCalled = true; return nil }
@@ -37,6 +38,13 @@ func (f *fakeTun) ConfigureIPC(s string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.ipcCalls = append(f.ipcCalls, s)
+	return nil
+}
+func (f *fakeTun) SyncPeerV4Routes(want []netip.Addr) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	cp := append([]netip.Addr(nil), want...)
+	f.v4RouteSync = append(f.v4RouteSync, cp)
 	return nil
 }
 func (f *fakeTun) lastIPC() string {
@@ -88,7 +96,7 @@ func mockControlPlane(t *testing.T, peerPub string) *httptest.Server {
 			Peer: control.PeerInfo{
 				ID: "peer-self", UserID: "u1", PublicKey: req.PublicKey,
 				Name: req.Name, Platform: req.Platform,
-				IP4: "100.64.0.10", IP6: "fd7a:115c:a1e0::a",
+				IP4: "198.18.0.10", IP6: "fdab:cdef:123::a",
 			},
 		})
 	})
@@ -105,8 +113,8 @@ func mockControlPlane(t *testing.T, peerPub string) *httptest.Server {
 			Peers: []control.RemotePeer{{
 				ID:        "peer-other",
 				PublicKey: base64.StdEncoding.EncodeToString(remoteKey[:]),
-				IP4:       "100.64.0.11",
-				IP6:       "fd7a:115c:a1e0::b",
+				IP4:       "198.18.0.11",
+				IP6:       "fdab:cdef:123::b",
 				Name:      "other",
 			}},
 			Relays: []control.RelayEntry{},
@@ -173,10 +181,10 @@ func TestConnect_HappyPath_MockControl(t *testing.T) {
 	if !strings.Contains(uapi, "public_key=") {
 		t.Errorf("UAPI missing public_key (no remote peer programmed):\n%s", uapi)
 	}
-	if !strings.Contains(uapi, "allowed_ip=100.64.0.11/32") {
+	if !strings.Contains(uapi, "allowed_ip=198.18.0.11/32") {
 		t.Errorf("UAPI missing remote v4 allowed_ip:\n%s", uapi)
 	}
-	if !strings.Contains(uapi, "allowed_ip=fd7a:115c:a1e0::b/128") {
+	if !strings.Contains(uapi, "allowed_ip=fdab:cdef:123::b/128") {
 		t.Errorf("UAPI missing remote v6 allowed_ip:\n%s", uapi)
 	}
 }
