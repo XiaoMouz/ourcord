@@ -69,10 +69,10 @@ go test -race ./...
 
 - gRPC over Unix Socket（macOS/Linux）/ Named Pipe（Windows）
 - proto 定义最终落 `proto/`，当前可在 `pkg/ipc/` 内联但要标 `// TODO(proto): 移到 proto/`
-- `CmdStatus` 现已返回 `IP4` / `IP6` / `PeerCount` 字段，CLI/UI 可直接读不再需要解析 wg 表。
+- `CmdStatus` 返回 `IP4` / `IP6` / `PeerCount` / `RelayUsed` / `RelayURL` / `PathSummary` 字段；`CmdListPeers` 返回每个 peer 的 `path`（`configured` / `direct` / `derp` / `next-hop` / `unresolved`）。CLI/UI 可直接读，不需要解析 wg 表。
 
 ## 已知技术债
 
 - `pkg/wg` 在 macOS 上 wgctrl 不能直接配 userspace daemon；当前走 `wireguard-go` 的 IPC socket（`wg/ipc.go` `ConfigureIPC`）。
 - 中继链 fallback 切换尚未做"主动嗅探→切链"的反馈环，依赖控制层下发新拓扑。
-- M 系列（Minecraft LAN）尚未实现：mDNS 反射 + 25565 端口转发 + lobby 网段广播代理。设计在 plan.md 第十五轮规划。
+- M 系列（Minecraft LAN）尚未实现：mDNS 反射 + 25565 端口转发 + lobby 网段广播代理；是否进入阶段二取决于网络完整性主线完成后的产品取舍。

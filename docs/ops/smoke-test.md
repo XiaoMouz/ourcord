@@ -1,6 +1,6 @@
 # OurCord 单机双 daemon smoke 测试
 
-> Phase-1 验证 daemon connect 管线对真实 kernel TUN + WireGuard 的端到端表现。
+> 当前脚本验证 daemon connect 管线对真实 kernel TUN + WireGuard 的端到端表现；它不是 Phase 1 关闭验收。
 > 离线版（mock-control + fake TUN）见 `daemon/cmd/ourcordd/connect_test.go`。
 
 ## 前置
@@ -32,18 +32,18 @@ bash tests/e2e/smoke_two_node.sh
 - 两个 daemon 都报告 `vpnActive=true`
 - 两个 utun（或 ourcord*) 接口上能看到 mock 分配的 v4/v6 前缀
 
-## 已知 Phase-1 限制（**这个脚本不验证**）
+## 已知限制（**这个脚本不验证**）
 
 - ~~**跨 daemon 互 ping 不会通**~~ — 已通过 OrbStack 双 VM 验证（见下文）。
   单机版脚本仍只测同主机管线对错；跨 daemon 真实组网用 OrbStack 双 VM。
-- **DERP fallback 不会被走**。per-peer ICE 仍未启用。
+- **DERP fallback 不会被走**。per-peer ICE 仍未启用；这是 Phase 1 关闭前必须补齐的能力。
 - **真实 OAuth 不验**。mock control plane 不签 JWT，daemon 也只是把字符串当 bearer 透传。真的 JWT 校验由 control 的 vitest 套件覆盖。
 
 ---
 
-## OrbStack 双 VM 跨主机互通验证（Phase-1 端到端）
+## OrbStack 双 VM 跨主机互通验证（当前手工 smoke）
 
-这是 Phase-1 真正的"两节点组网互通"验收。需要 macOS + OrbStack。
+这是当前"两节点组网互通"手工 smoke。Phase 1 关闭验收必须移除手工 endpoint 注入。
 
 ### 跑一遍
 

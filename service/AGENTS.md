@@ -31,7 +31,7 @@
 
 ## R2 配额
 
-- 元数据有 `expires_at`，但 R2 自身没有 TTL；过期清理需要 cron（待补 → `fix-r2-cleanup` todo）。
+- 元数据有 `expires_at`，但 R2 自身没有 TTL；过期清理由 `src/index.ts` 的 Workers `scheduled` handler 调 `runR2Cleanup`，删除失败只记日志并留待下次重试。
 - 上传大小/数量/天数限制由后端强制，不要相信前端。
 
 ## 构建/检查
@@ -52,6 +52,6 @@ npx wrangler deploy
 
 ## 已知技术债
 
-- R2 过期文件清理 cron 已上线（cron.ts），但删失败仅记日志。
+- R2 过期文件清理已上线，但删失败仅记日志。
 - 权限系统目前粗粒度（owner/admin/member/guest）；细粒度位掩码权限（D3）阶段二补。
-- D1 schema 仍靠 `CREATE IF NOT EXISTS`，无版本化迁移；新增列要写迁移脚本（D5）。
+- D1 schema 仍靠 `src/schema.ts` + `CREATE IF NOT EXISTS` / dev `init-db`，无版本化迁移；新增列要配套迁移脚本或先补 service 迁移机制（D5）。

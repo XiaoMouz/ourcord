@@ -233,8 +233,8 @@ func (c *Client) Close() error {
 
 // PeerConfig is the configuration received from the control plane.
 type PeerConfig struct {
-	Peers  []RemotePeer  `json:"peers"`
-	Relays []RelayEntry  `json:"relays"`
+	Peers  []RemotePeer `json:"peers"`
+	Relays []RelayEntry `json:"relays"`
 }
 
 type RemotePeer struct {
@@ -243,11 +243,17 @@ type RemotePeer struct {
 	IP4       string `json:"ip4"`
 	IP6       string `json:"ip6"`
 	Name      string `json:"name"`
+	LastSeen  int64  `json:"last_seen,omitempty"`
 	// Endpoint is an optional wg UDP endpoint hint of the form host:port.
 	// Set by the control plane when the peer reported one on register
 	// (Phase-1 manual / smoke testing). Once per-peer ICE lands the daemons
 	// will discover endpoints themselves and this field will be ignored.
 	Endpoint string `json:"endpoint,omitempty"`
+	// DERPURL and NextHopPublicKey are optional forward-compatible fields for
+	// the network-completeness work. Current control responses do not have to
+	// send them; daemon status will expose them when present.
+	DERPURL          string `json:"derp_url,omitempty"`
+	NextHopPublicKey string `json:"next_hop_public_key,omitempty"`
 }
 
 type RelayEntry struct {

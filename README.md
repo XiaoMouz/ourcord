@@ -2,6 +2,8 @@
 
 小群体（5–10 人）通讯平台，底层为自建 WireGuard VPN 覆盖网，上层提供语音/视频/屏幕共享/文件传输/远控功能。
 
+产品需求与阶段边界见 [PRD.md](PRD.md)。
+
 ## 架构
 
 ```
@@ -50,7 +52,8 @@ npx wrangler d1 migrations apply DB --remote   # 远程生产
 cd service
 npm install
 npx wrangler deploy
-curl -X POST https://your-service.workers.dev/api/admin/init-db
+# 本地/测试环境首次使用可初始化当前 service schema
+curl -X POST http://localhost:8788/api/admin/init-db
 ```
 
 ### 环境变量 / Environment Variables
@@ -140,14 +143,14 @@ go build -o ourcord-cli ./cmd/ourcord-cli
 
 ## 开发路线图
 
-- [x] **阶段一** — VPN 核心 + 控制层 + DERP 节点（当前）
-- [ ] **阶段二** — 服务层（大厅/房间/消息/文件）
+- [ ] **阶段一** — VPN 核心 + 控制层 + DERP 节点 + daemon 连接管线（进行中；关闭标准是 per-peer ICE 自动直连 + daemon DERP fallback，无需手工 endpoint 注入）
+- [ ] **阶段二** — 网络完整性优先（A-B-C 拓扑闭环、Windows Wintun、设备级凭证、control↔service HMAC、自治文件后端；服务层大厅/房间/消息/R2 文件已有基础能力）
 - [ ] **阶段三** — 媒体层（语音/视频/屏幕共享/远控）
-- [ ] **阶段四** — UI 层（Tauri/Flutter/React）
+- [ ] **阶段四** — 分发与产品化（Tauri/Flutter/React UI、安装器、更新、运营监控）
 
-### Phase 2 — Stretch（已从 Phase-1 推迟）
+### Phase 2 — Stretch
 
-- **M 系列：mDNS reflector + Minecraft LAN 联机** — 原列为 Phase-1 stretch；为聚焦 Phase-1 核心 mesh + 控制面，推迟至 Phase 2 实施。
+- **M 系列：mDNS reflector + Minecraft LAN 联机** — 网络完整性主线后的候选差异化能力，不阻塞 Phase 1 自动连通关闭。
 
 ## 协议与授权
 

@@ -4,7 +4,7 @@ This document describes the OurCord security model: who we trust, which secrets
 exist, how trust boundaries are enforced, how to rotate credentials, and what
 known gaps are scheduled for future work.
 
-It is descriptive of the current implementation (phase-1). Items explicitly
+It is descriptive of the current implementation. Items explicitly
 marked **future** or **phase-2** are not yet implemented and must not be
 assumed to be in place.
 
@@ -54,13 +54,6 @@ assumed to be in place.
 | OAuth client secret(s) | Worker secret on **control** | `wrangler secret put` (per provider) | Used when `oauthRedirect`/`oauthCallback` is enabled. Not exposed to clients. |
 | Daemon auth token | Local file `<state-dir>/token` (mode `0600`) **or** `OURCORD_DAEMON_JWT` env | Re-issued via `ourcord-cli login` (control flow) | Long-lived bearer the daemon presents to control as `Authorization: Bearer …` (and as `?token=` for the WebSocket upgrade in `daemon/pkg/control/client.go`). Currently per-user, not per-device. |
 | Relay auth token | CLI flag `--auth-token` (or operator-supplied env wrapping it) | Re-issued by control operator | Bearer the relay presents to control as `Authorization: Bearer …` when registering itself and reporting health. |
-
-> **README inconsistency note (audit finding).** `README.md` describes
-> `INTERNAL_TOKEN` as a phase-2 HMAC and says it is "not used in phase-1".
-> The code already ships `SERVICE_INTERNAL_TOKEN` (a shared bearer, not
-> HMAC) and uses it in phase-1 between control and service. The HMAC scheme
-> is genuinely future work (see §6); the bearer above is current reality.
-> The README env table should be reconciled in a separate change.
 
 ---
 
@@ -250,10 +243,6 @@ rotation window will fail; users retry the login.
     purpose of storing message history. Adding E2EE for stored messages
     is not currently planned; users who need it should treat the
     service as a trusted store.
-
-- **README/code reconciliation.** See the audit note in §2: the
-  `INTERNAL_TOKEN` row in `README.md` should be updated to describe the
-  shipped `SERVICE_INTERNAL_TOKEN` bearer plus the planned HMAC.
 
 ---
 

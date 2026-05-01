@@ -18,6 +18,7 @@ import (
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 
 	"github.com/ourcord/ourcord/daemon/pkg/control"
+	"github.com/ourcord/ourcord/daemon/pkg/ipc"
 	"github.com/ourcord/ourcord/daemon/pkg/wg"
 )
 
@@ -31,9 +32,9 @@ type fakeTun struct {
 	v4RouteSync [][]netip.Addr
 }
 
-func (f *fakeTun) Up() error            { f.mu.Lock(); defer f.mu.Unlock(); f.upCalled = true; return nil }
-func (f *fakeTun) Close() error         { f.mu.Lock(); defer f.mu.Unlock(); f.closed = true; return nil }
-func (f *fakeTun) Name() string         { return "utun-test" }
+func (f *fakeTun) Up() error    { f.mu.Lock(); defer f.mu.Unlock(); f.upCalled = true; return nil }
+func (f *fakeTun) Close() error { f.mu.Lock(); defer f.mu.Unlock(); f.closed = true; return nil }
+func (f *fakeTun) Name() string { return "utun-test" }
 func (f *fakeTun) ConfigureIPC(s string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -116,6 +117,7 @@ func mockControlPlane(t *testing.T, peerPub string) *httptest.Server {
 				IP4:       "198.18.0.11",
 				IP6:       "fdab:cdef:123::b",
 				Name:      "other",
+				LastSeen:  1234,
 			}},
 			Relays: []control.RelayEntry{},
 		})
@@ -186,6 +188,39 @@ func TestConnect_HappyPath_MockControl(t *testing.T) {
 	}
 	if !strings.Contains(uapi, "allowed_ip=fdab:cdef:123::b/128") {
 		t.Errorf("UAPI missing remote v6 allowed_ip:\n%s", uapi)
+	}
+
+	status := d.HandleIPC(context.Background(), ipc.IPCRequest{Cmd: ipc.CmdStatus})
+	if !status.OK {
+		t.Fatalf("status failed: %s", status.Error)
+	}
+	st, ok := status.Data.(ipc.DaemonStatus)
+	if !ok {
+		t.Fatalf("status data has type %T", status.Data)
+	}
+	if st.PathSummary != "configured" {
+		t.Fatalf("expected configured path summary before ICE/DERP, got %q", st.PathSummary)
+	}
+	if st.PeerCount != 1 {
+		t.Fatalf("expected peer_count=1, got %d", st.PeerCount)
+	}
+
+	peersResp := d.HandleIPC(context.Background(), ipc.IPCRequest{Cmd: ipc.CmdListPeers})
+	if !peersResp.OK {
+		t.Fatalf("list peers failed: %s", peersResp.Error)
+	}
+	peers, ok := peersResp.Data.([]ipc.ConnectedPeer)
+	if !ok {
+		t.Fatalf("peers data has type %T", peersResp.Data)
+	}
+	if len(peers) != 1 {
+		t.Fatalf("expected 1 peer, got %d", len(peers))
+	}
+	if peers[0].Path != "configured" {
+		t.Fatalf("expected peer path configured, got %q", peers[0].Path)
+	}
+	if peers[0].Name != "other" || peers[0].IP4 != "198.18.0.11" || peers[0].LastSeenSecs != 1234 {
+		t.Fatalf("unexpected peer: %+v", peers[0])
 	}
 }
 

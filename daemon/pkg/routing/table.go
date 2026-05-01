@@ -15,11 +15,15 @@ import (
 // PeerRoute describes how to reach a remote VPN peer.
 type PeerRoute struct {
 	PublicKey  wgtypes.Key
-	VPN4       netip.Addr   // peer's VPN IPv4
-	VPN6       netip.Addr   // peer's VPN IPv6
-	NextHop    *wgtypes.Key // nil = direct, non-nil = route via this intermediate peer
+	ID         string
+	Name       string
+	VPN4       netip.Addr      // peer's VPN IPv4
+	VPN6       netip.Addr      // peer's VPN IPv6
+	NextHop    *wgtypes.Key    // nil = direct, non-nil = route via this intermediate peer
 	DirectAddr *netip.AddrPort // UDP endpoint if hole-punch succeeded
-	DERPURL    string           // DERP relay URL (fallback)
+	DERPURL    string          // DERP relay URL (fallback)
+	LastSeen   int64
+	LastError  string
 }
 
 // Table holds the routing table for all VPN peers.
@@ -64,7 +68,16 @@ func (t *Table) All() []*PeerRoute {
 	defer t.mu.RUnlock()
 	out := make([]*PeerRoute, 0, len(t.routes))
 	for _, r := range t.routes {
-		out = append(out, r)
+		cp := *r
+		if r.NextHop != nil {
+			nh := *r.NextHop
+			cp.NextHop = &nh
+		}
+		if r.DirectAddr != nil {
+			ap := *r.DirectAddr
+			cp.DirectAddr = &ap
+		}
+		out = append(out, &cp)
 	}
 	return out
 }

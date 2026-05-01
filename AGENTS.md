@@ -150,10 +150,10 @@ go work sync
 
 ## 8. 当前阶段
 
-- ✅ **阶段一**：VPN 核心 + 控制层 + DERP 节点 + 跨平台 daemon + IPC + ICE/DERP fallback + 路由（含 A-B-C 链）+ 限速 + 封禁双 key 体系 + IPAM 198.18/15+ULA + OrbStack 双 VM smoke 已通
-- 🚧 **阶段二**：服务层完善（大厅/房间/权限/消息/文件实际打通）
+- 🚧 **阶段一**：VPN 核心 + 控制层 + DERP 节点 + daemon 连接管线 + IPC + 路由（含 A-B-C 链配置能力）+ 限速 + 封禁双 key 体系 + IPAM 198.18/15+ULA 已基本成形；**尚未关闭**，关闭标准是 per-peer ICE 自动直连与 daemon DERP fallback 无需手工 endpoint 注入。
+- 📋 **阶段二**：网络完整性优先（A-B-C 拓扑闭环、Windows Wintun、设备级凭证、control↔service HMAC、自治文件后端）；服务层大厅/房间/权限/消息/R2 文件已有基础能力但不是阶段二优先主线。
 - 📋 **阶段三**：媒体层（Opus/H.264/H.265、远控）
 - 📋 **阶段四**：UI 层（Tauri/Flutter/React）
-- 📋 **阶段二可选附加**：Minecraft LAN 联机（M 系列设计已存档，见 plan.md）
+- 📋 **阶段二可选附加**：Minecraft LAN 联机；是否作为阶段二差异化能力仍需在网络完整性主线之后确认。
 
 判断改动归属哪个阶段，避免提前实现尚未冻结的设计。

@@ -20,11 +20,11 @@
 入口：`src/index.ts`。所有 API 在这里登记。新增路由时：
 1. 在 `src/index.ts` 加路径分发；
 2. handler 文件用 `requireAuth(req, env)` 拿到 `claims`；
-3. 涉及 schema 改动时同步更新 `src/schema.ts` 并递增版本（init-db 接口幂等）。
+3. 涉及 schema 改动时新增 `migrations/NNNN_<description>.sql`，并确认 `POST /api/admin/init-db` 仍只是开发种子/兼容钩子。
 
 ## 数据库
 
-- D1：`src/schema.ts` 是事实源；通过 `POST /api/admin/init-db` 创建。
+- D1：`migrations/` 是事实源；通过 `wrangler d1 migrations apply DB --local|--remote` 应用。
 - KV：会话/缓存用，**不要存权威数据**。
 - 不要在 KV 上做计数器+条件写来实现"原子分配"——它不原子。用 D1 UNIQUE 约束 + retry。
 
@@ -58,7 +58,7 @@ npx wrangler deploy    # 部署
 - **getPeerConfig 默认仅返回该用户自己的 peers**；带 `?room_id=` 才跨 user 暴露同 room 成员的 peers。这就是"每个房间独立组网"的实现。
 - **relay map 按 region 过滤、按 headroom 排序**；daemon 自己挑前几个 relay 做候选。
 - **per-relay denylist 与全局 ban 解耦**：`/api/relay/banned-keys?relay_id=` 才返回合并集。响应包含 `{keys, derp_keys}` 两数组，分别给 WireGuard 与 DERP admit 用——双 key 体系（G12），daemon 注册 peer 时必须同时上报 `public_key` + `derp_node_key`，否则 DERP 通道封禁失效。
-- **schema 加表只能用 `CREATE IF NOT EXISTS`**；现有部署需手工 `wrangler d1 execute` 应用 schema.ts diff（D5 迁移系统未上）。
+- **schema 改动必须走迁移**；不要恢复通过 `init-db` 或 ad-hoc `wrangler d1 execute` 管理生产 schema 的旧模式。
 - **OAuth state 浏览器绑定（P1）**：`oauthRedirect` 同时下发 `state`（KV）与 `oauth_state` HttpOnly cookie；`oauthCallback` 必须常量时间比对二者。修改这条链路时不能去掉 cookie 校验，否则退化为登录 CSRF。
 - **OTP 暴力防护（P2）**：`otp_fails:<email>` KV 计数器达到 5 即作废 OTP；`otp_cooldown:<email>` 强制 60s 申请冷却。**KV 读改写非原子**——这是已知短板，并发错码可能漏计 1-2 次。Phase-2 切换 D1 计数行或 Durable Object 解决。新增 OTP 校验路径必须复用 fail counter 而非另起一套。
 - **`bans` 表强制生效点（P3）**：`requireAuth` 在 JWT 验签后追加 `isUserBanned`，让现有 30 天 token 在封禁后立即失效；`verifyOTP` / `oauthCallback` 同时检查以拒发新 token。新增登录入口/特权路径同样要补这一行。

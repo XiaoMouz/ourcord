@@ -30,11 +30,11 @@ import (
 
 func main() {
 	var (
-		controlURL    = flag.String("control-url", "https://control.ourcord.app", "Control plane URL")
-		socketPath    = flag.String("socket", ipc.DefaultSocketPath(), "Unix socket path for IPC")
-		stateDir      = flag.String("state-dir", wg.DefaultStateDir(), "Persistent state directory (WireGuard private key, etc.)")
-		logLevel      = flag.String("log-level", "info", "Log level: debug, info, error")
-		wgListenPort  = flag.Int("wg-listen-port", 0, "Pin WireGuard UDP listen port (0 = ephemeral; set for smoke/manual mesh)")
+		controlURL     = flag.String("control-url", "https://control.ourcord.app", "Control plane URL")
+		socketPath     = flag.String("socket", ipc.DefaultSocketPath(), "Unix socket path for IPC")
+		stateDir       = flag.String("state-dir", wg.DefaultStateDir(), "Persistent state directory (WireGuard private key, etc.)")
+		logLevel       = flag.String("log-level", "info", "Log level: debug, info, error")
+		wgListenPort   = flag.Int("wg-listen-port", 0, "Pin WireGuard UDP listen port (0 = ephemeral; set for smoke/manual mesh)")
 		wgEndpointHint = flag.String("wg-endpoint", "", "Public host:port hint for our wg endpoint sent to control on register (empty = none)")
 	)
 	flag.Parse()
@@ -56,11 +56,11 @@ func main() {
 
 	// Build daemon
 	d := &daemon{
-		controlURL:    *controlURL,
-		keyPair:       kp,
-		socketPath:    *socketPath,
-		stateDir:      *stateDir,
-		wgListenPort:  uint16(*wgListenPort),
+		controlURL:     *controlURL,
+		keyPair:        kp,
+		socketPath:     *socketPath,
+		stateDir:       *stateDir,
+		wgListenPort:   uint16(*wgListenPort),
 		wgEndpointHint: *wgEndpointHint,
 	}
 
@@ -109,11 +109,11 @@ func main() {
 
 // daemon implements ipc.Handler and coordinates VPN subsystems.
 type daemon struct {
-	controlURL    string
-	keyPair       *wg.KeyPair
-	socketPath    string
-	stateDir      string
-	wgListenPort  uint16 // 0 = ephemeral
+	controlURL     string
+	keyPair        *wg.KeyPair
+	socketPath     string
+	stateDir       string
+	wgListenPort   uint16 // 0 = ephemeral
 	wgEndpointHint string // host:port, sent on register
 
 	vpnActive atomic.Bool
@@ -177,21 +177,33 @@ func (d *daemon) HandleIPC(ctx context.Context, req ipc.IPCRequest) ipc.IPCRespo
 	case ipc.CmdStatus:
 		d.connMu.Lock()
 		ip4, ip6 := d.assignedIP4, d.assignedIP6
-		var peerCount int
+		var routes []*routing.PeerRoute
 		if d.table != nil {
-			peerCount = len(d.table.All())
+			routes = d.table.All()
 		}
 		d.connMu.Unlock()
+		relayUsed, relayURL, pathSummary := summarizeRoutes(d.vpnActive.Load(), routes)
 		return ipc.IPCResponse{
 			OK: true,
 			Data: ipc.DaemonStatus{
-				Running:   true,
-				VPNActive: d.vpnActive.Load(),
-				IP4:       ip4,
-				IP6:       ip6,
-				PeerCount: peerCount,
+				Running:     true,
+				VPNActive:   d.vpnActive.Load(),
+				IP4:         ip4,
+				IP6:         ip6,
+				PeerCount:   len(routes),
+				RelayUsed:   relayUsed,
+				RelayURL:    relayURL,
+				PathSummary: pathSummary,
 			},
 		}
+	case ipc.CmdListPeers:
+		d.connMu.Lock()
+		var routes []*routing.PeerRoute
+		if d.table != nil {
+			routes = d.table.All()
+		}
+		d.connMu.Unlock()
+		return ipc.IPCResponse{OK: true, Data: connectedPeers(routes)}
 	case ipc.CmdConnect:
 		if err := d.connect(ctx); err != nil {
 			return ipc.IPCResponse{OK: false, Error: err.Error()}
@@ -207,14 +219,115 @@ func (d *daemon) HandleIPC(ctx context.Context, req ipc.IPCRequest) ipc.IPCRespo
 	}
 }
 
+func summarizeRoutes(active bool, routes []*routing.PeerRoute) (bool, string, string) {
+	if !active {
+		return false, "", "inactive"
+	}
+	if len(routes) == 0 {
+		return false, "", "no-peers"
+	}
+	var hasDirect, hasDERP, hasNextHop, hasConfigured, hasUnresolved bool
+	var relayURL string
+	for _, r := range routes {
+		path := routePath(r)
+		switch path {
+		case "direct":
+			hasDirect = true
+		case "derp":
+			hasDERP = true
+			if relayURL == "" {
+				relayURL = r.DERPURL
+			}
+		case "next-hop":
+			hasNextHop = true
+		case "configured":
+			hasConfigured = true
+		default:
+			hasUnresolved = true
+		}
+	}
+	if hasUnresolved {
+		return hasDERP, relayURL, "degraded"
+	}
+	if hasDERP {
+		return true, relayURL, "derp"
+	}
+	if hasNextHop {
+		return false, "", "next-hop"
+	}
+	if hasDirect {
+		return false, "", "direct"
+	}
+	if hasConfigured {
+		return false, "", "configured"
+	}
+	return false, "", "degraded"
+}
+
+func connectedPeers(routes []*routing.PeerRoute) []ipc.ConnectedPeer {
+	out := make([]ipc.ConnectedPeer, 0, len(routes))
+	for _, r := range routes {
+		path := routePath(r)
+		peer := ipc.ConnectedPeer{
+			PublicKey:    r.PublicKey.String(),
+			Name:         r.Name,
+			IP4:          addrString(r.VPN4),
+			IP6:          addrString(r.VPN6),
+			Direct:       path == "direct",
+			Path:         path,
+			RelayURL:     r.DERPURL,
+			LatencyMs:    0,
+			LastSeenSecs: r.LastSeen,
+			LastError:    r.LastError,
+		}
+		if r.DirectAddr != nil {
+			peer.Endpoint = r.DirectAddr.String()
+		}
+		if r.NextHop != nil {
+			peer.NextHop = r.NextHop.String()
+		}
+		out = append(out, peer)
+	}
+	return out
+}
+
+func routePath(r *routing.PeerRoute) string {
+	if r == nil {
+		return "unresolved"
+	}
+	if r.LastError != "" {
+		return "unresolved"
+	}
+	if r.NextHop != nil {
+		return "next-hop"
+	}
+	if r.DirectAddr != nil {
+		return "direct"
+	}
+	if r.DERPURL != "" {
+		return "derp"
+	}
+	if r.VPN4.IsValid() || r.VPN6.IsValid() {
+		return "configured"
+	}
+	return "unresolved"
+}
+
+func addrString(a netip.Addr) string {
+	if !a.IsValid() {
+		return ""
+	}
+	return a.String()
+}
+
 // connect wires the daemon into the OurCord overlay (G1):
-//   1. Read the auth token (env OURCORD_DAEMON_JWT or <state-dir>/token).
-//   2. POST /api/peers/register → receive allocated VPN IPv4/IPv6.
-//   3. tun.New() — kernel TUN + per-platform OS address assignment (W1/G14).
-//   4. wireguard-go device.Up() with the registered private key.
-//   5. Initial /api/peers/config fetch → routing.Table → device.IpcSet.
-//   6. Background goroutines: control WS Run() (signaling for ICE) +
-//      30s mesh poller (re-fetch /peers/config and apply diff).
+//  1. Read the auth token (env OURCORD_DAEMON_JWT or <state-dir>/token).
+//  2. POST /api/peers/register → receive allocated VPN IPv4/IPv6.
+//  3. tun.New() — kernel TUN + per-platform OS address assignment (W1/G14).
+//  4. wireguard-go device.Up() with the registered private key.
+//  5. Initial /api/peers/config fetch → routing.Table → device.IpcSet.
+//  6. Background goroutines: control WS Run() (signaling for ICE) +
+//     30s mesh poller (re-fetch /peers/config and apply diff).
 //
 // Phase-1 limitation: per-peer ICE agents are NOT yet spawned. That means
 // only LAN / public-IPv6 P2P will work without explicit candidate exchange.
@@ -354,8 +467,22 @@ func applyConfig(iface tunIface, table *routing.Table, priv wgtypes.Key, cfg *co
 		ip6, _ := netip.ParseAddr(p.IP6)
 		route := &routing.PeerRoute{
 			PublicKey: pk,
+			ID:        p.ID,
+			Name:      p.Name,
 			VPN4:      ip4,
 			VPN6:      ip6,
+			DERPURL:   p.DERPURL,
+			LastSeen:  p.LastSeen,
+		}
+		if p.NextHopPublicKey != "" {
+			raw, err := base64.StdEncoding.DecodeString(p.NextHopPublicKey)
+			if err != nil || len(raw) != wgtypes.KeyLen {
+				log.Printf("peer %s: invalid next_hop_public_key", p.ID)
+			} else {
+				var nh wgtypes.Key
+				copy(nh[:], raw)
+				route.NextHop = &nh
+			}
 		}
 		if p.Endpoint != "" {
 			if ap, err := netip.ParseAddrPort(p.Endpoint); err == nil {
@@ -439,8 +566,9 @@ func scanForOverlap(text, needle string) []string {
 }
 
 // loadAuthToken reads the daemon's auth token. Order:
-//   1. OURCORD_DAEMON_JWT env var
-//   2. <state-dir>/token file (mode 0600 expected)
+//  1. OURCORD_DAEMON_JWT env var
+//  2. <state-dir>/token file (mode 0600 expected)
+//
 // The CLI handles login (OAuth/OTP) and writes the file; daemon never sees
 // browser flows directly.
 func loadAuthToken(stateDir string) (string, error) {

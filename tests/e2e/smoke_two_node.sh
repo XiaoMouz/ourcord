@@ -13,11 +13,11 @@
 # connect_test.go integration test. That test verifies the pipeline logic;
 # this script verifies the pipeline against actual kernel TUN/wg behavior.
 #
-# Phase-1 limitation: per-peer ICE agents are not yet wired, so the daemons
+# Current limitation: per-peer ICE agents are not yet wired, so the daemons
 # themselves won't auto-discover each other's wg endpoint. This script
 # manually injects a loopback endpoint for each peer so wg can handshake
 # over localhost UDP. That's enough to confirm TUN/wg are correctly wired.
-# True P2P / DERP fallback verification belongs in the Phase-2 ICE work.
+# True P2P / DERP fallback verification is required before Phase 1 can close.
 
 set -euo pipefail
 
@@ -102,15 +102,23 @@ sudo XDG_CONFIG_HOME="$B_DIR/config" "$WORKDIR/ourcord-cli" --socket "$B_SOCK" s
 case "$(uname)" in
     Linux)
         echo "==> ip addr (looking for VPN prefixes):"
-        ip -br addr | grep -E "100\.64\.|fd7a:" || {
-            echo "FAIL: no VPN address visible"
+        ip -br addr | grep -E "198\.18\." || {
+            echo "FAIL: no VPN IPv4 address visible"
+            exit 1
+        }
+        ip -br addr | grep -E "fd[0-9a-fA-F]{2}:" || {
+            echo "FAIL: no VPN IPv6 ULA address visible"
             exit 1
         }
         ;;
     Darwin)
         echo "==> ifconfig utun (looking for VPN prefixes):"
-        ifconfig | grep -E "inet (100\.64|fd7a)" || {
-            echo "FAIL: no VPN address visible"
+        ifconfig | grep -E "inet 198\.18" || {
+            echo "FAIL: no VPN IPv4 address visible"
+            exit 1
+        }
+        ifconfig | grep -E "inet6 fd[0-9a-fA-F]{2}:" || {
+            echo "FAIL: no VPN IPv6 ULA address visible"
             exit 1
         }
         ;;
@@ -119,4 +127,4 @@ esac
 echo "==> ALL CHECKS PASSED."
 echo "    Logs: $WORKDIR/{a,b}.log"
 echo "    Mock state: $WORKDIR/mock.json"
-echo "    NOTE: actual peer-to-peer ping requires per-peer ICE wiring (Phase-2)."
+echo "    NOTE: automatic peer-to-peer ping requires per-peer ICE wiring before Phase 1 can close."
