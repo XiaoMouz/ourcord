@@ -23,6 +23,10 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 WORKDIR="$(mktemp -d "$HOME/.cache/ourcord-orb.XXXX" 2>/dev/null || mktemp -d "$ROOT/.smoke-tmp.XXXX")"
 mkdir -p "$HOME/.cache" 2>/dev/null || true
 MOCK_PORT="${MOCK_PORT:-18642}"
+START_MOCK_CONTROL="${START_MOCK_CONTROL:-1}"
+CONTROL_URL="${CONTROL_URL:-}"
+TOKEN_A="${TOKEN_A:-smoke-token-a}"
+TOKEN_B="${TOKEN_B:-smoke-token-b}"
 WG_PORT="${WG_PORT:-51820}"
 ARCH="${ARCH:-arm64}"
 VM_A="ourcord-a"
@@ -86,13 +90,18 @@ echo "    vm-a: $IP_A    vm-b: $IP_B"
 echo "==> Sanity ping vm-a ↔ vm-b underlay..."
 vm_run "$VM_A" ping -c 1 -W 2 "$IP_B" | tail -2 | head -1
 
-# ---- 3. Mock control plane on host, reachable from VMs as host.orb.internal ----
-echo "==> Starting mock control plane on :$MOCK_PORT..."
-python3 "$ROOT/tests/e2e/mock_control.py" \
-    --bind 0.0.0.0 --port "$MOCK_PORT" --state "$WORKDIR/mock.json" >"$WORKDIR/mock.log" 2>&1 &
-MOCK_PID=$!
-sleep 0.5
-HOST_HOSTNAME="host.orb.internal"
+# ---- 3. Control plane on host, reachable from VMs as host.orb.internal ----
+if [[ "$START_MOCK_CONTROL" == "1" ]]; then
+    echo "==> Starting mock control plane on :$MOCK_PORT..."
+    python3 "$ROOT/tests/e2e/mock_control.py" \
+        --bind 0.0.0.0 --port "$MOCK_PORT" --state "$WORKDIR/mock.json" >"$WORKDIR/mock.log" 2>&1 &
+    MOCK_PID=$!
+    sleep 0.5
+    CONTROL_URL="http://host.orb.internal:$MOCK_PORT"
+else
+    [[ -n "$CONTROL_URL" ]] || { echo "FAIL: CONTROL_URL required when START_MOCK_CONTROL=0"; exit 1; }
+    echo "==> Using external control plane: $CONTROL_URL"
+fi
 
 # ---- 4. Push binary + token into each VM and start daemon ----
 USER_LINUX="$(vm_run $VM_A whoami | tail -1)"
@@ -102,18 +111,18 @@ start_daemon() {
     local vm=$1 ip=$2 token=$3
     echo "==> Setting up daemon in $vm ($ip)..."
     vm_run "$vm" mkdir -p "/home/$USER_LINUX/ourcord-state" "/home/$USER_LINUX/.config/ourcord"
+    vm_run "$vm" sudo sh -c "pkill -x ourcordd || true; sleep 0.2"
     # OrbStack auto-mounts /Users/$USER, copy from there.
     vm_run "$vm" cp "$WORKDIR/ourcordd" "/home/$USER_LINUX/ourcordd"
     vm_run "$vm" cp "$WORKDIR/ourcord-cli" "/home/$USER_LINUX/ourcord-cli"
     vm_run "$vm" chmod +x "/home/$USER_LINUX/ourcordd" "/home/$USER_LINUX/ourcord-cli"
     vm_run "$vm" sh -c "echo '$token' > '/home/$USER_LINUX/ourcord-state/token' && chmod 600 '/home/$USER_LINUX/ourcord-state/token'"
-    vm_run "$vm" sudo sh -c "pkill -x ourcordd || true; sleep 0.2"
 
     echo "==> Starting daemon in $vm..."
     vm_run "$vm" sudo sh -c "
         XDG_CONFIG_HOME=/home/$USER_LINUX/.config \
         nohup '/home/$USER_LINUX/ourcordd' \
-            --control-url 'http://$HOST_HOSTNAME:$MOCK_PORT' \
+            --control-url '$CONTROL_URL' \
             --socket /tmp/ourcord.sock \
             --state-dir '/home/$USER_LINUX/ourcord-state' \
             --wg-listen-port $WG_PORT \
@@ -123,8 +132,8 @@ start_daemon() {
         chmod 666 /tmp/ourcord.sock || true
     "
 }
-start_daemon "$VM_A" "$IP_A" "smoke-token-a"
-start_daemon "$VM_B" "$IP_B" "smoke-token-b"
+start_daemon "$VM_A" "$IP_A" "$TOKEN_A"
+start_daemon "$VM_B" "$IP_B" "$TOKEN_B"
 sleep 1
 
 # ---- 5. Trigger connect on each, twice. The second connect lets each side
@@ -144,7 +153,8 @@ cli "$VM_B" connect
 sleep 2
 
 # ---- 6. Assertions ----
-VPN_ADDRS="$(python3 -c "
+if [[ -f "$WORKDIR/mock.json" ]]; then
+    VPN_ADDRS="$(python3 -c "
 import json
 d = json.load(open('$WORKDIR/mock.json'))
 by_endpoint = {p.get('endpoint', ''): p for p in d['peers'].values()}
@@ -154,24 +164,32 @@ for endpoint in ('$IP_A:$WG_PORT', '$IP_B:$WG_PORT'):
         raise SystemExit(f'missing peer for endpoint {endpoint}')
     print(p['ip4'], p['ip6'])
 " 2>/dev/null)"
-[[ -z "$VPN_ADDRS" ]] && { echo "FAIL: could not discover allocated VPN addrs"; cat "$WORKDIR/mock.json"; exit 1; }
-A_VPN4="$(echo "$VPN_ADDRS" | sed -n '1s/ .*//p')"
-A_VPN6="$(echo "$VPN_ADDRS" | sed -n '1s/.* //p')"
-B_VPN4="$(echo "$VPN_ADDRS" | sed -n '2s/ .*//p')"
-B_VPN6="$(echo "$VPN_ADDRS" | sed -n '2s/.* //p')"
+    [[ -z "$VPN_ADDRS" ]] && { echo "FAIL: could not discover allocated VPN addrs"; cat "$WORKDIR/mock.json"; exit 1; }
+    A_VPN4="$(echo "$VPN_ADDRS" | sed -n '1s/ .*//p')"
+    A_VPN6="$(echo "$VPN_ADDRS" | sed -n '1s/.* //p')"
+    B_VPN4="$(echo "$VPN_ADDRS" | sed -n '2s/ .*//p')"
+    B_VPN6="$(echo "$VPN_ADDRS" | sed -n '2s/.* //p')"
+fi
 
 echo "==> ip addr on $VM_A:"
 ADDR_A="$(vm_run "$VM_A" ip -br addr)"
+if [[ ! -f "$WORKDIR/mock.json" ]]; then
+    A_VPN4="$(echo "$ADDR_A" | awk '{for (i=1; i<=NF; i++) if ($i ~ /^198[.]18[.]/) {print $i; exit}}' | cut -d/ -f1)"
+    A_VPN6="$(echo "$ADDR_A" | awk '{for (i=1; i<=NF; i++) if ($i ~ /^fd[0-9a-f][0-9a-f]:/) {print $i; exit}}' | cut -d/ -f1)"
+fi
 echo "$ADDR_A" | grep -F "$A_VPN4" >/dev/null || { echo "$ADDR_A"; echo "FAIL: VPN v4 addr missing on A ($A_VPN4)"; exit 1; }
 echo "$ADDR_A" | grep -F "$A_VPN6" >/dev/null || { echo "$ADDR_A"; echo "FAIL: VPN v6 addr missing on A ($A_VPN6)"; exit 1; }
 echo "$ADDR_A" | grep -F "$A_VPN4"
 echo "==> ip addr on $VM_B:"
 ADDR_B="$(vm_run "$VM_B" ip -br addr)"
+if [[ ! -f "$WORKDIR/mock.json" ]]; then
+    B_VPN4="$(echo "$ADDR_B" | awk '{for (i=1; i<=NF; i++) if ($i ~ /^198[.]18[.]/) {print $i; exit}}' | cut -d/ -f1)"
+    B_VPN6="$(echo "$ADDR_B" | awk '{for (i=1; i<=NF; i++) if ($i ~ /^fd[0-9a-f][0-9a-f]:/) {print $i; exit}}' | cut -d/ -f1)"
+fi
 echo "$ADDR_B" | grep -F "$B_VPN4" >/dev/null || { echo "$ADDR_B"; echo "FAIL: VPN v4 addr missing on B ($B_VPN4)"; exit 1; }
 echo "$ADDR_B" | grep -F "$B_VPN6" >/dev/null || { echo "$ADDR_B"; echo "FAIL: VPN v6 addr missing on B ($B_VPN6)"; exit 1; }
 echo "$ADDR_B" | grep -F "$B_VPN4"
 
-# Discover allocated IPs from mock state file (authoritative source).
 B_VPN_IP="$B_VPN4"
 
 echo "==> ping $B_VPN_IP from $VM_A (over the VPN tunnel):"
@@ -186,7 +204,9 @@ else
     vm_run "$VM_A" sudo tail -50 /tmp/ourcordd.log
     echo "--- $VM_B ourcordd.log (tail) ---"
     vm_run "$VM_B" sudo tail -50 /tmp/ourcordd.log
-    echo "--- mock control state ---"
-    cat "$WORKDIR/mock.json"
+    if [[ -f "$WORKDIR/mock.json" ]]; then
+        echo "--- mock control state ---"
+        cat "$WORKDIR/mock.json"
+    fi
     exit 1
 fi

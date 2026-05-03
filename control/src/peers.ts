@@ -229,13 +229,19 @@ export async function getPeerConfig(request: Request, env: Env): Promise<Respons
   // excluded so it doesn't get fanned out to every mesh member; relays already
   // have their own feed via /api/relay/banned-keys.
   const placeholders = memberIds.map(() => "?").join(",");
+  const params: string[] = [...memberIds];
+  let selfFilter = "";
+  if (pubKey) {
+    selfFilter = " AND public_key <> ?";
+    params.push(pubKey);
+  }
   const peers = await env.DB
     .prepare(
       `SELECT id, user_id, public_key, name, platform, last_seen, ip4, ip6,
               wg_endpoint AS endpoint
-       FROM peers WHERE user_id IN (${placeholders}) ORDER BY last_seen DESC`
+       FROM peers WHERE user_id IN (${placeholders})${selfFilter} ORDER BY last_seen DESC`
     )
-    .bind(...memberIds)
+    .bind(...params)
     .all<Peer>();
 
   // J2: relay map is per-caller now (personal relays scoped to owner).

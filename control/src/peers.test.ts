@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { lookupPeers } from "./peers";
+import { getPeerConfig, lookupPeers, registerPeer } from "./peers";
 import type { Env } from "./types";
 
 const SECRET = "test-secret-1234567890abcdef";
@@ -62,6 +62,38 @@ function makeEnv(db: D1Database): Env {
   } as Env;
 }
 
+interface CapturingDB {
+  db: D1Database;
+  binds: unknown[][];
+  sqls: string[];
+}
+
+function makeCapturingDB(plan: DBStep[]): CapturingDB {
+  let i = 0;
+  const binds: unknown[][] = [];
+  const sqls: string[] = [];
+  const db = {
+    prepare: vi.fn((sql: string) => {
+      const idx = i++;
+      sqls.push(sql);
+      const step = () => plan[idx] || {};
+      const s: any = {
+        bind: vi.fn((...args: unknown[]) => {
+          binds[idx] = args;
+          return s;
+        }),
+        first: vi.fn(async () => step().first ?? null),
+        run: vi.fn(async () => step().run ?? { meta: { changes: 1 } }),
+        all: vi.fn(async () => step().all ?? { results: [] }),
+      };
+      return s as D1PreparedStatement;
+    }),
+    batch: vi.fn(),
+    exec: vi.fn(),
+  } as unknown as D1Database;
+  return { db, binds, sqls };
+}
+
 async function postLookup(token: string | null, body: unknown): Promise<Request> {
   const json = JSON.stringify(body);
   const headers: Record<string, string> = {
@@ -75,6 +107,135 @@ async function postLookup(token: string | null, body: unknown): Promise<Request>
     body: json,
   });
 }
+
+async function postRegister(token: string | null, body: unknown): Promise<Request> {
+  const json = JSON.stringify(body);
+  const headers: Record<string, string> = {
+    "content-type": "application/json",
+    "content-length": String(json.length),
+  };
+  if (token) headers.Authorization = `Bearer ${token}`;
+  return new Request("https://control.example/api/peers/register", {
+    method: "POST",
+    headers,
+    body: json,
+  });
+}
+
+async function getConfig(token: string, publicKey: string): Promise<Request> {
+  return new Request("https://control.example/api/peers/config", {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "X-Peer-Public-Key": publicKey,
+    },
+  });
+}
+
+const VALID_WG_KEY = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+
+describe("registerPeer / getPeerConfig endpoint hints", () => {
+  it("updates an existing peer's wg_endpoint during register", async () => {
+    const token = await makeToken();
+    const cap = makeCapturingDB([
+      { first: null }, // ban check
+      { first: { id: "peer-1", user_id: "u1" } }, // existing public key
+      {}, // UPDATE peers
+      {
+        first: {
+          id: "peer-1",
+          user_id: "u1",
+          public_key: VALID_WG_KEY,
+          name: "vm-a",
+          platform: "linux",
+          last_seen: 1,
+          ip4: "198.18.0.10",
+          ip6: "fdab:cdef:123::a",
+          derp_node_key: "",
+          wg_endpoint: "192.168.139.235:51820",
+        },
+      },
+    ]);
+    const resp = await registerPeer(
+      await postRegister(token, {
+        public_key: VALID_WG_KEY,
+        name: "vm-a",
+        platform: "linux",
+        wg_endpoint: "192.168.139.235:51820",
+      }),
+      makeEnv(cap.db),
+    );
+
+    expect(resp.status).toBe(200);
+    expect(cap.sqls[2]).toMatch(/wg_endpoint = \?/);
+    expect(cap.binds[2][4]).toBe("192.168.139.235:51820");
+    const body = await resp.json<{ peer: { wg_endpoint: string } }>();
+    expect(body.peer.wg_endpoint).toBe("192.168.139.235:51820");
+  });
+
+  it("rejects malformed wg_endpoint values", async () => {
+    const token = await makeToken();
+    const resp = await registerPeer(
+      await postRegister(token, {
+        public_key: VALID_WG_KEY,
+        name: "vm-a",
+        platform: "linux",
+        wg_endpoint: "192.168.139.235 not-a-port",
+      }),
+      makeEnv(makeDB([{ first: null }])),
+    );
+
+    expect(resp.status).toBe(400);
+    const body = await resp.json<{ error: string }>();
+    expect(body.error).toMatch(/host:port/);
+  });
+
+  it("returns wg_endpoint as endpoint from peer config", async () => {
+    const token = await makeToken();
+    const cap = makeCapturingDB([
+      { first: null }, // ban check
+      {}, // last_seen update
+      {
+        all: {
+          results: [
+            {
+              id: "peer-2",
+              user_id: "u1",
+              public_key: "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=",
+              name: "vm-b",
+              platform: "linux",
+              last_seen: 2,
+              ip4: "198.18.0.11",
+              ip6: "fdab:cdef:123::b",
+              endpoint: "192.168.139.110:51820",
+            },
+          ],
+        },
+      },
+      { all: { results: [] } }, // relay map
+    ]);
+    const resp = await getPeerConfig(await getConfig(token, VALID_WG_KEY), makeEnv(cap.db));
+
+    expect(resp.status).toBe(200);
+    expect(cap.sqls[2]).toMatch(/wg_endpoint AS endpoint/);
+    const body = await resp.json<{ peers: Array<{ endpoint: string }> }>();
+    expect(body.peers[0].endpoint).toBe("192.168.139.110:51820");
+  });
+
+  it("excludes the requesting public key from peer config", async () => {
+    const token = await makeToken();
+    const cap = makeCapturingDB([
+      { first: null }, // ban check
+      {}, // last_seen update
+      { all: { results: [] } },
+      { all: { results: [] } }, // relay map
+    ]);
+    const resp = await getPeerConfig(await getConfig(token, VALID_WG_KEY), makeEnv(cap.db));
+
+    expect(resp.status).toBe(200);
+    expect(cap.sqls[2]).toMatch(/public_key <> \?/);
+    expect(cap.binds[2]).toEqual(["u1", VALID_WG_KEY]);
+  });
+});
 
 describe("lookupPeers", () => {
   it("happy path: 3 user_ids → result map keyed by user_id", async () => {
