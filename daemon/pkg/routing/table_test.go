@@ -119,6 +119,28 @@ func TestBuildIPCConfig_ICEReadyOverridesDERP(t *testing.T) {
 	}
 }
 
+func TestBuildIPCConfig_ICEPendingUsesFastKeepalive(t *testing.T) {
+	tbl := NewTable()
+	priv, _ := wgtypes.GeneratePrivateKey()
+	tbl.Upsert(&PeerRoute{
+		PublicKey:   mustKey(t, 0xB1),
+		VPN4:        mustAddr(t, "198.18.0.23"),
+		ICEPending:  true,
+		DERPURL:     "http://127.0.0.1:3340",
+		DERPNodeKey: "nodekey:0123456789abcdef",
+	})
+	got := tbl.BuildIPCConfig(priv)
+	if !strings.Contains(got, "endpoint=ice://") {
+		t.Fatalf("expected pending ice endpoint line:\n%s", got)
+	}
+	if !strings.Contains(got, "persistent_keepalive_interval=1\n") {
+		t.Fatalf("expected fast keepalive during waiting:\n%s", got)
+	}
+	if strings.Contains(got, "endpoint=derp://") {
+		t.Fatalf("waiting route must not keep derp endpoint while validating ice:\n%s", got)
+	}
+}
+
 func TestBuildIPCConfig_IndirectPeerNoEndpoint(t *testing.T) {
 	tbl := NewTable()
 	priv, _ := wgtypes.GeneratePrivateKey()
@@ -216,5 +238,50 @@ func TestReplacePreservesICEReady(t *testing.T) {
 	routes := tbl.All()
 	if len(routes) != 1 || !routes[0].ICEReady {
 		t.Fatalf("expected ICEReady preserved, got %+v", routes)
+	}
+}
+
+func TestReplacePreservesICEPendingAndLastError(t *testing.T) {
+	tbl := NewTable()
+	pk := mustKey(t, 0x04)
+	tbl.Upsert(&PeerRoute{
+		PublicKey:  pk,
+		VPN4:       mustAddr(t, "198.18.0.4"),
+		ICEPending: true,
+		LastError:  "ice-validation-failed",
+	})
+	tbl.Replace([]*PeerRoute{{PublicKey: pk, VPN4: mustAddr(t, "198.18.0.4")}})
+
+	routes := tbl.All()
+	if len(routes) != 1 || !routes[0].ICEPending || routes[0].LastError != "ice-validation-failed" {
+		t.Fatalf("expected ICEPending + LastError preserved, got %+v", routes)
+	}
+}
+
+func TestSetDERPFallbackKeepsWaitingWithoutDERP(t *testing.T) {
+	tbl := NewTable()
+	pk := mustKey(t, 0x05)
+	tbl.Upsert(&PeerRoute{PublicKey: pk, VPN4: mustAddr(t, "198.18.0.5"), ICEReady: true})
+
+	if !tbl.SetDERPFallback(pk, "ice-validation-failed") {
+		t.Fatal("expected fallback change")
+	}
+	routes := tbl.All()
+	if len(routes) != 1 || !routes[0].ICEPending || routes[0].ICEReady || routes[0].LastError != "ice-validation-failed" {
+		t.Fatalf("expected waiting fallback without DERP, got %+v", routes)
+	}
+}
+
+func TestSetICEPendingDoesNotDowngradeReadyPeer(t *testing.T) {
+	tbl := NewTable()
+	pk := mustKey(t, 0x06)
+	tbl.Upsert(&PeerRoute{PublicKey: pk, VPN4: mustAddr(t, "198.18.0.6"), ICEReady: true})
+
+	if tbl.SetICEPending(pk, true, "") {
+		t.Fatal("expected duplicate ICE callback to be ignored")
+	}
+	routes := tbl.All()
+	if len(routes) != 1 || !routes[0].ICEReady || routes[0].ICEPending {
+		t.Fatalf("expected peer to stay ICEReady, got %+v", routes)
 	}
 }

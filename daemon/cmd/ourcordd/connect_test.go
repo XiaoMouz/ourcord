@@ -29,6 +29,7 @@ type fakeTun struct {
 	upCalled    bool
 	closed      bool
 	ipcCalls    []string
+	ipcGet      string
 	v4RouteSync [][]netip.Addr
 }
 
@@ -40,6 +41,11 @@ func (f *fakeTun) ConfigureIPC(s string) error {
 	defer f.mu.Unlock()
 	f.ipcCalls = append(f.ipcCalls, s)
 	return nil
+}
+func (f *fakeTun) GetIPC() (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.ipcGet, nil
 }
 func (f *fakeTun) SyncPeerV4Routes(want []netip.Addr) error {
 	f.mu.Lock()

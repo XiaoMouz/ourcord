@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
@@ -14,6 +15,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -160,6 +162,7 @@ type tunIface interface {
 	Up() error
 	Close() error
 	ConfigureIPC(string) error
+	GetIPC() (string, error)
 	Name() string
 	SyncPeerV4Routes([]netip.Addr) error
 }
@@ -271,11 +274,16 @@ func summarizeRoutes(active bool, routes []*routing.PeerRoute) (bool, string, st
 	if len(routes) == 0 {
 		return false, "", "no-peers"
 	}
-	var hasDirect, hasDERP, hasNextHop, hasConfigured, hasUnresolved bool
+	var hasWaiting, hasDirect, hasDERP, hasNextHop, hasConfigured, hasUnresolved bool
 	var relayURL string
 	for _, r := range routes {
 		path := routePath(r)
 		switch path {
+		case "waiting":
+			hasWaiting = true
+			if relayURL == "" {
+				relayURL = r.DERPURL
+			}
 		case "direct":
 			hasDirect = true
 		case "derp":
@@ -293,6 +301,9 @@ func summarizeRoutes(active bool, routes []*routing.PeerRoute) (bool, string, st
 	}
 	if hasUnresolved {
 		return hasDERP, relayURL, "degraded"
+	}
+	if hasWaiting {
+		return relayURL != "", relayURL, "waiting"
 	}
 	if hasDERP {
 		return true, relayURL, "derp"
@@ -328,7 +339,7 @@ func connectedPeers(routes []*routing.PeerRoute) []ipc.ConnectedPeer {
 		if r.DirectAddr != nil {
 			peer.Endpoint = r.DirectAddr.String()
 		}
-		if r.ICEReady {
+		if r.ICEPending || r.ICEReady {
 			peer.Endpoint = "ice"
 		}
 		if r.NextHop != nil {
@@ -343,11 +354,11 @@ func routePath(r *routing.PeerRoute) string {
 	if r == nil {
 		return "unresolved"
 	}
-	if r.LastError != "" {
-		return "unresolved"
-	}
 	if r.NextHop != nil {
 		return "next-hop"
+	}
+	if r.ICEPending {
+		return "waiting"
 	}
 	if r.ICEReady {
 		return "direct"
@@ -360,6 +371,9 @@ func routePath(r *routing.PeerRoute) string {
 	}
 	if r.VPN4.IsValid() || r.VPN6.IsValid() {
 		return "configured"
+	}
+	if r.LastError != "" {
+		return "unresolved"
 	}
 	return "unresolved"
 }
@@ -599,7 +613,7 @@ func (d *daemon) startICEForRoutes(ctx context.Context, routes []*routing.PeerRo
 		return
 	}
 	for _, r := range routes {
-		if r == nil || r.NextHop != nil || r.ICEReady {
+		if r == nil || r.NextHop != nil || r.ICEReady || r.ICEPending {
 			continue
 		}
 		d.iceMgr.StartPeer(ctx, r.PublicKey.String())
@@ -619,14 +633,164 @@ func (d *daemon) markPeerICEReady(peerKey string) {
 	if d.table == nil || d.tunIf == nil {
 		return
 	}
-	if !d.table.SetICEReady(pk, true) {
+	if !d.table.SetICEPending(pk, true, "") {
+		return
+	}
+	started := time.Now()
+	if err := d.tunIf.ConfigureIPC(d.table.BuildIPCConfig(d.keyPair.Private)); err != nil {
+		log.Printf("ice apply waiting endpoint for %s: %v", peerKey[:min(len(peerKey), 12)], err)
+		return
+	}
+	log.Printf("peer waiting for ICE data-plane validation: %s", peerKey[:min(len(peerKey), 12)])
+	go d.validatePeerICE(d.connCtx, peerKey, pk, started)
+}
+
+type wgPeerStats struct {
+	Found         bool
+	LastHandshake time.Time
+	RXBytes       uint64
+	TXBytes       uint64
+}
+
+const (
+	iceValidationInterval = 1 * time.Second
+	iceValidationTimeout  = 12 * time.Second
+)
+
+func (d *daemon) validatePeerICE(ctx context.Context, peerKey string, pk wgtypes.Key, started time.Time) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	var baseline wgPeerStats
+	d.connMu.Lock()
+	if d.tunIf != nil {
+		if stats, err := readPeerStats(d.tunIf, pk); err == nil {
+			baseline = stats
+		} else {
+			log.Printf("ice validation stats baseline %s: %v", peerKey[:min(len(peerKey), 12)], err)
+		}
+	}
+	d.connMu.Unlock()
+
+	deadline := time.NewTimer(iceValidationTimeout)
+	defer deadline.Stop()
+	tick := time.NewTicker(iceValidationInterval)
+	defer tick.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-deadline.C:
+			d.failPeerICEValidation(peerKey, pk, "ice-validation-failed")
+			return
+		case <-tick.C:
+			d.connMu.Lock()
+			if d.table == nil || d.tunIf == nil {
+				d.connMu.Unlock()
+				return
+			}
+			stats, err := readPeerStats(d.tunIf, pk)
+			if err != nil {
+				d.connMu.Unlock()
+				log.Printf("ice validation stats %s: %v", peerKey[:min(len(peerKey), 12)], err)
+				continue
+			}
+			if peerICEValidated(stats, baseline, started) {
+				if d.table.SetICEReady(pk, true) {
+					if err := d.tunIf.ConfigureIPC(d.table.BuildIPCConfig(d.keyPair.Private)); err != nil {
+						log.Printf("ice apply direct endpoint for %s: %v", peerKey[:min(len(peerKey), 12)], err)
+						d.connMu.Unlock()
+						return
+					}
+				}
+				d.connMu.Unlock()
+				log.Printf("peer upgraded to ICE direct: %s", peerKey[:min(len(peerKey), 12)])
+				return
+			}
+			d.connMu.Unlock()
+		}
+	}
+}
+
+func (d *daemon) failPeerICEValidation(peerKey string, pk wgtypes.Key, reason string) {
+	d.connMu.Lock()
+	defer d.connMu.Unlock()
+	if d.table == nil || d.tunIf == nil {
+		return
+	}
+	if !d.table.SetDERPFallback(pk, reason) {
 		return
 	}
 	if err := d.tunIf.ConfigureIPC(d.table.BuildIPCConfig(d.keyPair.Private)); err != nil {
-		log.Printf("ice apply endpoint for %s: %v", peerKey[:min(len(peerKey), 12)], err)
+		log.Printf("ice fallback apply for %s: %v", peerKey[:min(len(peerKey), 12)], err)
 		return
 	}
-	log.Printf("peer upgraded to ICE direct: %s", peerKey[:min(len(peerKey), 12)])
+	log.Printf("peer ICE validation failed; fallback state applied: %s reason=%s", peerKey[:min(len(peerKey), 12)], reason)
+}
+
+func peerICEValidated(stats, baseline wgPeerStats, started time.Time) bool {
+	if !stats.Found {
+		return false
+	}
+	if stats.LastHandshake.IsZero() || stats.LastHandshake.Before(started.Add(-time.Second)) {
+		return false
+	}
+	if baseline.Found {
+		return stats.RXBytes > baseline.RXBytes
+	}
+	return stats.RXBytes > 0
+}
+
+func readPeerStats(iface tunIface, pk wgtypes.Key) (wgPeerStats, error) {
+	raw, err := iface.GetIPC()
+	if err != nil {
+		return wgPeerStats{}, err
+	}
+	return parsePeerStats(raw, pk), nil
+}
+
+func parsePeerStats(raw string, pk wgtypes.Key) wgPeerStats {
+	want := hex.EncodeToString(pk[:])
+	var cur string
+	var stats wgPeerStats
+	var sec, nsec int64
+	flushHandshake := func() {
+		if stats.Found && sec > 0 {
+			stats.LastHandshake = time.Unix(sec, nsec)
+		}
+	}
+	for _, line := range strings.Split(raw, "\n") {
+		if line == "" {
+			continue
+		}
+		k, v, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		if k == "public_key" {
+			flushHandshake()
+			cur = v
+			stats = wgPeerStats{Found: v == want}
+			sec, nsec = 0, 0
+			continue
+		}
+		if cur != want {
+			continue
+		}
+		switch k {
+		case "last_handshake_time_sec":
+			sec, _ = strconv.ParseInt(v, 10, 64)
+		case "last_handshake_time_nsec":
+			nsec, _ = strconv.ParseInt(v, 10, 64)
+		case "rx_bytes":
+			stats.RXBytes, _ = strconv.ParseUint(v, 10, 64)
+		case "tx_bytes":
+			stats.TXBytes, _ = strconv.ParseUint(v, 10, 64)
+		}
+	}
+	flushHandshake()
+	return stats
 }
 
 func (d *daemon) meshLoop(ctx context.Context) {

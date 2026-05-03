@@ -12,7 +12,7 @@ type DaemonStatus struct {
 	PeerCount   int    `json:"peer_count"`
 	RelayUsed   bool   `json:"relay_used"` // true if currently relaying via DERP
 	RelayURL    string `json:"relay_url"`
-	PathSummary string `json:"path_summary"` // inactive, no-peers, direct, derp, next-hop, degraded
+	PathSummary string `json:"path_summary"` // inactive, no-peers, waiting, direct, derp, next-hop, degraded
 }
 
 // ConnectedPeer represents a connected VPN peer.
@@ -22,7 +22,7 @@ type ConnectedPeer struct {
 	IP4          string  `json:"ip4"`
 	IP6          string  `json:"ip6"`
 	Direct       bool    `json:"direct"` // true if P2P, false if DERP relay
-	Path         string  `json:"path"`   // direct, derp, next-hop, configured, unresolved
+	Path         string  `json:"path"`   // waiting, direct, derp, next-hop, configured, unresolved
 	Endpoint     string  `json:"endpoint,omitempty"`
 	RelayURL     string  `json:"relay_url,omitempty"`
 	NextHop      string  `json:"next_hop,omitempty"`

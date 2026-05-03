@@ -24,6 +24,7 @@ type PeerRoute struct {
 	NextHop     *wgtypes.Key    // nil = direct, non-nil = route via this intermediate peer
 	DirectAddr  *netip.AddrPort // UDP endpoint if hole-punch succeeded
 	ICEReady    bool            // true when the daemon has an ICE Conn for this peer
+	ICEPending  bool            // true while ICE is connected but WG data-plane validation is pending
 	DERPURL     string          // DERP relay URL (fallback)
 	DERPNodeKey string          // peer DERP node key (nodekey:...)
 	LastSeen    int64
@@ -79,6 +80,10 @@ func (t *Table) Replace(routes []*PeerRoute) {
 		}
 		if old := t.routes[r.PublicKey.String()]; old != nil {
 			r.ICEReady = old.ICEReady
+			r.ICEPending = old.ICEPending
+			if r.LastError == "" {
+				r.LastError = old.LastError
+			}
 			if r.DirectAddr == nil && old.DirectAddr != nil {
 				ap := *old.DirectAddr
 				r.DirectAddr = &ap
@@ -95,11 +100,54 @@ func (t *Table) SetICEReady(publicKey wgtypes.Key, ready bool) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	r := t.routes[publicKey.String()]
-	if r == nil || r.ICEReady == ready {
+	if r == nil {
 		return false
 	}
+	changed := r.ICEReady != ready || r.ICEPending
 	r.ICEReady = ready
-	return true
+	if ready {
+		r.ICEPending = false
+		r.LastError = ""
+	}
+	return changed
+}
+
+// SetICEPending marks a peer as temporarily using ICE while the daemon waits
+// for WireGuard data-plane proof before exposing it as direct.
+func (t *Table) SetICEPending(publicKey wgtypes.Key, pending bool, lastError string) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	r := t.routes[publicKey.String()]
+	if r == nil {
+		return false
+	}
+	if pending && r.ICEReady && lastError == "" {
+		return false
+	}
+	changed := r.ICEPending != pending || r.LastError != lastError || (pending && r.ICEReady)
+	r.ICEPending = pending
+	if pending {
+		r.ICEReady = false
+	}
+	r.LastError = lastError
+	return changed
+}
+
+// SetDERPFallback moves a peer away from ICE. If no DERP route is known, the
+// peer remains in waiting so UI can show that connectivity is unresolved.
+func (t *Table) SetDERPFallback(publicKey wgtypes.Key, reason string) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	r := t.routes[publicKey.String()]
+	if r == nil {
+		return false
+	}
+	waiting := r.DERPURL == "" || r.DERPNodeKey == ""
+	changed := r.ICEReady || r.ICEPending != waiting || r.LastError != reason
+	r.ICEReady = false
+	r.ICEPending = waiting
+	r.LastError = reason
+	return changed
 }
 
 // All returns a snapshot of all routes.
@@ -172,10 +220,9 @@ func (t *Table) BuildIPCConfig(privateKey wgtypes.Key) string {
 
 		// Endpoint: only set for direct/DERP or next-hop targets, not for the
 		// "virtual" remote peer we reach via someone else. DERP is preferred
-		// as the baseline path; once ICE succeeds, ICEReady takes precedence
-		// and moves the same peer onto the direct bind without changing
-		// AllowedIPs.
-		if r.NextHop == nil && r.ICEReady {
+		// as the baseline path. ICEPending uses ice:// too, but keepalive is
+		// made aggressive below until the daemon verifies the WG data plane.
+		if r.NextHop == nil && (r.ICEPending || r.ICEReady) {
 			if ep, err := ice.EndpointString(r.PublicKey.String()); err == nil {
 				sb.WriteString(fmt.Sprintf("endpoint=%s\n", ep))
 			}
@@ -187,8 +234,11 @@ func (t *Table) BuildIPCConfig(privateKey wgtypes.Key) string {
 			sb.WriteString(fmt.Sprintf("endpoint=%s\n", r.DirectAddr.String()))
 		}
 
-		// Persistent keepalive for NAT hole punch maintenance
-		sb.WriteString("persistent_keepalive_interval=25\n")
+		keepalive := 25
+		if r.ICEPending {
+			keepalive = 1
+		}
+		sb.WriteString(fmt.Sprintf("persistent_keepalive_interval=%d\n", keepalive))
 	}
 
 	return sb.String()
