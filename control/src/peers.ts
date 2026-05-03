@@ -225,9 +225,9 @@ export async function getPeerConfig(request: Request, env: Env): Promise<Respons
     }
   }
 
-  // H8: explicit column list — never `SELECT *`. derp_node_key is intentionally
-  // excluded so it doesn't get fanned out to every mesh member; relays already
-  // have their own feed via /api/relay/banned-keys.
+  // H8: explicit column list — never `SELECT *`. derp_node_key is included
+  // because daemon-side DERP fallback needs each peer's DERP identity to route
+  // WireGuard packets through a relay. Ban feeds still use /api/relay/banned-keys.
   const placeholders = memberIds.map(() => "?").join(",");
   const params: string[] = [...memberIds];
   let selfFilter = "";
@@ -237,7 +237,7 @@ export async function getPeerConfig(request: Request, env: Env): Promise<Respons
   }
   const peers = await env.DB
     .prepare(
-      `SELECT id, user_id, public_key, name, platform, last_seen, ip4, ip6,
+      `SELECT id, user_id, public_key, name, platform, last_seen, ip4, ip6, derp_node_key,
               wg_endpoint AS endpoint
        FROM peers WHERE user_id IN (${placeholders})${selfFilter} ORDER BY last_seen DESC`
     )

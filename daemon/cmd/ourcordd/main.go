@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/netip"
 	"os"
 	"os/exec"
@@ -19,9 +20,13 @@ import (
 	"syscall"
 	"time"
 
+	"golang.zx2c4.com/wireguard/conn"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
+	"tailscale.com/types/key"
 
 	"github.com/ourcord/ourcord/daemon/pkg/control"
+	ourderp "github.com/ourcord/ourcord/daemon/pkg/derp"
+	ourice "github.com/ourcord/ourcord/daemon/pkg/ice"
 	"github.com/ourcord/ourcord/daemon/pkg/ipc"
 	"github.com/ourcord/ourcord/daemon/pkg/routing"
 	"github.com/ourcord/ourcord/daemon/pkg/tun"
@@ -54,6 +59,13 @@ func main() {
 	}
 	log.Printf("VPN public key: %s (state: %s)", kp.PublicKeyBase64(), keyPath)
 
+	derpKeyPath := filepath.Join(*stateDir, "derp.key")
+	derpKey, err := ourderp.LoadOrCreateNodeKey(derpKeyPath)
+	if err != nil {
+		log.Fatalf("Load DERP node key (%s): %v", derpKeyPath, err)
+	}
+	log.Printf("DERP node key: %s (state: %s)", derpKey.Public().String(), derpKeyPath)
+
 	// Build daemon
 	d := &daemon{
 		controlURL:     *controlURL,
@@ -62,6 +74,7 @@ func main() {
 		stateDir:       *stateDir,
 		wgListenPort:   uint16(*wgListenPort),
 		wgEndpointHint: *wgEndpointHint,
+		derpKey:        derpKey,
 	}
 
 	// W3: load (or create) shared HMAC secret used by IPC clients (CLI, GUI)
@@ -115,15 +128,19 @@ type daemon struct {
 	stateDir       string
 	wgListenPort   uint16 // 0 = ephemeral
 	wgEndpointHint string // host:port, sent on register
+	derpKey        key.NodePrivate
 
 	vpnActive atomic.Bool
 
 	connMu  sync.Mutex
 	connCtx context.Context
 	connCxl context.CancelFunc
+	sigCxl  context.CancelFunc
 	tunIf   tunIface
 	table   *routing.Table
 	cli     controlClient
+	derpMgr *ourderp.Manager
+	iceMgr  *ourice.Manager
 
 	// assigned VPN addresses for status reporting (filled at connect, cleared
 	// at disconnect).
@@ -152,7 +169,12 @@ type tunIface interface {
 type controlClient interface {
 	Register(ctx context.Context, req control.RegisterRequest) (*control.RegisterResponse, error)
 	FetchConfig(ctx context.Context, roomID string) (*control.PeerConfig, error)
+	FetchSTUNServers(ctx context.Context) ([]string, error)
 	Run(ctx context.Context, roomID string)
+	SetSignalHandler(func(control.SignalMessage))
+	InitiateHolePunch(ctx context.Context, targetKey string, offer control.ICEOffer) error
+	SendICEAnswer(ctx context.Context, targetKey string, answer control.ICEOffer) error
+	SendICECandidate(ctx context.Context, targetKey string, candidates []string) error
 }
 
 func (d *daemon) tunFactory() func(string, []netip.Prefix) (tunIface, error) {
@@ -160,7 +182,14 @@ func (d *daemon) tunFactory() func(string, []netip.Prefix) (tunIface, error) {
 		return d.newTun
 	}
 	return func(name string, addrs []netip.Prefix) (tunIface, error) {
-		return tun.New(name, addrs)
+		bind := conn.NewDefaultBind()
+		if d.iceMgr != nil {
+			bind = ourice.NewBind(bind, d.iceMgr)
+		}
+		if d.derpMgr != nil {
+			bind = ourderp.NewHybridBind(bind, d.derpMgr)
+		}
+		return tun.NewWithBind(name, addrs, bind)
 	}
 }
 
@@ -299,6 +328,9 @@ func connectedPeers(routes []*routing.PeerRoute) []ipc.ConnectedPeer {
 		if r.DirectAddr != nil {
 			peer.Endpoint = r.DirectAddr.String()
 		}
+		if r.ICEReady {
+			peer.Endpoint = "ice"
+		}
 		if r.NextHop != nil {
 			peer.NextHop = r.NextHop.String()
 		}
@@ -317,11 +349,14 @@ func routePath(r *routing.PeerRoute) string {
 	if r.NextHop != nil {
 		return "next-hop"
 	}
-	if r.DirectAddr != nil {
+	if r.ICEReady {
 		return "direct"
 	}
 	if r.DERPURL != "" {
 		return "derp"
+	}
+	if r.DirectAddr != nil {
+		return "direct"
 	}
 	if r.VPN4.IsValid() || r.VPN6.IsValid() {
 		return "configured"
@@ -345,11 +380,10 @@ func addrString(a netip.Addr) string {
 //  6. Background goroutines: control WS Run() (signaling for ICE) +
 //     30s mesh poller (re-fetch /peers/config and apply diff).
 //
-// Phase-1 limitation: per-peer ICE agents are NOT yet spawned. That means
-// only LAN / public-IPv6 P2P will work without explicit candidate exchange.
-// Per-peer ICE wiring is the remaining Phase-1 closure work; the
-// SignalHandler hook is in place so it can be added without touching the
-// basic connect pipeline.
+// The daemon programs DERP first, then runs per-peer ICE over the room
+// signaling channel. When ICE connects, the WireGuard endpoint is rewritten
+// to ice:// for that peer; if ICE fails, the existing DERP endpoint keeps
+// carrying packets.
 func (d *daemon) connect(ctx context.Context) error {
 	d.connMu.Lock()
 	defer d.connMu.Unlock()
@@ -363,32 +397,65 @@ func (d *daemon) connect(ctx context.Context) error {
 	}
 
 	cli := d.clientFactory()(d.controlURL, token, d.keyPair.PublicKeyBase64())
+	derpKey := d.derpKey
+	if derpKey.IsZero() {
+		loaded, err := ourderp.LoadOrCreateNodeKey(filepath.Join(d.stateDir, "derp.key"))
+		if err != nil {
+			return fmt.Errorf("load DERP node key: %w", err)
+		}
+		derpKey = loaded
+		d.derpKey = loaded
+	}
+	derpMgr := ourderp.NewManager(derpKey, log.Printf)
+	stunCtx, stunCancel := context.WithTimeout(ctx, 5*time.Second)
+	stunServers, err := cli.FetchSTUNServers(stunCtx)
+	stunCancel()
+	if err != nil {
+		log.Printf("fetch STUN servers: %v (continuing with host candidates only)", err)
+	}
+	iceMgr := ourice.NewManager(d.keyPair.PublicKeyBase64(), stunServers, cli, d.markPeerICEReady, log.Printf)
+	cli.SetSignalHandler(iceMgr.HandleSignal)
 
 	regCtx, regCancel := context.WithTimeout(ctx, 15*time.Second)
 	hostname, _ := os.Hostname()
 	reg, err := cli.Register(regCtx, control.RegisterRequest{
-		PublicKey:  d.keyPair.PublicKeyBase64(),
-		Name:       hostname,
-		Platform:   runtime.GOOS,
-		WGEndpoint: d.wgEndpointHint,
+		PublicKey:   d.keyPair.PublicKeyBase64(),
+		Name:        hostname,
+		Platform:    runtime.GOOS,
+		DERPNodeKey: derpKey.Public().String(),
+		WGEndpoint:  d.wgEndpointHint,
 	})
 	regCancel()
 	if err != nil {
+		_ = iceMgr.Close()
+		_ = derpMgr.Close()
 		return fmt.Errorf("register peer: %w", err)
 	}
 	log.Printf("registered peer id=%s ip4=%s ip6=%s", reg.Peer.ID, reg.Peer.IP4, reg.Peer.IP6)
 
 	prefixes, err := parseAssignedPrefixes(reg.Peer.IP4, reg.Peer.IP6)
 	if err != nil {
+		_ = iceMgr.Close()
+		_ = derpMgr.Close()
 		return fmt.Errorf("parse assigned IPs: %w", err)
 	}
 
+	d.derpMgr = derpMgr
+	d.iceMgr = iceMgr
 	tunIf, err := d.tunFactory()("utun", prefixes)
 	if err != nil {
+		d.derpMgr = nil
+		d.iceMgr = nil
+		_ = iceMgr.Close()
+		_ = derpMgr.Close()
 		return fmt.Errorf("create tun: %w", err)
 	}
 	if err := tunIf.Up(); err != nil {
 		_ = tunIf.Close()
+		d.derpMgr = nil
+		d.iceMgr = nil
+		_ = iceMgr.Close()
+		_ = derpMgr.Close()
 		return fmt.Errorf("tun up: %w", err)
 	}
 	log.Printf("TUN %s up; addrs=%v", tunIf.Name(), prefixes)
@@ -401,10 +468,18 @@ func (d *daemon) connect(ctx context.Context) error {
 	cfgCancel()
 	if err != nil {
 		_ = tunIf.Close()
+		d.iceMgr = nil
+		_ = iceMgr.Close()
+		d.derpMgr = nil
+		_ = derpMgr.Close()
 		return fmt.Errorf("fetch initial config: %w", err)
 	}
 	if err := applyConfig(tunIf, table, d.keyPair.Private, cfg); err != nil {
 		_ = tunIf.Close()
+		d.derpMgr = nil
+		d.iceMgr = nil
+		_ = iceMgr.Close()
+		_ = derpMgr.Close()
 		return fmt.Errorf("apply initial wg config: %w", err)
 	}
 
@@ -412,13 +487,18 @@ func (d *daemon) connect(ctx context.Context) error {
 	d.tunIf = tunIf
 	d.table = table
 	d.cli = cli
+	d.derpMgr = derpMgr
+	d.iceMgr = iceMgr
 	d.connCtx = connCtx
 	d.connCxl = connCxl
 	d.assignedIP4 = reg.Peer.IP4
 	d.assignedIP6 = reg.Peer.IP6
 	d.vpnActive.Store(true)
 
-	go cli.Run(connCtx, d.activeRoom)
+	if d.activeRoom != "" {
+		d.startSignalLocked(d.activeRoom)
+		d.startICEForRoutes(connCtx, table.All())
+	}
 	go d.meshLoop(connCtx)
 
 	return nil
@@ -433,15 +513,27 @@ func (d *daemon) disconnect() {
 	if d.connCxl != nil {
 		d.connCxl()
 	}
+	if d.sigCxl != nil {
+		d.sigCxl()
+	}
 	if d.tunIf != nil {
 		_ = d.tunIf.Close()
+	}
+	if d.iceMgr != nil {
+		_ = d.iceMgr.Close()
+	}
+	if d.derpMgr != nil {
+		_ = d.derpMgr.Close()
 	}
 	d.tunIf = nil
 	d.table = nil
 	d.cli = nil
+	d.derpMgr = nil
+	d.iceMgr = nil
 	d.assignedIP4 = ""
 	d.assignedIP6 = ""
 	d.activeRoom = ""
+	d.sigCxl = nil
 	d.vpnActive.Store(false)
 }
 
@@ -461,6 +553,8 @@ func (d *daemon) enterRoom(ctx context.Context, roomID string) error {
 		return fmt.Errorf("apply room config: %w", err)
 	}
 	d.activeRoom = roomID
+	d.startSignalLocked(roomID)
+	d.startICEForRoutes(d.connCtx, d.table.All())
 	return nil
 }
 
@@ -480,7 +574,59 @@ func (d *daemon) leaveRoom(ctx context.Context) error {
 		return fmt.Errorf("apply user config: %w", err)
 	}
 	d.activeRoom = ""
+	if d.sigCxl != nil {
+		d.sigCxl()
+		d.sigCxl = nil
+	}
 	return nil
+}
+
+func (d *daemon) startSignalLocked(roomID string) {
+	if d.cli == nil || d.connCtx == nil || roomID == "" {
+		return
+	}
+	if d.sigCxl != nil {
+		d.sigCxl()
+		d.sigCxl = nil
+	}
+	sigCtx, cancel := context.WithCancel(d.connCtx)
+	d.sigCxl = cancel
+	go d.cli.Run(sigCtx, roomID)
+}
+
+func (d *daemon) startICEForRoutes(ctx context.Context, routes []*routing.PeerRoute) {
+	if d.iceMgr == nil || ctx == nil {
+		return
+	}
+	for _, r := range routes {
+		if r == nil || r.NextHop != nil || r.ICEReady {
+			continue
+		}
+		d.iceMgr.StartPeer(ctx, r.PublicKey.String())
+	}
+}
+
+func (d *daemon) markPeerICEReady(peerKey string) {
+	raw, err := base64.StdEncoding.DecodeString(peerKey)
+	if err != nil || len(raw) != wgtypes.KeyLen {
+		log.Printf("ice ready invalid peer key %q", peerKey)
+		return
+	}
+	var pk wgtypes.Key
+	copy(pk[:], raw)
+	d.connMu.Lock()
+	defer d.connMu.Unlock()
+	if d.table == nil || d.tunIf == nil {
+		return
+	}
+	if !d.table.SetICEReady(pk, true) {
+		return
+	}
+	if err := d.tunIf.ConfigureIPC(d.table.BuildIPCConfig(d.keyPair.Private)); err != nil {
+		log.Printf("ice apply endpoint for %s: %v", peerKey[:min(len(peerKey), 12)], err)
+		return
+	}
+	log.Printf("peer upgraded to ICE direct: %s", peerKey[:min(len(peerKey), 12)])
 }
 
 func (d *daemon) meshLoop(ctx context.Context) {
@@ -508,6 +654,9 @@ func (d *daemon) meshLoop(ctx context.Context) {
 			if err := applyConfig(tunIf, table, d.keyPair.Private, cfg); err != nil {
 				log.Printf("mesh apply: %v", err)
 			}
+			if roomID != "" {
+				d.startICEForRoutes(ctx, table.All())
+			}
 			d.connMu.Unlock()
 		}
 	}
@@ -519,6 +668,7 @@ func (d *daemon) meshLoop(ctx context.Context) {
 // out naturally.
 func applyConfig(iface tunIface, table *routing.Table, priv wgtypes.Key, cfg *control.PeerConfig) error {
 	var v4Addrs []netip.Addr
+	defaultDERPURL := firstRelayURL(cfg.Relays)
 	routes := make([]*routing.PeerRoute, 0, len(cfg.Peers))
 	for _, p := range cfg.Peers {
 		pub, err := base64.StdEncoding.DecodeString(p.PublicKey)
@@ -531,13 +681,17 @@ func applyConfig(iface tunIface, table *routing.Table, priv wgtypes.Key, cfg *co
 		ip4, _ := netip.ParseAddr(p.IP4)
 		ip6, _ := netip.ParseAddr(p.IP6)
 		route := &routing.PeerRoute{
-			PublicKey: pk,
-			ID:        p.ID,
-			Name:      p.Name,
-			VPN4:      ip4,
-			VPN6:      ip6,
-			DERPURL:   p.DERPURL,
-			LastSeen:  p.LastSeen,
+			PublicKey:   pk,
+			ID:          p.ID,
+			Name:        p.Name,
+			VPN4:        ip4,
+			VPN6:        ip6,
+			DERPURL:     p.DERPURL,
+			DERPNodeKey: p.DERPNodeKey,
+			LastSeen:    p.LastSeen,
+		}
+		if route.DERPURL == "" && p.DERPNodeKey != "" {
+			route.DERPURL = defaultDERPURL
 		}
 		if p.NextHopPublicKey != "" {
 			raw, err := base64.StdEncoding.DecodeString(p.NextHopPublicKey)
@@ -570,6 +724,25 @@ func applyConfig(iface tunIface, table *routing.Table, priv wgtypes.Key, cfg *co
 	}
 	log.Printf("applied wg config: %d peers, %d v4 routes", len(cfg.Peers), len(v4Addrs))
 	return nil
+}
+
+func firstRelayURL(relays []control.RelayEntry) string {
+	if len(relays) == 0 {
+		return ""
+	}
+	r := relays[0]
+	if r.Hostname == "" {
+		return ""
+	}
+	scheme := "https"
+	if r.Port != 443 {
+		scheme = "http"
+	}
+	host := r.Hostname
+	if r.Port > 0 {
+		host = net.JoinHostPort(r.Hostname, fmt.Sprint(r.Port))
+	}
+	return scheme + "://" + host
 }
 
 func parseAssignedPrefixes(ip4, ip6 string) ([]netip.Prefix, error) {

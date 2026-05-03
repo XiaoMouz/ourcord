@@ -9,21 +9,25 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/ourcord/ourcord/daemon/pkg/derp"
+	"github.com/ourcord/ourcord/daemon/pkg/ice"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
 
 // PeerRoute describes how to reach a remote VPN peer.
 type PeerRoute struct {
-	PublicKey  wgtypes.Key
-	ID         string
-	Name       string
-	VPN4       netip.Addr      // peer's VPN IPv4
-	VPN6       netip.Addr      // peer's VPN IPv6
-	NextHop    *wgtypes.Key    // nil = direct, non-nil = route via this intermediate peer
-	DirectAddr *netip.AddrPort // UDP endpoint if hole-punch succeeded
-	DERPURL    string          // DERP relay URL (fallback)
-	LastSeen   int64
-	LastError  string
+	PublicKey   wgtypes.Key
+	ID          string
+	Name        string
+	VPN4        netip.Addr      // peer's VPN IPv4
+	VPN6        netip.Addr      // peer's VPN IPv6
+	NextHop     *wgtypes.Key    // nil = direct, non-nil = route via this intermediate peer
+	DirectAddr  *netip.AddrPort // UDP endpoint if hole-punch succeeded
+	ICEReady    bool            // true when the daemon has an ICE Conn for this peer
+	DERPURL     string          // DERP relay URL (fallback)
+	DERPNodeKey string          // peer DERP node key (nodekey:...)
+	LastSeen    int64
+	LastError   string
 }
 
 // Table holds the routing table for all VPN peers.
@@ -73,10 +77,29 @@ func (t *Table) Replace(routes []*PeerRoute) {
 		if r == nil {
 			continue
 		}
+		if old := t.routes[r.PublicKey.String()]; old != nil {
+			r.ICEReady = old.ICEReady
+			if r.DirectAddr == nil && old.DirectAddr != nil {
+				ap := *old.DirectAddr
+				r.DirectAddr = &ap
+			}
+		}
 		next[r.PublicKey.String()] = r
 	}
 	t.routes = next
 	t.mu.Unlock()
+}
+
+// SetICEReady marks a peer as having a live ICE transport.
+func (t *Table) SetICEReady(publicKey wgtypes.Key, ready bool) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	r := t.routes[publicKey.String()]
+	if r == nil || r.ICEReady == ready {
+		return false
+	}
+	r.ICEReady = ready
+	return true
 }
 
 // All returns a snapshot of all routes.
@@ -147,9 +170,20 @@ func (t *Table) BuildIPCConfig(privateKey wgtypes.Key) string {
 			sb.WriteString("\n")
 		}
 
-		// Endpoint: only set for direct or next-hop targets, not for the
-		// "virtual" remote peer we reach via someone else.
-		if r.NextHop == nil && r.DirectAddr != nil {
+		// Endpoint: only set for direct/DERP or next-hop targets, not for the
+		// "virtual" remote peer we reach via someone else. DERP is preferred
+		// as the baseline path; once ICE succeeds, ICEReady takes precedence
+		// and moves the same peer onto the direct bind without changing
+		// AllowedIPs.
+		if r.NextHop == nil && r.ICEReady {
+			if ep, err := ice.EndpointString(r.PublicKey.String()); err == nil {
+				sb.WriteString(fmt.Sprintf("endpoint=%s\n", ep))
+			}
+		} else if r.NextHop == nil && r.DERPURL != "" && r.DERPNodeKey != "" {
+			if ep, err := derp.EndpointString(r.DERPURL, r.DERPNodeKey); err == nil {
+				sb.WriteString(fmt.Sprintf("endpoint=%s\n", ep))
+			}
+		} else if r.NextHop == nil && r.DirectAddr != nil {
 			sb.WriteString(fmt.Sprintf("endpoint=%s\n", r.DirectAddr.String()))
 		}
 

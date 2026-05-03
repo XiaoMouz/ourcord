@@ -82,6 +82,43 @@ func TestBuildIPCConfig_DirectPeerEmitsEndpoint(t *testing.T) {
 	}
 }
 
+func TestBuildIPCConfig_DERPPeerEmitsDERPEndpoint(t *testing.T) {
+	tbl := NewTable()
+	priv, _ := wgtypes.GeneratePrivateKey()
+	tbl.Upsert(&PeerRoute{
+		PublicKey:   mustKey(t, 0xBE),
+		VPN4:        mustAddr(t, "198.18.0.21"),
+		DERPURL:     "http://127.0.0.1:3340",
+		DERPNodeKey: "nodekey:0123456789abcdef",
+	})
+	got := tbl.BuildIPCConfig(priv)
+	if !strings.Contains(got, "endpoint=derp://") {
+		t.Errorf("expected derp endpoint line:\n%s", got)
+	}
+	if strings.Contains(got, "endpoint=http://") {
+		t.Errorf("raw relay URL must not be emitted as endpoint:\n%s", got)
+	}
+}
+
+func TestBuildIPCConfig_ICEReadyOverridesDERP(t *testing.T) {
+	tbl := NewTable()
+	priv, _ := wgtypes.GeneratePrivateKey()
+	tbl.Upsert(&PeerRoute{
+		PublicKey:   mustKey(t, 0xBF),
+		VPN4:        mustAddr(t, "198.18.0.22"),
+		ICEReady:    true,
+		DERPURL:     "http://127.0.0.1:3340",
+		DERPNodeKey: "nodekey:0123456789abcdef",
+	})
+	got := tbl.BuildIPCConfig(priv)
+	if !strings.Contains(got, "endpoint=ice://") {
+		t.Fatalf("expected ice endpoint line:\n%s", got)
+	}
+	if strings.Contains(got, "endpoint=derp://") {
+		t.Fatalf("ice-ready route must not keep derp endpoint:\n%s", got)
+	}
+}
+
 func TestBuildIPCConfig_IndirectPeerNoEndpoint(t *testing.T) {
 	tbl := NewTable()
 	priv, _ := wgtypes.GeneratePrivateKey()
@@ -167,5 +204,17 @@ func TestReplaceDropsStaleRoutes(t *testing.T) {
 	}
 	if routes[0].PublicKey != newKey {
 		t.Fatalf("expected new route only, got %v", routes[0].PublicKey)
+	}
+}
+
+func TestReplacePreservesICEReady(t *testing.T) {
+	tbl := NewTable()
+	pk := mustKey(t, 0x03)
+	tbl.Upsert(&PeerRoute{PublicKey: pk, VPN4: mustAddr(t, "198.18.0.3"), ICEReady: true})
+	tbl.Replace([]*PeerRoute{{PublicKey: pk, VPN4: mustAddr(t, "198.18.0.3")}})
+
+	routes := tbl.All()
+	if len(routes) != 1 || !routes[0].ICEReady {
+		t.Fatalf("expected ICEReady preserved, got %+v", routes)
 	}
 }

@@ -18,6 +18,11 @@ import type { Env } from "./types";
 //     mock WebSocket.
 
 const SECRET = "signal-test-jwt-secret-1234567890";
+const PK_A = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+const PK_B = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=";
+const PK_C = "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=";
+const ROOM_AB = "pair:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA.AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE";
+const ROOM_BA = "pair:AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 
 async function tokenFor(sub = "u1"): Promise<string> {
   return signToken(makePayload(sub, `${sub}@x.io`), SECRET);
@@ -78,14 +83,14 @@ function signalReq(roomId: string, qs: Record<string, string> = {}): Request {
 
 describe("/api/signal route gate (W3)", () => {
   it("missing token + pk → 401", async () => {
-    const res = await worker.fetch(signalReq("pair:aaa-bbb"), makeEnv(), ctx);
+    const res = await worker.fetch(signalReq(ROOM_AB), makeEnv(), ctx);
     expect(res.status).toBe(401);
     expect(await res.json()).toMatchObject({ error: /token and pk required/ });
   });
 
   it("invalid JWT → 401", async () => {
     const res = await worker.fetch(
-      signalReq("pair:aaa-bbb", { token: "not.a.jwt", pk: "aaa" }),
+      signalReq(ROOM_AB, { token: "not.a.jwt", pk: PK_A }),
       makeEnv(),
       ctx,
     );
@@ -96,7 +101,7 @@ describe("/api/signal route gate (W3)", () => {
   it("valid JWT but peer not owned by user → 403", async () => {
     const env = makeEnv({ DB: makeDB([{ first: null }]) });
     const res = await worker.fetch(
-      signalReq("pair:aaa-bbb", { token: await tokenFor("u1"), pk: "aaa" }),
+      signalReq(ROOM_AB, { token: await tokenFor("u1"), pk: PK_A }),
       env,
       ctx,
     );
@@ -118,18 +123,18 @@ describe("/api/signal route gate (W3)", () => {
   it("pair roomId not sorted → 400", async () => {
     const env = makeEnv({ DB: makeDB([{ first: { 1: 1 } }]) });
     const res = await worker.fetch(
-      signalReq("pair:zzz-aaa", { token: await tokenFor(), pk: "zzz" }),
+      signalReq(ROOM_BA, { token: await tokenFor(), pk: PK_B }),
       env,
       ctx,
     );
     expect(res.status).toBe(400);
-    expect(await res.json()).toMatchObject({ error: /sorted/ });
+    expect(await res.json()).toMatchObject({ error: /malformed pair/ });
   });
 
   it("authenticated user not part of the pair → 403 (cross-pair signaling rejected)", async () => {
     const env = makeEnv({ DB: makeDB([{ first: { 1: 1 } }]) });
     const res = await worker.fetch(
-      signalReq("pair:aaa-bbb", { token: await tokenFor(), pk: "ccc" }),
+      signalReq(ROOM_AB, { token: await tokenFor(), pk: PK_C }),
       env,
       ctx,
     );
@@ -156,7 +161,7 @@ describe("/api/signal route gate (W3)", () => {
     // Force the limit by stubbing KV.get to return a count >= the signal cap (60).
     (env.KV.get as any) = vi.fn(async () => "999");
     const res = await worker.fetch(
-      signalReq("pair:aaa-bbb", { token: await tokenFor(), pk: "aaa" }),
+      signalReq(ROOM_AB, { token: await tokenFor(), pk: PK_A }),
       env,
       ctx,
     );

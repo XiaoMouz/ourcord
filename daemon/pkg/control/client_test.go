@@ -2,6 +2,7 @@ package control
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -10,6 +11,33 @@ import (
 	"testing"
 	"time"
 )
+
+func TestPairRoomID_URLSafeAndStable(t *testing.T) {
+	var aRaw, bRaw [32]byte
+	for i := range aRaw {
+		aRaw[i] = byte(i)
+		bRaw[i] = byte(255 - i)
+	}
+	a := base64.StdEncoding.EncodeToString(aRaw[:])
+	b := base64.StdEncoding.EncodeToString(bRaw[:])
+	ab, err := PairRoomID(a, b)
+	if err != nil {
+		t.Fatalf("PairRoomID: %v", err)
+	}
+	ba, err := PairRoomID(b, a)
+	if err != nil {
+		t.Fatalf("PairRoomID reversed: %v", err)
+	}
+	if ab != ba {
+		t.Fatalf("room id must be order-stable: %q != %q", ab, ba)
+	}
+	if strings.ContainsAny(ab, "/+=") {
+		t.Fatalf("room id is not URL safe: %q", ab)
+	}
+	if !strings.HasPrefix(ab, "pair:") || !strings.Contains(ab, ".") {
+		t.Fatalf("unexpected room id shape: %q", ab)
+	}
+}
 
 // newTestClient builds a Client whose controlURL points at the given test
 // server. Token + public key are fixed so request-header assertions can

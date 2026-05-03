@@ -5,6 +5,7 @@ package control
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -23,12 +24,43 @@ type SignalMessage struct {
 	From    string          `json:"from,omitempty"`
 	To      string          `json:"to,omitempty"`
 	Payload json.RawMessage `json:"payload,omitempty"`
+	Peers   []string        `json:"peers,omitempty"`
+}
+
+// PairRoomID returns the URL-safe SignalDO room for a pair of WireGuard public
+// keys. Inputs are standard base64 WireGuard keys; output avoids "/" and "="
+// so it can be embedded in /api/signal/:room_id.
+func PairRoomID(a, b string) (string, error) {
+	enc := func(s string) (string, error) {
+		raw, err := base64.StdEncoding.DecodeString(s)
+		if err != nil {
+			return "", fmt.Errorf("decode public key: %w", err)
+		}
+		return base64.RawURLEncoding.EncodeToString(raw), nil
+	}
+	ak, err := enc(a)
+	if err != nil {
+		return "", err
+	}
+	bk, err := enc(b)
+	if err != nil {
+		return "", err
+	}
+	if ak > bk {
+		ak, bk = bk, ak
+	}
+	return "pair:" + ak + "." + bk, nil
 }
 
 // ICEOffer holds ICE credentials + candidate list sent from one peer to another.
 type ICEOffer struct {
 	Ufrag      string   `json:"ufrag"`
 	Pwd        string   `json:"pwd"`
+	Candidates []string `json:"candidates"`
+}
+
+// ICECandidates carries trickled candidates after the initial offer/answer.
+type ICECandidates struct {
 	Candidates []string `json:"candidates"`
 }
 
@@ -199,6 +231,16 @@ func (c *Client) SendICEAnswer(ctx context.Context, targetKey string, answer ICE
 	})
 }
 
+// SendICECandidate sends additional gathered ICE candidates to a peer.
+func (c *Client) SendICECandidate(ctx context.Context, targetKey string, candidates []string) error {
+	payload, _ := json.Marshal(ICECandidates{Candidates: candidates})
+	return c.SendSignal(ctx, SignalMessage{
+		Type:    "candidate",
+		To:      targetKey,
+		Payload: payload,
+	})
+}
+
 func (c *Client) readLoop(ctx context.Context, ws *websocket.Conn, onClose func()) {
 	defer func() {
 		if onClose != nil {
@@ -244,6 +286,10 @@ type RemotePeer struct {
 	IP6       string `json:"ip6"`
 	Name      string `json:"name"`
 	LastSeen  int64  `json:"last_seen,omitempty"`
+	// DERPNodeKey is the peer's Tailscale DERP node key
+	// (tailcfg.NodePublic.String(), "nodekey:..."). It is distinct from the
+	// WireGuard public key and is used only by DERP fallback transport.
+	DERPNodeKey string `json:"derp_node_key,omitempty"`
 	// Endpoint is an optional wg UDP endpoint hint of the form host:port.
 	// Set by the control plane when the peer reported one on register
 	// (Phase-1 manual / smoke testing). Once per-peer ICE lands the daemons
@@ -260,6 +306,17 @@ type RelayEntry struct {
 	Hostname string `json:"hostname"`
 	Port     int    `json:"port"`
 	Region   string `json:"region"`
+}
+
+type STUNServer struct {
+	Host   string `json:"host"`
+	Port   int    `json:"port"`
+	Region string `json:"region"`
+}
+
+type STUNServersResponse struct {
+	Servers []STUNServer `json:"servers"`
+	Source  string       `json:"source"`
 }
 
 // RegisterRequest is the body sent to POST /api/peers/register.
@@ -351,6 +408,41 @@ func (c *Client) FetchConfig(ctx context.Context, roomID string) (*PeerConfig, e
 		return nil, fmt.Errorf("control fetch-config decode: %w", err)
 	}
 	return &out, nil
+}
+
+// FetchSTUNServers returns STUN host:port entries used by ICE gathering.
+func (c *Client) FetchSTUNServers(ctx context.Context) ([]string, error) {
+	httpReq, err := http.NewRequestWithContext(ctx, "GET", c.controlURL+"/api/stun/servers", nil)
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("Authorization", "Bearer "+c.authToken)
+	resp, err := c.http.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("control fetch-stun: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		buf := make([]byte, 1024)
+		n, _ := resp.Body.Read(buf)
+		return nil, fmt.Errorf("control fetch-stun: HTTP %d: %s", resp.StatusCode, string(buf[:n]))
+	}
+	var out STUNServersResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("control fetch-stun decode: %w", err)
+	}
+	servers := make([]string, 0, len(out.Servers))
+	for _, s := range out.Servers {
+		if s.Host == "" {
+			continue
+		}
+		port := s.Port
+		if port == 0 {
+			port = 3478
+		}
+		servers = append(servers, fmt.Sprintf("%s:%d", s.Host, port))
+	}
+	return servers, nil
 }
 
 // bytesReader returns an io.Reader for body bodies that ALSO implements io.Seeker

@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"net/netip"
 
+	"golang.zx2c4.com/wireguard/conn"
 	"golang.zx2c4.com/wireguard/device"
 	"golang.zx2c4.com/wireguard/tun"
-	"golang.zx2c4.com/wireguard/conn"
 )
 
 const DefaultMTU = 1280 // Conservative MTU for VPN-over-VPN scenarios
@@ -30,6 +30,13 @@ type Interface struct {
 // to assign addresses tears down the freshly created TUN to avoid leaving
 // a half-configured interface around.
 func New(name string, addrs []netip.Prefix) (*Interface, error) {
+	return NewWithBind(name, addrs, conn.NewDefaultBind())
+}
+
+// NewWithBind creates a TUN interface using a caller-provided WireGuard bind.
+// Daemon uses this for DERP-first hybrid transport; tests and simple local
+// operation can keep using New.
+func NewWithBind(name string, addrs []netip.Prefix, bind conn.Bind) (*Interface, error) {
 	tunDev, err := tun.CreateTUN(name, DefaultMTU)
 	if err != nil {
 		return nil, fmt.Errorf("create tun %q: %w", name, err)
@@ -48,7 +55,7 @@ func New(name string, addrs []netip.Prefix) (*Interface, error) {
 	}
 
 	logger := device.NewLogger(device.LogLevelError, fmt.Sprintf("[wg/%s] ", actualName))
-	wgDev := device.NewDevice(tunDev, conn.NewDefaultBind(), logger)
+	wgDev := device.NewDevice(tunDev, bind, logger)
 
 	iface := &Interface{
 		tun:    tunDev,

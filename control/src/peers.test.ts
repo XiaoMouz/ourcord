@@ -206,6 +206,7 @@ describe("registerPeer / getPeerConfig endpoint hints", () => {
               last_seen: 2,
               ip4: "198.18.0.11",
               ip6: "fdab:cdef:123::b",
+              derp_node_key: "nodekey:peer-b",
               endpoint: "192.168.139.110:51820",
             },
           ],
@@ -217,8 +218,10 @@ describe("registerPeer / getPeerConfig endpoint hints", () => {
 
     expect(resp.status).toBe(200);
     expect(cap.sqls[2]).toMatch(/wg_endpoint AS endpoint/);
-    const body = await resp.json<{ peers: Array<{ endpoint: string }> }>();
+    expect(cap.sqls[2]).toMatch(/derp_node_key/);
+    const body = await resp.json<{ peers: Array<{ endpoint: string; derp_node_key: string }> }>();
     expect(body.peers[0].endpoint).toBe("192.168.139.110:51820");
+    expect(body.peers[0].derp_node_key).toBe("nodekey:peer-b");
   });
 
   it("excludes the requesting public key from peer config", async () => {

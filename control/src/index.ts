@@ -103,7 +103,7 @@ export default {
         if (!owned) return json({ error: "peer not owned by user" }, 403);
 
         // H1: gate the SignalDO on room membership. Two roomId conventions:
-        //   1. "pair:<pkA>-<pkB>" (sorted lexicographically) — 1:1 hole-punch
+        //   1. "pair:<keyA>.<keyB>" (base64url/no-padding WG keys, sorted) — 1:1 hole-punch
         //      outside any lobby. Caller's pk must be one of the two halves.
         //   2. anything else — treated as a service-layer room id; we ask the
         //      service worker for the lobby member-ids and require the caller
@@ -111,10 +111,9 @@ export default {
         // Without one of these checks any authenticated user could connect to
         // an arbitrary roomId DO and snoop / inject ICE signaling.
         if (roomId.startsWith("pair:")) {
-          const halves = roomId.slice(5).split("-");
-          if (halves.length !== 2) return json({ error: "malformed pair roomId" }, 400);
-          const [a, b] = halves;
-          if (a > b) return json({ error: "pair roomId must be sorted" }, 400);
+          const parsed = parsePairRoom(roomId);
+          if (!parsed) return json({ error: "malformed pair roomId" }, 400);
+          const [a, b] = parsed;
           if (pk !== a && pk !== b) return json({ error: "pk not part of this pair" }, 403);
         } else {
           if (!env.SERVICE_URL || !env.SERVICE_INTERNAL_TOKEN) {
@@ -258,4 +257,28 @@ function json(data: unknown, status = 200): Response {
   const res = jsonBase(data, status);
   res.headers.set("Access-Control-Allow-Origin", "*");
   return res;
+}
+
+function parsePairRoom(roomId: string): [string, string] | null {
+  const body = roomId.slice("pair:".length);
+  const parts = body.split(".");
+  if (parts.length !== 2 || !parts[0] || !parts[1]) return null;
+  if (parts[0] > parts[1]) return null;
+  const a = decodeBase64URLKey(parts[0]);
+  const b = decodeBase64URLKey(parts[1]);
+  if (!a || !b) return null;
+  return [a, b];
+}
+
+function decodeBase64URLKey(s: string): string | null {
+  if (!/^[A-Za-z0-9_-]+$/.test(s)) return null;
+  const std = s.replace(/-/g, "+").replace(/_/g, "/");
+  const padded = std + "=".repeat((4 - (std.length % 4)) % 4);
+  try {
+    const bin = atob(padded);
+    if (bin.length !== 32) return null;
+    return btoa(bin);
+  } catch {
+    return null;
+  }
 }
