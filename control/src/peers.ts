@@ -24,6 +24,7 @@ export async function registerPeer(request: Request, env: Env): Promise<Response
     name: string;
     platform: string;
     derp_node_key?: string; // optional Tailscale DERP NodePublic.String() (G12)
+    wg_endpoint?: string; // optional host:port hint for manual/smoke direct WG
   }>();
   if (!body.public_key || !body.platform) {
     return json({ error: "public_key and platform required" }, 400);
@@ -41,6 +42,13 @@ export async function registerPeer(request: Request, env: Env): Promise<Response
   if (derpNodeKey !== "" && !derpNodeKey.startsWith("nodekey:")) {
     return json({ error: "derp_node_key must start with 'nodekey:'" }, 400);
   }
+  const wgEndpoint = (body.wg_endpoint ?? "").trim();
+  if (
+    wgEndpoint !== "" &&
+    (wgEndpoint.length > 255 || /\s/.test(wgEndpoint) || !/:\d{1,5}$/.test(wgEndpoint))
+  ) {
+    return json({ error: "wg_endpoint must be a host:port endpoint" }, 400);
+  }
 
   // Check for existing peer with same public key
   const existing = await env.DB
@@ -54,8 +62,8 @@ export async function registerPeer(request: Request, env: Env): Promise<Response
     }
     // Update last_seen and return existing
     await env.DB
-      .prepare("UPDATE peers SET last_seen = ?, name = ?, platform = ?, derp_node_key = ? WHERE id = ?")
-      .bind(Math.floor(Date.now() / 1000), body.name ?? "", body.platform, derpNodeKey, existing.id)
+      .prepare("UPDATE peers SET last_seen = ?, name = ?, platform = ?, derp_node_key = ?, wg_endpoint = ? WHERE id = ?")
+      .bind(Math.floor(Date.now() / 1000), body.name ?? "", body.platform, derpNodeKey, wgEndpoint, existing.id)
       .run();
     const peer = await env.DB
       .prepare("SELECT * FROM peers WHERE id = ?")
@@ -85,9 +93,9 @@ export async function registerPeer(request: Request, env: Env): Promise<Response
     try {
       await env.DB
         .prepare(
-          "INSERT INTO peers (id, user_id, public_key, name, platform, last_seen, ip4, ip6, derp_node_key) VALUES (?,?,?,?,?,?,?,?,?)"
+          "INSERT INTO peers (id, user_id, public_key, name, platform, last_seen, ip4, ip6, derp_node_key, wg_endpoint) VALUES (?,?,?,?,?,?,?,?,?,?)"
         )
-        .bind(id, userId, body.public_key, body.name ?? "", body.platform, now, candidate.ip4, candidate.ip6, derpNodeKey)
+        .bind(id, userId, body.public_key, body.name ?? "", body.platform, now, candidate.ip4, candidate.ip6, derpNodeKey, wgEndpoint)
         .run();
       inserted = { ip4: candidate.ip4, ip6: candidate.ip6 };
       // env.KV is a required binding so the previous `env.KV && ...` guard
@@ -223,7 +231,8 @@ export async function getPeerConfig(request: Request, env: Env): Promise<Respons
   const placeholders = memberIds.map(() => "?").join(",");
   const peers = await env.DB
     .prepare(
-      `SELECT id, user_id, public_key, name, platform, last_seen, ip4, ip6
+      `SELECT id, user_id, public_key, name, platform, last_seen, ip4, ip6,
+              wg_endpoint AS endpoint
        FROM peers WHERE user_id IN (${placeholders}) ORDER BY last_seen DESC`
     )
     .bind(...memberIds)
@@ -333,5 +342,3 @@ function buildWireGuardConfig(peer: Peer): string {
     "",
   ].join("\n");
 }
-
-

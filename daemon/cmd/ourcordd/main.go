@@ -129,6 +129,7 @@ type daemon struct {
 	// at disconnect).
 	assignedIP4 string
 	assignedIP6 string
+	activeRoom  string
 
 	// Injectable factories (test seam). nil → real implementations.
 	newTun    func(name string, addrs []netip.Prefix) (tunIface, error)
@@ -176,7 +177,7 @@ func (d *daemon) HandleIPC(ctx context.Context, req ipc.IPCRequest) ipc.IPCRespo
 	switch req.Cmd {
 	case ipc.CmdStatus:
 		d.connMu.Lock()
-		ip4, ip6 := d.assignedIP4, d.assignedIP6
+		ip4, ip6, roomID := d.assignedIP4, d.assignedIP6, d.activeRoom
 		var routes []*routing.PeerRoute
 		if d.table != nil {
 			routes = d.table.All()
@@ -190,6 +191,7 @@ func (d *daemon) HandleIPC(ctx context.Context, req ipc.IPCRequest) ipc.IPCRespo
 				VPNActive:   d.vpnActive.Load(),
 				IP4:         ip4,
 				IP6:         ip6,
+				RoomID:      roomID,
 				PeerCount:   len(routes),
 				RelayUsed:   relayUsed,
 				RelayURL:    relayURL,
@@ -206,6 +208,20 @@ func (d *daemon) HandleIPC(ctx context.Context, req ipc.IPCRequest) ipc.IPCRespo
 		return ipc.IPCResponse{OK: true, Data: connectedPeers(routes)}
 	case ipc.CmdConnect:
 		if err := d.connect(ctx); err != nil {
+			return ipc.IPCResponse{OK: false, Error: err.Error()}
+		}
+		return ipc.IPCResponse{OK: true}
+	case ipc.CmdEnterRoom:
+		roomID := strings.TrimSpace(req.Params["room_id"])
+		if roomID == "" {
+			return ipc.IPCResponse{OK: false, Error: "room_id required"}
+		}
+		if err := d.enterRoom(ctx, roomID); err != nil {
+			return ipc.IPCResponse{OK: false, Error: err.Error()}
+		}
+		return ipc.IPCResponse{OK: true}
+	case ipc.CmdLeaveRoom:
+		if err := d.leaveRoom(ctx); err != nil {
 			return ipc.IPCResponse{OK: false, Error: err.Error()}
 		}
 		return ipc.IPCResponse{OK: true}
@@ -331,8 +347,9 @@ func addrString(a netip.Addr) string {
 //
 // Phase-1 limitation: per-peer ICE agents are NOT yet spawned. That means
 // only LAN / public-IPv6 P2P will work without explicit candidate exchange.
-// Per-peer ICE wiring is Phase-2 / media-layer work; the SignalHandler hook
-// is in place so it can be added without touching the connect pipeline.
+// Per-peer ICE wiring is the remaining Phase-1 closure work; the
+// SignalHandler hook is in place so it can be added without touching the
+// basic connect pipeline.
 func (d *daemon) connect(ctx context.Context) error {
 	d.connMu.Lock()
 	defer d.connMu.Unlock()
@@ -380,7 +397,7 @@ func (d *daemon) connect(ctx context.Context) error {
 	table.SetListenPort(d.wgListenPort)
 
 	cfgCtx, cfgCancel := context.WithTimeout(ctx, 10*time.Second)
-	cfg, err := cli.FetchConfig(cfgCtx, "")
+	cfg, err := cli.FetchConfig(cfgCtx, d.activeRoom)
 	cfgCancel()
 	if err != nil {
 		_ = tunIf.Close()
@@ -401,7 +418,7 @@ func (d *daemon) connect(ctx context.Context) error {
 	d.assignedIP6 = reg.Peer.IP6
 	d.vpnActive.Store(true)
 
-	go cli.Run(connCtx, "")
+	go cli.Run(connCtx, d.activeRoom)
 	go d.meshLoop(connCtx)
 
 	return nil
@@ -424,7 +441,46 @@ func (d *daemon) disconnect() {
 	d.cli = nil
 	d.assignedIP4 = ""
 	d.assignedIP6 = ""
+	d.activeRoom = ""
 	d.vpnActive.Store(false)
+}
+
+func (d *daemon) enterRoom(ctx context.Context, roomID string) error {
+	d.connMu.Lock()
+	defer d.connMu.Unlock()
+	if !d.vpnActive.Load() || d.cli == nil || d.tunIf == nil || d.table == nil {
+		return errors.New("VPN is not active")
+	}
+	cfgCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	cfg, err := d.cli.FetchConfig(cfgCtx, roomID)
+	if err != nil {
+		return fmt.Errorf("fetch room config: %w", err)
+	}
+	if err := applyConfig(d.tunIf, d.table, d.keyPair.Private, cfg); err != nil {
+		return fmt.Errorf("apply room config: %w", err)
+	}
+	d.activeRoom = roomID
+	return nil
+}
+
+func (d *daemon) leaveRoom(ctx context.Context) error {
+	d.connMu.Lock()
+	defer d.connMu.Unlock()
+	if !d.vpnActive.Load() || d.cli == nil || d.tunIf == nil || d.table == nil {
+		return errors.New("VPN is not active")
+	}
+	cfgCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	cfg, err := d.cli.FetchConfig(cfgCtx, "")
+	if err != nil {
+		return fmt.Errorf("fetch user config: %w", err)
+	}
+	if err := applyConfig(d.tunIf, d.table, d.keyPair.Private, cfg); err != nil {
+		return fmt.Errorf("apply user config: %w", err)
+	}
+	d.activeRoom = ""
+	return nil
 }
 
 func (d *daemon) meshLoop(ctx context.Context) {
@@ -435,16 +491,24 @@ func (d *daemon) meshLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
+			d.connMu.Lock()
+			cli, tunIf, table, roomID := d.cli, d.tunIf, d.table, d.activeRoom
+			if cli == nil || tunIf == nil || table == nil {
+				d.connMu.Unlock()
+				continue
+			}
 			fetchCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-			cfg, err := d.cli.FetchConfig(fetchCtx, "")
+			cfg, err := cli.FetchConfig(fetchCtx, roomID)
 			cancel()
 			if err != nil {
 				log.Printf("mesh poll: %v", err)
+				d.connMu.Unlock()
 				continue
 			}
-			if err := applyConfig(d.tunIf, d.table, d.keyPair.Private, cfg); err != nil {
+			if err := applyConfig(tunIf, table, d.keyPair.Private, cfg); err != nil {
 				log.Printf("mesh apply: %v", err)
 			}
+			d.connMu.Unlock()
 		}
 	}
 }
@@ -455,6 +519,7 @@ func (d *daemon) meshLoop(ctx context.Context) {
 // out naturally.
 func applyConfig(iface tunIface, table *routing.Table, priv wgtypes.Key, cfg *control.PeerConfig) error {
 	var v4Addrs []netip.Addr
+	routes := make([]*routing.PeerRoute, 0, len(cfg.Peers))
 	for _, p := range cfg.Peers {
 		pub, err := base64.StdEncoding.DecodeString(p.PublicKey)
 		if err != nil || len(pub) != wgtypes.KeyLen {
@@ -491,11 +556,12 @@ func applyConfig(iface tunIface, table *routing.Table, priv wgtypes.Key, cfg *co
 				log.Printf("peer %s: invalid endpoint %q: %v", p.ID, p.Endpoint, err)
 			}
 		}
-		table.Upsert(route)
+		routes = append(routes, route)
 		if ip4.IsValid() && ip4.Is4() {
 			v4Addrs = append(v4Addrs, ip4)
 		}
 	}
+	table.Replace(routes)
 	if err := iface.ConfigureIPC(table.BuildIPCConfig(priv)); err != nil {
 		return err
 	}

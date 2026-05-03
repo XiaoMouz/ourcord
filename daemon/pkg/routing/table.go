@@ -62,6 +62,23 @@ func (t *Table) Remove(publicKey wgtypes.Key) {
 	t.mu.Unlock()
 }
 
+// Replace swaps the full peer route set while preserving table-level settings
+// such as listenPort. The control plane is the source of truth for the current
+// mesh scope, so peers removed from a room/user config must disappear instead
+// of lingering from a previous fetch.
+func (t *Table) Replace(routes []*PeerRoute) {
+	t.mu.Lock()
+	next := make(map[string]*PeerRoute, len(routes))
+	for _, r := range routes {
+		if r == nil {
+			continue
+		}
+		next[r.PublicKey.String()] = r
+	}
+	t.routes = next
+	t.mu.Unlock()
+}
+
 // All returns a snapshot of all routes.
 func (t *Table) All() []*PeerRoute {
 	t.mu.RLock()

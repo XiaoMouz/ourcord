@@ -224,6 +224,114 @@ func TestConnect_HappyPath_MockControl(t *testing.T) {
 	}
 }
 
+func TestEnterLeaveRoom_UsesRoomScopedConfigAndReplacesPeers(t *testing.T) {
+	stateDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(stateDir, "token"), []byte("test-jwt-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	kp, err := wg.LoadOrCreateKeyPair(filepath.Join(stateDir, "wg.key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var roomsSeen []string
+	var userKey, roomKey wgtypes.Key
+	copy(userKey[:], []byte("user-scope-peer-0000000000000001"))
+	copy(roomKey[:], []byte("room-scope-peer-0000000000000001"))
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/peers/register", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(control.RegisterResponse{
+			Peer: control.PeerInfo{
+				ID: "peer-self", UserID: "u1", PublicKey: kp.PublicKeyBase64(),
+				Name: "self", Platform: "test",
+				IP4: "198.18.0.10", IP6: "fdab:cdef:123::a",
+			},
+		})
+	})
+	mux.HandleFunc("/api/peers/config", func(w http.ResponseWriter, r *http.Request) {
+		roomID := r.URL.Query().Get("room_id")
+		roomsSeen = append(roomsSeen, roomID)
+		peer := control.RemotePeer{
+			ID:        "user-peer",
+			PublicKey: base64.StdEncoding.EncodeToString(userKey[:]),
+			IP4:       "198.18.0.11",
+			IP6:       "fdab:cdef:123::b",
+			Name:      "user-peer",
+		}
+		if roomID == "room-abc" {
+			peer = control.RemotePeer{
+				ID:        "room-peer",
+				PublicKey: base64.StdEncoding.EncodeToString(roomKey[:]),
+				IP4:       "198.18.0.22",
+				IP6:       "fdab:cdef:123::16",
+				Name:      "room-peer",
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(control.PeerConfig{Peers: []control.RemotePeer{peer}})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	ft := &fakeTun{}
+	d := &daemon{
+		controlURL: srv.URL,
+		keyPair:    kp,
+		stateDir:   stateDir,
+		newTun:     func(string, []netip.Prefix) (tunIface, error) { return ft, nil },
+		newClient: func(u, t, p string) controlClient {
+			return &fakeClient{Client: control.New(u, t, p)}
+		},
+	}
+	if err := d.connect(context.Background()); err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer d.disconnect()
+
+	if got := roomsSeen; len(got) != 1 || got[0] != "" {
+		t.Fatalf("initial config rooms = %v, want [\"\"]", got)
+	}
+
+	resp := d.HandleIPC(context.Background(), ipc.IPCRequest{
+		Cmd:    ipc.CmdEnterRoom,
+		Params: map[string]string{"room_id": "room-abc"},
+	})
+	if !resp.OK {
+		t.Fatalf("enter room failed: %s", resp.Error)
+	}
+	if got := roomsSeen; len(got) != 2 || got[1] != "room-abc" {
+		t.Fatalf("rooms after enter = %v, want second room-abc", got)
+	}
+	uapi := ft.lastIPC()
+	if !strings.Contains(uapi, "allowed_ip=198.18.0.22/32") {
+		t.Fatalf("room peer not applied:\n%s", uapi)
+	}
+	if strings.Contains(uapi, "allowed_ip=198.18.0.11/32") {
+		t.Fatalf("user-scope peer leaked after room replace:\n%s", uapi)
+	}
+	status := d.HandleIPC(context.Background(), ipc.IPCRequest{Cmd: ipc.CmdStatus})
+	st, ok := status.Data.(ipc.DaemonStatus)
+	if !ok || st.RoomID != "room-abc" {
+		t.Fatalf("status room = %#v (ok=%v)", status.Data, ok)
+	}
+
+	resp = d.HandleIPC(context.Background(), ipc.IPCRequest{Cmd: ipc.CmdLeaveRoom})
+	if !resp.OK {
+		t.Fatalf("leave room failed: %s", resp.Error)
+	}
+	if got := roomsSeen; len(got) != 3 || got[2] != "" {
+		t.Fatalf("rooms after leave = %v, want third empty", got)
+	}
+	uapi = ft.lastIPC()
+	if !strings.Contains(uapi, "allowed_ip=198.18.0.11/32") {
+		t.Fatalf("user peer not restored after leave:\n%s", uapi)
+	}
+	if strings.Contains(uapi, "allowed_ip=198.18.0.22/32") {
+		t.Fatalf("room peer leaked after leave:\n%s", uapi)
+	}
+}
+
 func TestConnect_MissingToken_Fails(t *testing.T) {
 	stateDir := t.TempDir() // no token file
 	kp, _ := wg.LoadOrCreateKeyPair(filepath.Join(stateDir, "wg.key"))

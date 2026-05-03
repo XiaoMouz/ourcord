@@ -152,3 +152,20 @@ func TestUpsertRemove(t *testing.T) {
 		t.Fatalf("expected 0 routes after remove")
 	}
 }
+
+func TestReplaceDropsStaleRoutes(t *testing.T) {
+	tbl := NewTable()
+	oldKey := mustKey(t, 0x01)
+	newKey := mustKey(t, 0x02)
+	tbl.Upsert(&PeerRoute{PublicKey: oldKey, VPN4: mustAddr(t, "198.18.0.1")})
+
+	tbl.Replace([]*PeerRoute{{PublicKey: newKey, VPN4: mustAddr(t, "198.18.0.2")}})
+
+	routes := tbl.All()
+	if len(routes) != 1 {
+		t.Fatalf("expected one route after replace, got %d", len(routes))
+	}
+	if routes[0].PublicKey != newKey {
+		t.Fatalf("expected new route only, got %v", routes[0].PublicKey)
+	}
+}

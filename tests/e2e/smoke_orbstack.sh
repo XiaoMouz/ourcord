@@ -144,20 +144,35 @@ cli "$VM_B" connect
 sleep 2
 
 # ---- 6. Assertions ----
-echo "==> ip addr on $VM_A:"
-vm_run "$VM_A" ip -br addr | grep -E "100\.64|fd7a:" || { echo "FAIL: VPN addr missing on A"; exit 1; }
-echo "==> ip addr on $VM_B:"
-vm_run "$VM_B" ip -br addr | grep -E "100\.64|fd7a:" || { echo "FAIL: VPN addr missing on B"; exit 1; }
-
-# Discover allocated IPs from mock state file (authoritative source).
-B_VPN_IP="$(python3 -c "
+VPN_ADDRS="$(python3 -c "
 import json
 d = json.load(open('$WORKDIR/mock.json'))
-for p in d['peers'].values():
-    if 'token-b' in p['name'] or p['ip4'].endswith('.11'):
-        print(p['ip4']); break
+by_endpoint = {p.get('endpoint', ''): p for p in d['peers'].values()}
+for endpoint in ('$IP_A:$WG_PORT', '$IP_B:$WG_PORT'):
+    p = by_endpoint.get(endpoint)
+    if not p:
+        raise SystemExit(f'missing peer for endpoint {endpoint}')
+    print(p['ip4'], p['ip6'])
 " 2>/dev/null)"
-[[ -z "$B_VPN_IP" ]] && B_VPN_IP="198.18.0.11"
+[[ -z "$VPN_ADDRS" ]] && { echo "FAIL: could not discover allocated VPN addrs"; cat "$WORKDIR/mock.json"; exit 1; }
+A_VPN4="$(echo "$VPN_ADDRS" | sed -n '1s/ .*//p')"
+A_VPN6="$(echo "$VPN_ADDRS" | sed -n '1s/.* //p')"
+B_VPN4="$(echo "$VPN_ADDRS" | sed -n '2s/ .*//p')"
+B_VPN6="$(echo "$VPN_ADDRS" | sed -n '2s/.* //p')"
+
+echo "==> ip addr on $VM_A:"
+ADDR_A="$(vm_run "$VM_A" ip -br addr)"
+echo "$ADDR_A" | grep -F "$A_VPN4" >/dev/null || { echo "$ADDR_A"; echo "FAIL: VPN v4 addr missing on A ($A_VPN4)"; exit 1; }
+echo "$ADDR_A" | grep -F "$A_VPN6" >/dev/null || { echo "$ADDR_A"; echo "FAIL: VPN v6 addr missing on A ($A_VPN6)"; exit 1; }
+echo "$ADDR_A" | grep -F "$A_VPN4"
+echo "==> ip addr on $VM_B:"
+ADDR_B="$(vm_run "$VM_B" ip -br addr)"
+echo "$ADDR_B" | grep -F "$B_VPN4" >/dev/null || { echo "$ADDR_B"; echo "FAIL: VPN v4 addr missing on B ($B_VPN4)"; exit 1; }
+echo "$ADDR_B" | grep -F "$B_VPN6" >/dev/null || { echo "$ADDR_B"; echo "FAIL: VPN v6 addr missing on B ($B_VPN6)"; exit 1; }
+echo "$ADDR_B" | grep -F "$B_VPN4"
+
+# Discover allocated IPs from mock state file (authoritative source).
+B_VPN_IP="$B_VPN4"
 
 echo "==> ping $B_VPN_IP from $VM_A (over the VPN tunnel):"
 if vm_run "$VM_A" ping -c 3 -W 3 "$B_VPN_IP" | tee /dev/stderr | grep -q "0% packet loss\|1 received\|2 received\|3 received"; then

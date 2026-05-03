@@ -8,6 +8,7 @@ type DaemonStatus struct {
 	VPNActive   bool   `json:"vpn_active"`
 	IP4         string `json:"ip4"`
 	IP6         string `json:"ip6"`
+	RoomID      string `json:"room_id,omitempty"`
 	PeerCount   int    `json:"peer_count"`
 	RelayUsed   bool   `json:"relay_used"` // true if currently relaying via DERP
 	RelayURL    string `json:"relay_url"`
@@ -36,6 +37,8 @@ const (
 	CmdDisconnect = "disconnect"
 	CmdStatus     = "status"
 	CmdListPeers  = "list_peers"
+	CmdEnterRoom  = "enter_room"
+	CmdLeaveRoom  = "leave_room"
 	CmdPing       = "ping"
 )
 

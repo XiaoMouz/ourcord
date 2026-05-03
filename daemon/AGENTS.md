@@ -70,6 +70,7 @@ go test -race ./...
 - gRPC over Unix Socket（macOS/Linux）/ Named Pipe（Windows）
 - proto 定义最终落 `proto/`，当前可在 `pkg/ipc/` 内联但要标 `// TODO(proto): 移到 proto/`
 - `CmdStatus` 返回 `IP4` / `IP6` / `PeerCount` / `RelayUsed` / `RelayURL` / `PathSummary` 字段；`CmdListPeers` 返回每个 peer 的 `path`（`configured` / `direct` / `derp` / `next-hop` / `unresolved`）。CLI/UI 可直接读，不需要解析 wg 表。
+- `CmdEnterRoom` / `CmdLeaveRoom` 是 daemon 接入业务房间的入口：进入房间后 `FetchConfig(room_id)` 拉房间作用域 peers，离开后回到 user-scope mesh。切换 config 必须替换旧 peer set，不能让上一房间的 peer 留在路由表。
 
 ## 已知技术债
 

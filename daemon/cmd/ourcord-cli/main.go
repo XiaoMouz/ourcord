@@ -18,7 +18,7 @@ func main() {
 	args := flag.Args()
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, "Usage: ourcord-cli [--socket path] <command> [args...]")
-		fmt.Fprintln(os.Stderr, "Commands: status, connect, disconnect, ping, peers")
+		fmt.Fprintln(os.Stderr, "Commands: status, connect, disconnect, ping, peers, enter-room <room_id>, leave-room")
 		os.Exit(1)
 	}
 
@@ -43,12 +43,24 @@ func main() {
 		cmdName = ipc.CmdPing
 	case "peers":
 		cmdName = ipc.CmdListPeers
+	case "enter-room":
+		if len(args) < 2 {
+			fmt.Fprintln(os.Stderr, "Usage: ourcord-cli enter-room <room_id>")
+			os.Exit(1)
+		}
+		cmdName = ipc.CmdEnterRoom
+	case "leave-room":
+		cmdName = ipc.CmdLeaveRoom
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown command: %s\n", cmd)
 		os.Exit(1)
 	}
 
-	resp, err := client.Call(cmdName, nil)
+	params := map[string]string(nil)
+	if cmdName == ipc.CmdEnterRoom {
+		params = map[string]string{"room_id": args[1]}
+	}
+	resp, err := client.Call(cmdName, params)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "IPC call error: %v\n", err)
 		os.Exit(1)
