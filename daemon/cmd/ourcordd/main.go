@@ -742,7 +742,7 @@ func firstRelayURL(relays []control.RelayEntry) string {
 	if r.Port > 0 {
 		host = net.JoinHostPort(r.Hostname, fmt.Sprint(r.Port))
 	}
-	return scheme + "://" + host
+	return scheme + "://" + host + "/derp"
 }
 
 func parseAssignedPrefixes(ip4, ip6 string) ([]netip.Prefix, error) {

@@ -211,7 +211,6 @@ func main() {
 	// loopback doesn't take down the relay; ban evasion is bounded by the
 	// relay-process lifetime.
 	if cc != nil {
-		derpSrv.SetVerifyClient(true)
 		derpSrv.SetVerifyClientURL(admitURL)
 		derpSrv.SetVerifyClientURLFailOpen(true)
 	}

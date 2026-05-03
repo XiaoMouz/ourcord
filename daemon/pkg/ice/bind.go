@@ -18,12 +18,13 @@ type Bind struct {
 
 	mu     sync.Mutex
 	closed bool
+	done   chan struct{}
 }
 
 var _ conn.Bind = (*Bind)(nil)
 
 func NewBind(native conn.Bind, mgr *Manager) *Bind {
-	return &Bind{native: native, mgr: mgr}
+	return &Bind{native: native, mgr: mgr, done: make(chan struct{})}
 }
 
 func (b *Bind) Open(port uint16) ([]conn.ReceiveFunc, uint16, error) {
@@ -31,6 +32,12 @@ func (b *Bind) Open(port uint16) ([]conn.ReceiveFunc, uint16, error) {
 	if err != nil {
 		return nil, 0, err
 	}
+	b.mu.Lock()
+	if b.closed {
+		b.closed = false
+		b.done = make(chan struct{})
+	}
+	b.mu.Unlock()
 	if b.mgr != nil {
 		fns = append(fns, b.receiveICE)
 	}
@@ -39,13 +46,12 @@ func (b *Bind) Open(port uint16) ([]conn.ReceiveFunc, uint16, error) {
 
 func (b *Bind) Close() error {
 	b.mu.Lock()
-	b.closed = true
-	b.mu.Unlock()
-	err := b.native.Close()
-	if b.mgr != nil {
-		_ = b.mgr.Close()
+	if !b.closed {
+		b.closed = true
+		close(b.done)
 	}
-	return err
+	b.mu.Unlock()
+	return b.native.Close()
 }
 
 func (b *Bind) SetMark(mark uint32) error { return b.native.SetMark(mark) }
@@ -85,6 +91,8 @@ func (b *Bind) receiveICE(packets [][]byte, sizes []int, eps []conn.Endpoint) (i
 	}
 	var p Packet
 	select {
+	case <-b.done:
+		return 0, net.ErrClosed
 	case <-b.mgr.Done():
 		return 0, net.ErrClosed
 	case p = <-b.mgr.Recv():
