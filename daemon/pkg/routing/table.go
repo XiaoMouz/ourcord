@@ -22,7 +22,7 @@ type PeerRoute struct {
 	VPN4        netip.Addr      // peer's VPN IPv4
 	VPN6        netip.Addr      // peer's VPN IPv6
 	NextHop     *wgtypes.Key    // nil = direct, non-nil = route via this intermediate peer
-	DirectAddr  *netip.AddrPort // UDP endpoint if hole-punch succeeded
+	DirectAddr  *netip.AddrPort // UDP endpoint candidate; not emitted until ICE validates direct path
 	ICEReady    bool            // true when the daemon has an ICE Conn for this peer
 	ICEPending  bool            // true while ICE is connected but WG data-plane validation is pending
 	DERPURL     string          // DERP relay URL (fallback)
@@ -218,10 +218,9 @@ func (t *Table) BuildIPCConfig(privateKey wgtypes.Key) string {
 			sb.WriteString("\n")
 		}
 
-		// Endpoint: only set for direct/DERP or next-hop targets, not for the
-		// "virtual" remote peer we reach via someone else. DERP is preferred
-		// as the baseline path. ICEPending uses ice:// too, but keepalive is
-		// made aggressive below until the daemon verifies the WG data plane.
+		// Endpoint: DERP is the baseline reliable path. Raw direct endpoints
+		// from the control plane stay as candidates/diagnostics; only the ICE
+		// transport may become the direct endpoint after data-plane validation.
 		if r.NextHop == nil && (r.ICEPending || r.ICEReady) {
 			if ep, err := ice.EndpointString(r.PublicKey.String()); err == nil {
 				sb.WriteString(fmt.Sprintf("endpoint=%s\n", ep))
@@ -230,8 +229,6 @@ func (t *Table) BuildIPCConfig(privateKey wgtypes.Key) string {
 			if ep, err := derp.EndpointString(r.DERPURL, r.DERPNodeKey); err == nil {
 				sb.WriteString(fmt.Sprintf("endpoint=%s\n", ep))
 			}
-		} else if r.NextHop == nil && r.DirectAddr != nil {
-			sb.WriteString(fmt.Sprintf("endpoint=%s\n", r.DirectAddr.String()))
 		}
 
 		keepalive := 25

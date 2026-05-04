@@ -31,7 +31,7 @@ func TestSummarizeRoutesWaiting(t *testing.T) {
 	if summary != "waiting" {
 		t.Fatalf("summary = %q, want waiting", summary)
 	}
-	if !relayUsed || relayURL != "http://relay.example/derp" {
+	if relayUsed || relayURL != "http://relay.example/derp" {
 		t.Fatalf("relay fallback = (%v, %q)", relayUsed, relayURL)
 	}
 }
@@ -57,6 +57,59 @@ func TestConnectedPeersWaiting(t *testing.T) {
 	if peers[0].LastError != "ice-validation-failed" {
 		t.Fatalf("last_error = %q", peers[0].LastError)
 	}
+}
+
+func TestConnectedPeersDirectCandidateWaiting(t *testing.T) {
+	peers := connectedPeers([]*routing.PeerRoute{{
+		PublicKey:  testKey(t, 0x15),
+		VPN4:       netip.MustParseAddr("198.18.0.5"),
+		DirectAddr: mustAddrPortForStatus(t, "203.0.113.5:51820"),
+	}})
+	if len(peers) != 1 {
+		t.Fatalf("peers len = %d", len(peers))
+	}
+	if peers[0].Path != "waiting" || peers[0].Direct {
+		t.Fatalf("peer path/direct = %q/%v", peers[0].Path, peers[0].Direct)
+	}
+	if peers[0].Endpoint != "" {
+		t.Fatalf("endpoint = %q, want empty candidate-only endpoint", peers[0].Endpoint)
+	}
+	if peers[0].LastError != "no-derp-route" {
+		t.Fatalf("last_error = %q", peers[0].LastError)
+	}
+}
+
+func TestConnectedPeersDERPBaselineIgnoresDirectCandidate(t *testing.T) {
+	relayUsed, relayURL, summary := summarizeRoutes(true, []*routing.PeerRoute{{
+		PublicKey:   testKey(t, 0x16),
+		VPN4:        netip.MustParseAddr("198.18.0.6"),
+		DirectAddr:  mustAddrPortForStatus(t, "203.0.113.6:51820"),
+		DERPURL:     "http://relay.example/derp",
+		DERPNodeKey: "nodekey:ghi",
+	}})
+	if summary != "derp" || !relayUsed || relayURL != "http://relay.example/derp" {
+		t.Fatalf("summary/relay = %q/%v/%q", summary, relayUsed, relayURL)
+	}
+
+	peers := connectedPeers([]*routing.PeerRoute{{
+		PublicKey:   testKey(t, 0x16),
+		VPN4:        netip.MustParseAddr("198.18.0.6"),
+		DirectAddr:  mustAddrPortForStatus(t, "203.0.113.6:51820"),
+		DERPURL:     "http://relay.example/derp",
+		DERPNodeKey: "nodekey:ghi",
+	}})
+	if peers[0].Path != "derp" || peers[0].Direct {
+		t.Fatalf("peer path/direct = %q/%v", peers[0].Path, peers[0].Direct)
+	}
+	if peers[0].Endpoint != "" {
+		t.Fatalf("endpoint = %q, want empty actual endpoint for DERP status", peers[0].Endpoint)
+	}
+}
+
+func mustAddrPortForStatus(t *testing.T, s string) *netip.AddrPort {
+	t.Helper()
+	ap := netip.MustParseAddrPort(s)
+	return &ap
 }
 
 func TestParsePeerStats(t *testing.T) {

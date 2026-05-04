@@ -274,7 +274,7 @@ func summarizeRoutes(active bool, routes []*routing.PeerRoute) (bool, string, st
 	if len(routes) == 0 {
 		return false, "", "no-peers"
 	}
-	var hasWaiting, hasDirect, hasDERP, hasNextHop, hasConfigured, hasUnresolved bool
+	var hasWaiting, hasDirect, hasDERP, hasNextHop, hasUnresolved bool
 	var relayURL string
 	for _, r := range routes {
 		path := routePath(r)
@@ -293,8 +293,6 @@ func summarizeRoutes(active bool, routes []*routing.PeerRoute) (bool, string, st
 			}
 		case "next-hop":
 			hasNextHop = true
-		case "configured":
-			hasConfigured = true
 		default:
 			hasUnresolved = true
 		}
@@ -303,7 +301,7 @@ func summarizeRoutes(active bool, routes []*routing.PeerRoute) (bool, string, st
 		return hasDERP, relayURL, "degraded"
 	}
 	if hasWaiting {
-		return relayURL != "", relayURL, "waiting"
+		return false, relayURL, "waiting"
 	}
 	if hasDERP {
 		return true, relayURL, "derp"
@@ -313,9 +311,6 @@ func summarizeRoutes(active bool, routes []*routing.PeerRoute) (bool, string, st
 	}
 	if hasDirect {
 		return false, "", "direct"
-	}
-	if hasConfigured {
-		return false, "", "configured"
 	}
 	return false, "", "degraded"
 }
@@ -334,10 +329,7 @@ func connectedPeers(routes []*routing.PeerRoute) []ipc.ConnectedPeer {
 			RelayURL:     r.DERPURL,
 			LatencyMs:    0,
 			LastSeenSecs: r.LastSeen,
-			LastError:    r.LastError,
-		}
-		if r.DirectAddr != nil {
-			peer.Endpoint = r.DirectAddr.String()
+			LastError:    routeLastError(r, path),
 		}
 		if r.ICEPending || r.ICEReady {
 			peer.Endpoint = "ice"
@@ -363,19 +355,29 @@ func routePath(r *routing.PeerRoute) string {
 	if r.ICEReady {
 		return "direct"
 	}
-	if r.DERPURL != "" {
+	if r.DERPURL != "" && r.DERPNodeKey != "" {
 		return "derp"
 	}
-	if r.DirectAddr != nil {
-		return "direct"
-	}
 	if r.VPN4.IsValid() || r.VPN6.IsValid() {
-		return "configured"
+		return "waiting"
 	}
 	if r.LastError != "" {
 		return "unresolved"
 	}
 	return "unresolved"
+}
+
+func routeLastError(r *routing.PeerRoute, path string) string {
+	if r == nil {
+		return ""
+	}
+	if r.LastError != "" {
+		return r.LastError
+	}
+	if path == "waiting" && !r.ICEPending && r.NextHop == nil && (r.DERPURL == "" || r.DERPNodeKey == "") {
+		return "no-derp-route"
+	}
+	return ""
 }
 
 func addrString(a netip.Addr) string {
@@ -869,6 +871,8 @@ func applyConfig(iface tunIface, table *routing.Table, priv wgtypes.Key, cfg *co
 		}
 		if p.Endpoint != "" {
 			if ap, err := netip.ParseAddrPort(p.Endpoint); err == nil {
+				// Direct endpoint hints are candidates only. DERP remains the
+				// baseline path until ICE validates the WG data plane.
 				route.DirectAddr = &ap
 			} else {
 				log.Printf("peer %s: invalid endpoint %q: %v", p.ID, p.Endpoint, err)

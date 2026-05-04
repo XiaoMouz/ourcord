@@ -204,8 +204,8 @@ func TestConnect_HappyPath_MockControl(t *testing.T) {
 	if !ok {
 		t.Fatalf("status data has type %T", status.Data)
 	}
-	if st.PathSummary != "configured" {
-		t.Fatalf("expected configured path summary before ICE/DERP, got %q", st.PathSummary)
+	if st.PathSummary != "waiting" {
+		t.Fatalf("expected waiting path summary before DERP/validated ICE, got %q", st.PathSummary)
 	}
 	if st.PeerCount != 1 {
 		t.Fatalf("expected peer_count=1, got %d", st.PeerCount)
@@ -222,8 +222,11 @@ func TestConnect_HappyPath_MockControl(t *testing.T) {
 	if len(peers) != 1 {
 		t.Fatalf("expected 1 peer, got %d", len(peers))
 	}
-	if peers[0].Path != "configured" {
-		t.Fatalf("expected peer path configured, got %q", peers[0].Path)
+	if peers[0].Path != "waiting" {
+		t.Fatalf("expected peer path waiting, got %q", peers[0].Path)
+	}
+	if peers[0].LastError != "no-derp-route" {
+		t.Fatalf("expected no-derp-route last_error, got %q", peers[0].LastError)
 	}
 	if peers[0].Name != "other" || peers[0].IP4 != "198.18.0.11" || peers[0].LastSeenSecs != 1234 {
 		t.Fatalf("unexpected peer: %+v", peers[0])

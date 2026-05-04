@@ -22,7 +22,7 @@ type ConnectedPeer struct {
 	IP4          string  `json:"ip4"`
 	IP6          string  `json:"ip6"`
 	Direct       bool    `json:"direct"` // true if P2P, false if DERP relay
-	Path         string  `json:"path"`   // waiting, direct, derp, next-hop, configured, unresolved
+	Path         string  `json:"path"`   // waiting, direct, derp, next-hop, unresolved
 	Endpoint     string  `json:"endpoint,omitempty"`
 	RelayURL     string  `json:"relay_url,omitempty"`
 	NextHop      string  `json:"next_hop,omitempty"`

@@ -65,7 +65,7 @@ func TestBuildIPCConfig_AllowedIPPerLine(t *testing.T) {
 	}
 }
 
-func TestBuildIPCConfig_DirectPeerEmitsEndpoint(t *testing.T) {
+func TestBuildIPCConfig_DirectCandidateDoesNotEmitEndpoint(t *testing.T) {
 	tbl := NewTable()
 	priv, _ := wgtypes.GeneratePrivateKey()
 	tbl.Upsert(&PeerRoute{
@@ -74,8 +74,8 @@ func TestBuildIPCConfig_DirectPeerEmitsEndpoint(t *testing.T) {
 		DirectAddr: mustAddrPort(t, "203.0.113.5:51820"),
 	})
 	got := tbl.BuildIPCConfig(priv)
-	if !strings.Contains(got, "endpoint=203.0.113.5:51820\n") {
-		t.Errorf("expected endpoint line:\n%s", got)
+	if strings.Contains(got, "endpoint=203.0.113.5:51820\n") {
+		t.Errorf("direct candidate must not become baseline endpoint:\n%s", got)
 	}
 	if !strings.Contains(got, "persistent_keepalive_interval=25\n") {
 		t.Errorf("expected keepalive line:\n%s", got)
@@ -97,6 +97,25 @@ func TestBuildIPCConfig_DERPPeerEmitsDERPEndpoint(t *testing.T) {
 	}
 	if strings.Contains(got, "endpoint=http://") {
 		t.Errorf("raw relay URL must not be emitted as endpoint:\n%s", got)
+	}
+}
+
+func TestBuildIPCConfig_DERPPeerIgnoresDirectCandidate(t *testing.T) {
+	tbl := NewTable()
+	priv, _ := wgtypes.GeneratePrivateKey()
+	tbl.Upsert(&PeerRoute{
+		PublicKey:   mustKey(t, 0xBD),
+		VPN4:        mustAddr(t, "198.18.0.24"),
+		DirectAddr:  mustAddrPort(t, "203.0.113.5:51820"),
+		DERPURL:     "http://127.0.0.1:3340",
+		DERPNodeKey: "nodekey:0123456789abcdef",
+	})
+	got := tbl.BuildIPCConfig(priv)
+	if !strings.Contains(got, "endpoint=derp://") {
+		t.Fatalf("expected derp endpoint line:\n%s", got)
+	}
+	if strings.Contains(got, "endpoint=203.0.113.5:51820\n") {
+		t.Fatalf("direct candidate must not override DERP baseline:\n%s", got)
 	}
 }
 
