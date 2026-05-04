@@ -27,7 +27,8 @@ START_MOCK_CONTROL="${START_MOCK_CONTROL:-1}"
 CONTROL_URL="${CONTROL_URL:-}"
 TOKEN_A="${TOKEN_A:-smoke-token-a}"
 TOKEN_B="${TOKEN_B:-smoke-token-b}"
-WG_PORT="${WG_PORT:-51820}"
+WG_PORT_A="${WG_PORT_A:-${WG_PORT:-51820}}"
+WG_PORT_B="${WG_PORT_B:-${WG_PORT:-51820}}"
 ARCH="${ARCH:-arm64}"
 VM_A="ourcord-a"
 VM_B="ourcord-b"
@@ -85,7 +86,7 @@ IP_B="$(vm_ip $VM_B)"
 [[ -z "$IP_A" || -z "$IP_B" ]] && { echo "FAIL: could not discover VM IPs (A=$IP_A B=$IP_B)"; exit 1; }
 echo "    vm-a: $IP_A    vm-b: $IP_B"
 
-# Sanity: A and B must be able to reach each other on $WG_PORT/UDP. They are
+# Sanity: A and B must be able to reach each other on the WireGuard UDP ports. They are
 # on the same OrbStack bridge so this should always be true.
 echo "==> Sanity ping vm-a ↔ vm-b underlay..."
 vm_run "$VM_A" ping -c 1 -W 2 "$IP_B" | tail -2 | head -1
@@ -108,8 +109,8 @@ USER_LINUX="$(vm_run $VM_A whoami | tail -1)"
 [[ -z "$USER_LINUX" ]] && USER_LINUX="$USER"
 
 start_daemon() {
-    local vm=$1 ip=$2 token=$3
-    echo "==> Setting up daemon in $vm ($ip)..."
+    local vm=$1 ip=$2 token=$3 port=$4
+    echo "==> Setting up daemon in $vm ($ip:$port)..."
     vm_run "$vm" mkdir -p "/home/$USER_LINUX/ourcord-state" "/home/$USER_LINUX/.config/ourcord"
     vm_run "$vm" sudo sh -c "pkill -x ourcordd || true; sleep 0.2"
     # OrbStack auto-mounts /Users/$USER, copy from there.
@@ -125,15 +126,15 @@ start_daemon() {
             --control-url '$CONTROL_URL' \
             --socket /tmp/ourcord.sock \
             --state-dir '/home/$USER_LINUX/ourcord-state' \
-            --wg-listen-port $WG_PORT \
-            --wg-endpoint '$ip:$WG_PORT' \
+            --wg-listen-port $port \
+            --wg-endpoint '$ip:$port' \
             > /tmp/ourcordd.log 2>&1 &
         sleep 0.6
         chmod 666 /tmp/ourcord.sock || true
     "
 }
-start_daemon "$VM_A" "$IP_A" "$TOKEN_A"
-start_daemon "$VM_B" "$IP_B" "$TOKEN_B"
+start_daemon "$VM_A" "$IP_A" "$TOKEN_A" "$WG_PORT_A"
+start_daemon "$VM_B" "$IP_B" "$TOKEN_B" "$WG_PORT_B"
 sleep 1
 
 # ---- 5. Trigger connect on each, twice. The second connect lets each side
@@ -158,7 +159,7 @@ if [[ -f "$WORKDIR/mock.json" ]]; then
 import json
 d = json.load(open('$WORKDIR/mock.json'))
 by_endpoint = {p.get('endpoint', ''): p for p in d['peers'].values()}
-for endpoint in ('$IP_A:$WG_PORT', '$IP_B:$WG_PORT'):
+for endpoint in ('$IP_A:$WG_PORT_A', '$IP_B:$WG_PORT_B'):
     p = by_endpoint.get(endpoint)
     if not p:
         raise SystemExit(f'missing peer for endpoint {endpoint}')
@@ -196,7 +197,7 @@ echo "==> ping $B_VPN_IP from $VM_A (over the VPN tunnel):"
 if vm_run "$VM_A" ping -c 3 -W 3 "$B_VPN_IP" | tee /dev/stderr | grep -q "0% packet loss\|1 received\|2 received\|3 received"; then
     echo
     echo "==> ✅ END-TO-END VPN PING SUCCEEDED."
-    echo "    Two real Linux kernels, two TUNs, real wg handshake over $WG_PORT/UDP."
+    echo "    Two real Linux kernels, two TUNs, real wg handshake over $WG_PORT_A/$WG_PORT_B UDP."
 else
     echo
     echo "==> ❌ ping failed. Dumping daemon logs:"
