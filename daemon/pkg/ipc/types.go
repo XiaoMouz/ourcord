@@ -4,31 +4,55 @@ package ipc
 
 // DaemonStatus represents the current VPN connection state.
 type DaemonStatus struct {
-	Running     bool   `json:"running"`
-	VPNActive   bool   `json:"vpn_active"`
-	IP4         string `json:"ip4"`
-	IP6         string `json:"ip6"`
-	RoomID      string `json:"room_id,omitempty"`
-	PeerCount   int    `json:"peer_count"`
-	RelayUsed   bool   `json:"relay_used"` // true if currently relaying via DERP
-	RelayURL    string `json:"relay_url"`
-	PathSummary string `json:"path_summary"` // inactive, no-peers, waiting, direct, derp, next-hop, degraded
+	Running     bool           `json:"running"`
+	VPNActive   bool           `json:"vpn_active"`
+	IP4         string         `json:"ip4"`
+	IP6         string         `json:"ip6"`
+	RoomID      string         `json:"room_id,omitempty"`
+	PeerCount   int            `json:"peer_count"`
+	RelayUsed   bool           `json:"relay_used"` // true if currently relaying via DERP
+	RelayURL    string         `json:"relay_url"`
+	PathSummary string         `json:"path_summary"` // inactive, no-peers, waiting, direct, derp, next-hop, degraded
+	Transport   TransportStats `json:"transport"`
+}
+
+type TransportStats struct {
+	MTU                   int    `json:"mtu"`
+	ICESentPackets        uint64 `json:"ice_sent_packets"`
+	ICERecvPackets        uint64 `json:"ice_recv_packets"`
+	ICERecvDrops          uint64 `json:"ice_recv_drops"`
+	ICESendErrors         uint64 `json:"ice_send_errors"`
+	ICERecvErrors         uint64 `json:"ice_recv_errors"`
+	ICEProbeSent          uint64 `json:"ice_probe_sent"`
+	ICEProbeAckSent       uint64 `json:"ice_probe_ack_sent"`
+	ICEProbeAckReceived   uint64 `json:"ice_probe_ack_received"`
+	ICEProbeTimeouts      uint64 `json:"ice_probe_timeouts"`
+	ICEProbeInvalid       uint64 `json:"ice_probe_invalid"`
+	ICEMaxPacketBytes     uint64 `json:"ice_max_packet_bytes"`
+	DERPSentPackets       uint64 `json:"derp_sent_packets"`
+	DERPRecvPackets       uint64 `json:"derp_recv_packets"`
+	DERPRecvDrops         uint64 `json:"derp_recv_drops"`
+	DERPSuppressedPackets uint64 `json:"derp_suppressed_packets"`
+	DERPSendErrors        uint64 `json:"derp_send_errors"`
+	DERPRecvErrors        uint64 `json:"derp_recv_errors"`
+	DERPMaxPacketBytes    uint64 `json:"derp_max_packet_bytes"`
 }
 
 // ConnectedPeer represents a connected VPN peer.
 type ConnectedPeer struct {
-	PublicKey    string  `json:"public_key"`
-	Name         string  `json:"name"`
-	IP4          string  `json:"ip4"`
-	IP6          string  `json:"ip6"`
-	Direct       bool    `json:"direct"` // true if P2P, false if DERP relay
-	Path         string  `json:"path"`   // waiting, direct, derp, next-hop, unresolved
-	Endpoint     string  `json:"endpoint,omitempty"`
-	RelayURL     string  `json:"relay_url,omitempty"`
-	NextHop      string  `json:"next_hop,omitempty"`
-	LatencyMs    float64 `json:"latency_ms"`
-	LastSeenSecs int64   `json:"last_seen_secs"`
-	LastError    string  `json:"last_error,omitempty"`
+	PublicKey         string  `json:"public_key"`
+	Name              string  `json:"name"`
+	IP4               string  `json:"ip4"`
+	IP6               string  `json:"ip6"`
+	Direct            bool    `json:"direct"` // true if P2P, false if DERP relay
+	Path              string  `json:"path"`   // waiting, direct, derp, next-hop, unresolved
+	Endpoint          string  `json:"endpoint,omitempty"`
+	CandidateEndpoint string  `json:"candidate_endpoint,omitempty"`
+	RelayURL          string  `json:"relay_url,omitempty"`
+	NextHop           string  `json:"next_hop,omitempty"`
+	LatencyMs         float64 `json:"latency_ms"`
+	LastSeenSecs      int64   `json:"last_seen_secs"`
+	LastError         string  `json:"last_error,omitempty"`
 }
 
 // Command types sent from UI to daemon via IPC.

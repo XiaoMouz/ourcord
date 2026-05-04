@@ -1,11 +1,14 @@
 package ice
 
 import (
+	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"log"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ourcord/ourcord/daemon/pkg/control"
@@ -24,6 +27,20 @@ type Packet struct {
 	Data          []byte
 }
 
+type Stats struct {
+	SentPackets      uint64
+	RecvPackets      uint64
+	RecvQueueDrops   uint64
+	SendErrors       uint64
+	RecvErrors       uint64
+	ProbeSent        uint64
+	ProbeAckSent     uint64
+	ProbeAckReceived uint64
+	ProbeTimeouts    uint64
+	ProbeInvalid     uint64
+	MaxPacketBytes   uint64
+}
+
 type Manager struct {
 	localKey    string
 	stunServers []string
@@ -36,18 +53,33 @@ type Manager struct {
 	recvCh   chan Packet
 	doneCh   chan struct{}
 	closed   bool
+
+	sentPackets      atomic.Uint64
+	recvPackets      atomic.Uint64
+	recvQueueDrops   atomic.Uint64
+	sendErrors       atomic.Uint64
+	recvErrors       atomic.Uint64
+	probeSent        atomic.Uint64
+	probeAckSent     atomic.Uint64
+	probeAckReceived atomic.Uint64
+	probeTimeouts    atomic.Uint64
+	probeInvalid     atomic.Uint64
+	maxPacketBytes   atomic.Uint64
 }
 
 type session struct {
 	peerKey         string
 	agent           *Agent
 	conn            *pionice.Conn
+	writeMu         sync.Mutex
 	controlling     bool
 	dialing         bool
 	gatherOnce      sync.Once
 	gatherCloseOnce sync.Once
 	gatherDone      chan struct{}
 	localCandidates []string
+	probeAckCh      chan [iceProbeNonceLen]byte
+	validated       bool
 }
 
 func NewManager(localKey string, stunServers []string, signal SignalClient, onReady func(peerPublicKey string), logf func(format string, args ...any)) *Manager {
@@ -72,6 +104,22 @@ func (m *Manager) Recv() <-chan Packet {
 
 func (m *Manager) Done() <-chan struct{} {
 	return m.doneCh
+}
+
+func (m *Manager) Stats() Stats {
+	return Stats{
+		SentPackets:      m.sentPackets.Load(),
+		RecvPackets:      m.recvPackets.Load(),
+		RecvQueueDrops:   m.recvQueueDrops.Load(),
+		SendErrors:       m.sendErrors.Load(),
+		RecvErrors:       m.recvErrors.Load(),
+		ProbeSent:        m.probeSent.Load(),
+		ProbeAckSent:     m.probeAckSent.Load(),
+		ProbeAckReceived: m.probeAckReceived.Load(),
+		ProbeTimeouts:    m.probeTimeouts.Load(),
+		ProbeInvalid:     m.probeInvalid.Load(),
+		MaxPacketBytes:   m.maxPacketBytes.Load(),
+	}
 }
 
 func (m *Manager) StartPeer(ctx context.Context, peerKey string) {
@@ -138,10 +186,19 @@ func (m *Manager) Send(peerKey string, pkt []byte) error {
 	}
 	m.mu.Unlock()
 	if c == nil {
+		m.sendErrors.Add(1)
 		return fmt.Errorf("ice peer %s not connected", shortKey(peerKey))
 	}
+	s.writeMu.Lock()
 	_, err := c.Write(pkt)
-	return err
+	s.writeMu.Unlock()
+	if err != nil {
+		m.sendErrors.Add(1)
+		return err
+	}
+	m.sentPackets.Add(1)
+	trackMax(&m.maxPacketBytes, len(pkt))
+	return nil
 }
 
 func (m *Manager) Close() error {
@@ -202,7 +259,13 @@ func (m *Manager) ensureSession(peerKey string, controlling bool) (*session, boo
 	if err != nil {
 		return nil, false, err
 	}
-	s = &session{peerKey: peerKey, agent: a, controlling: controlling, gatherDone: make(chan struct{})}
+	s = &session{
+		peerKey:     peerKey,
+		agent:       a,
+		controlling: controlling,
+		gatherDone:  make(chan struct{}),
+		probeAckCh:  make(chan [iceProbeNonceLen]byte, 8),
+	}
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -325,17 +388,17 @@ func (m *Manager) setConn(peerKey string, c *pionice.Conn) {
 	if s.conn != nil {
 		old := s.conn
 		s.conn = c
+		s.validated = false
 		m.mu.Unlock()
 		_ = old.Close()
 	} else {
 		s.conn = c
+		s.validated = false
 		m.mu.Unlock()
 	}
-	m.logf("ice connected peer=%s local=%v remote=%v", shortKey(peerKey), c.LocalAddr(), c.RemoteAddr())
-	if m.onReady != nil {
-		m.onReady(peerKey)
-	}
+	m.logf("ice connected peer=%s local=%v remote=%v; probing before endpoint switch", shortKey(peerKey), c.LocalAddr(), c.RemoteAddr())
 	go m.recvLoop(peerKey, c)
+	go m.probeLoop(peerKey, c)
 }
 
 func (m *Manager) recvLoop(peerKey string, c *pionice.Conn) {
@@ -343,8 +406,12 @@ func (m *Manager) recvLoop(peerKey string, c *pionice.Conn) {
 	for {
 		n, err := c.Read(buf)
 		if err != nil {
+			m.recvErrors.Add(1)
 			m.logf("ice recv %s: %v", shortKey(peerKey), err)
 			return
+		}
+		if m.handleProbeFrame(peerKey, c, buf[:n]) {
+			continue
 		}
 		pkt := make([]byte, n)
 		copy(pkt, buf[:n])
@@ -354,11 +421,184 @@ func (m *Manager) recvLoop(peerKey string, c *pionice.Conn) {
 		if closed {
 			return
 		}
+		trackMax(&m.maxPacketBytes, len(pkt))
 		select {
 		case m.recvCh <- Packet{PeerPublicKey: peerKey, Data: pkt}:
+			m.recvPackets.Add(1)
 		default:
+			m.recvQueueDrops.Add(1)
 			m.logf("ice recv queue full; dropping packet from %s", shortKey(peerKey))
 		}
+	}
+}
+
+const (
+	iceProbeKindRequest = byte(1)
+	iceProbeKindAck     = byte(2)
+	iceProbeNonceLen    = 16
+	iceProbeTargetAcks  = 3
+	iceProbeInterval    = 250 * time.Millisecond
+	iceProbeTimeout     = 5 * time.Second
+)
+
+var iceProbeMagic = []byte("\x00ourcord-ice-probe-v1\x00")
+
+func (m *Manager) probeLoop(peerKey string, c *pionice.Conn) {
+	m.mu.Lock()
+	s := m.sessions[peerKey]
+	m.mu.Unlock()
+	if s == nil {
+		return
+	}
+
+	tick := time.NewTicker(iceProbeInterval)
+	defer tick.Stop()
+	deadline := time.NewTimer(iceProbeTimeout)
+	defer deadline.Stop()
+
+	pending := make(map[[iceProbeNonceLen]byte]struct{})
+	acks := 0
+	sendProbe := func() {
+		var nonce [iceProbeNonceLen]byte
+		if _, err := rand.Read(nonce[:]); err != nil {
+			m.probeInvalid.Add(1)
+			m.logf("ice probe nonce %s: %v", shortKey(peerKey), err)
+			return
+		}
+		if err := m.writeProbeFrame(s, c, iceProbeKindRequest, nonce); err != nil {
+			m.sendErrors.Add(1)
+			return
+		}
+		pending[nonce] = struct{}{}
+		m.probeSent.Add(1)
+	}
+	sendProbe()
+
+	for {
+		select {
+		case <-m.doneCh:
+			return
+		case <-deadline.C:
+			m.probeTimeouts.Add(1)
+			m.logf("ice probe timeout peer=%s acks=%d", shortKey(peerKey), acks)
+			m.closeSession(peerKey, c)
+			return
+		case <-tick.C:
+			sendProbe()
+		case nonce := <-s.probeAckCh:
+			if _, ok := pending[nonce]; !ok {
+				m.probeInvalid.Add(1)
+				continue
+			}
+			delete(pending, nonce)
+			acks++
+			if acks >= iceProbeTargetAcks {
+				m.markProbeValidated(peerKey, c)
+				return
+			}
+		}
+	}
+}
+
+func (m *Manager) handleProbeFrame(peerKey string, c *pionice.Conn, data []byte) bool {
+	if !bytes.HasPrefix(data, iceProbeMagic) {
+		return false
+	}
+	wantLen := len(iceProbeMagic) + 1 + iceProbeNonceLen
+	if len(data) != wantLen {
+		m.probeInvalid.Add(1)
+		return true
+	}
+	var nonce [iceProbeNonceLen]byte
+	copy(nonce[:], data[len(iceProbeMagic)+1:])
+
+	switch data[len(iceProbeMagic)] {
+	case iceProbeKindRequest:
+		m.mu.Lock()
+		s := m.sessions[peerKey]
+		m.mu.Unlock()
+		if s == nil {
+			m.probeInvalid.Add(1)
+			return true
+		}
+		if err := m.writeProbeFrame(s, c, iceProbeKindAck, nonce); err != nil {
+			m.sendErrors.Add(1)
+			return true
+		}
+		m.probeAckSent.Add(1)
+	case iceProbeKindAck:
+		m.mu.Lock()
+		s := m.sessions[peerKey]
+		m.mu.Unlock()
+		if s == nil {
+			m.probeInvalid.Add(1)
+			return true
+		}
+		select {
+		case s.probeAckCh <- nonce:
+			m.probeAckReceived.Add(1)
+		default:
+			m.probeInvalid.Add(1)
+		}
+	default:
+		m.probeInvalid.Add(1)
+	}
+	return true
+}
+
+func (m *Manager) writeProbeFrame(s *session, c *pionice.Conn, kind byte, nonce [iceProbeNonceLen]byte) error {
+	frame := make([]byte, len(iceProbeMagic)+1+iceProbeNonceLen)
+	copy(frame, iceProbeMagic)
+	frame[len(iceProbeMagic)] = kind
+	copy(frame[len(iceProbeMagic)+1:], nonce[:])
+	s.writeMu.Lock()
+	_, err := c.Write(frame)
+	s.writeMu.Unlock()
+	return err
+}
+
+func (m *Manager) markProbeValidated(peerKey string, c *pionice.Conn) {
+	m.mu.Lock()
+	s := m.sessions[peerKey]
+	if s == nil || s.conn != c || s.validated {
+		m.mu.Unlock()
+		return
+	}
+	s.validated = true
+	onReady := m.onReady
+	m.mu.Unlock()
+
+	m.logf("ice probe validated peer=%s", shortKey(peerKey))
+	if onReady != nil {
+		onReady(peerKey)
+	}
+}
+
+func trackMax(v *atomic.Uint64, n int) {
+	if n <= 0 {
+		return
+	}
+	next := uint64(n)
+	for {
+		cur := v.Load()
+		if next <= cur || v.CompareAndSwap(cur, next) {
+			return
+		}
+	}
+}
+
+func (m *Manager) closeSession(peerKey string, c *pionice.Conn) {
+	m.mu.Lock()
+	s := m.sessions[peerKey]
+	if s == nil || s.conn != c {
+		m.mu.Unlock()
+		return
+	}
+	delete(m.sessions, peerKey)
+	m.mu.Unlock()
+	_ = c.Close()
+	if s.agent != nil {
+		_ = s.agent.Close()
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"net"
 	"sync"
 	"syscall"
+	"time"
 
 	"golang.zx2c4.com/wireguard/conn"
 )
@@ -71,7 +72,8 @@ func (b *HybridBind) Send(bufs [][]byte, ep conn.Endpoint) error {
 		if b.mgr == nil {
 			return errors.New("derp endpoint configured but derp manager is nil")
 		}
-		ctx := context.Background()
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
 		for _, buf := range bufs {
 			if len(buf) == 0 {
 				continue

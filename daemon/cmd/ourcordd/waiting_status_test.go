@@ -74,6 +74,9 @@ func TestConnectedPeersDirectCandidateWaiting(t *testing.T) {
 	if peers[0].Endpoint != "" {
 		t.Fatalf("endpoint = %q, want empty candidate-only endpoint", peers[0].Endpoint)
 	}
+	if peers[0].CandidateEndpoint != "203.0.113.5:51820" {
+		t.Fatalf("candidate_endpoint = %q", peers[0].CandidateEndpoint)
+	}
 	if peers[0].LastError != "no-derp-route" {
 		t.Fatalf("last_error = %q", peers[0].LastError)
 	}
@@ -103,6 +106,9 @@ func TestConnectedPeersDERPBaselineIgnoresDirectCandidate(t *testing.T) {
 	}
 	if peers[0].Endpoint != "" {
 		t.Fatalf("endpoint = %q, want empty actual endpoint for DERP status", peers[0].Endpoint)
+	}
+	if peers[0].CandidateEndpoint != "203.0.113.6:51820" {
+		t.Fatalf("candidate_endpoint = %q", peers[0].CandidateEndpoint)
 	}
 }
 

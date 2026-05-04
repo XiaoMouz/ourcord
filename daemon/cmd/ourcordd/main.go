@@ -210,6 +210,7 @@ func (d *daemon) HandleIPC(ctx context.Context, req ipc.IPCRequest) ipc.IPCRespo
 	case ipc.CmdStatus:
 		d.connMu.Lock()
 		ip4, ip6, roomID := d.assignedIP4, d.assignedIP6, d.activeRoom
+		transport := d.transportStatsLocked()
 		var routes []*routing.PeerRoute
 		if d.table != nil {
 			routes = d.table.All()
@@ -228,6 +229,7 @@ func (d *daemon) HandleIPC(ctx context.Context, req ipc.IPCRequest) ipc.IPCRespo
 				RelayUsed:   relayUsed,
 				RelayURL:    relayURL,
 				PathSummary: pathSummary,
+				Transport:   transport,
 			},
 		}
 	case ipc.CmdListPeers:
@@ -334,6 +336,9 @@ func connectedPeers(routes []*routing.PeerRoute) []ipc.ConnectedPeer {
 		if r.ICEPending || r.ICEReady {
 			peer.Endpoint = "ice"
 		}
+		if r.DirectAddr != nil {
+			peer.CandidateEndpoint = r.DirectAddr.String()
+		}
 		if r.NextHop != nil {
 			peer.NextHop = r.NextHop.String()
 		}
@@ -387,6 +392,35 @@ func addrString(a netip.Addr) string {
 	return a.String()
 }
 
+func (d *daemon) transportStatsLocked() ipc.TransportStats {
+	out := ipc.TransportStats{MTU: tun.DefaultMTU}
+	if d.iceMgr != nil {
+		st := d.iceMgr.Stats()
+		out.ICESentPackets = st.SentPackets
+		out.ICERecvPackets = st.RecvPackets
+		out.ICERecvDrops = st.RecvQueueDrops
+		out.ICESendErrors = st.SendErrors
+		out.ICERecvErrors = st.RecvErrors
+		out.ICEProbeSent = st.ProbeSent
+		out.ICEProbeAckSent = st.ProbeAckSent
+		out.ICEProbeAckReceived = st.ProbeAckReceived
+		out.ICEProbeTimeouts = st.ProbeTimeouts
+		out.ICEProbeInvalid = st.ProbeInvalid
+		out.ICEMaxPacketBytes = st.MaxPacketBytes
+	}
+	if d.derpMgr != nil {
+		st := d.derpMgr.Stats()
+		out.DERPSentPackets = st.SentPackets
+		out.DERPRecvPackets = st.RecvPackets
+		out.DERPRecvDrops = st.RecvQueueDrops
+		out.DERPSuppressedPackets = st.SuppressedPackets
+		out.DERPSendErrors = st.SendErrors
+		out.DERPRecvErrors = st.RecvErrors
+		out.DERPMaxPacketBytes = st.MaxPacketBytes
+	}
+	return out
+}
+
 // connect wires the daemon into the OurCord overlay (G1):
 //  1. Read the auth token (env OURCORD_DAEMON_JWT or <state-dir>/token).
 //  2. POST /api/peers/register → receive allocated VPN IPv4/IPv6.
@@ -397,9 +431,8 @@ func addrString(a netip.Addr) string {
 //     30s mesh poller (re-fetch /peers/config and apply diff).
 //
 // The daemon programs DERP first, then runs per-peer ICE over the room
-// signaling channel. When ICE connects, the WireGuard endpoint is rewritten
-// to ice:// for that peer; if ICE fails, the existing DERP endpoint keeps
-// carrying packets.
+// signaling channel. ICE must pass an out-of-band probe before WireGuard is
+// pointed at ice://; if post-switch WG validation fails, DERP is re-enabled.
 func (d *daemon) connect(ctx context.Context) error {
 	d.connMu.Lock()
 	defer d.connMu.Unlock()
@@ -498,6 +531,7 @@ func (d *daemon) connect(ctx context.Context) error {
 		_ = derpMgr.Close()
 		return fmt.Errorf("apply initial wg config: %w", err)
 	}
+	d.syncDERPSuppressionLocked(table.All())
 
 	connCtx, connCxl := context.WithCancel(context.Background())
 	d.tunIf = tunIf
@@ -568,6 +602,7 @@ func (d *daemon) enterRoom(ctx context.Context, roomID string) error {
 	if err := applyConfig(d.tunIf, d.table, d.keyPair.Private, cfg); err != nil {
 		return fmt.Errorf("apply room config: %w", err)
 	}
+	d.syncDERPSuppressionLocked(d.table.All())
 	d.activeRoom = roomID
 	d.startSignalLocked(roomID)
 	d.startICEForRoutes(d.connCtx, d.table.All())
@@ -589,6 +624,7 @@ func (d *daemon) leaveRoom(ctx context.Context) error {
 	if err := applyConfig(d.tunIf, d.table, d.keyPair.Private, cfg); err != nil {
 		return fmt.Errorf("apply user config: %w", err)
 	}
+	d.syncDERPSuppressionLocked(d.table.All())
 	d.activeRoom = ""
 	if d.sigCxl != nil {
 		d.sigCxl()
@@ -638,6 +674,7 @@ func (d *daemon) markPeerICEReady(peerKey string) {
 	if !d.table.SetICEPending(pk, true, "") {
 		return
 	}
+	d.setDERPSuppressedLocked(pk, true)
 	started := time.Now()
 	if err := d.tunIf.ConfigureIPC(d.table.BuildIPCConfig(d.keyPair.Private)); err != nil {
 		log.Printf("ice apply waiting endpoint for %s: %v", peerKey[:min(len(peerKey), 12)], err)
@@ -700,6 +737,7 @@ func (d *daemon) validatePeerICE(ctx context.Context, peerKey string, pk wgtypes
 			}
 			if peerICEValidated(stats, baseline, started) {
 				if d.table.SetICEReady(pk, true) {
+					d.setDERPSuppressedLocked(pk, true)
 					if err := d.tunIf.ConfigureIPC(d.table.BuildIPCConfig(d.keyPair.Private)); err != nil {
 						log.Printf("ice apply direct endpoint for %s: %v", peerKey[:min(len(peerKey), 12)], err)
 						d.connMu.Unlock()
@@ -724,11 +762,37 @@ func (d *daemon) failPeerICEValidation(peerKey string, pk wgtypes.Key, reason st
 	if !d.table.SetDERPFallback(pk, reason) {
 		return
 	}
+	d.setDERPSuppressedLocked(pk, false)
 	if err := d.tunIf.ConfigureIPC(d.table.BuildIPCConfig(d.keyPair.Private)); err != nil {
 		log.Printf("ice fallback apply for %s: %v", peerKey[:min(len(peerKey), 12)], err)
 		return
 	}
 	log.Printf("peer ICE validation failed; fallback state applied: %s reason=%s", peerKey[:min(len(peerKey), 12)], reason)
+}
+
+func (d *daemon) setDERPSuppressedLocked(pk wgtypes.Key, suppressed bool) {
+	if d.derpMgr == nil || d.table == nil {
+		return
+	}
+	for _, r := range d.table.All() {
+		if r == nil || r.PublicKey != pk || r.DERPNodeKey == "" {
+			continue
+		}
+		d.derpMgr.SetSuppressed(r.DERPNodeKey, suppressed)
+		return
+	}
+}
+
+func (d *daemon) syncDERPSuppressionLocked(routes []*routing.PeerRoute) {
+	if d.derpMgr == nil {
+		return
+	}
+	for _, r := range routes {
+		if r == nil || r.DERPNodeKey == "" {
+			continue
+		}
+		d.derpMgr.SetSuppressed(r.DERPNodeKey, r.ICEPending || r.ICEReady)
+	}
 }
 
 func peerICEValidated(stats, baseline wgPeerStats, started time.Time) bool {
@@ -820,6 +884,7 @@ func (d *daemon) meshLoop(ctx context.Context) {
 			if err := applyConfig(tunIf, table, d.keyPair.Private, cfg); err != nil {
 				log.Printf("mesh apply: %v", err)
 			}
+			d.syncDERPSuppressionLocked(table.All())
 			if roomID != "" {
 				d.startICEForRoutes(ctx, table.All())
 			}
