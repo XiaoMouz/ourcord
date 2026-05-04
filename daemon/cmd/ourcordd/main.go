@@ -276,7 +276,7 @@ func summarizeRoutes(active bool, routes []*routing.PeerRoute) (bool, string, st
 	if len(routes) == 0 {
 		return false, "", "no-peers"
 	}
-	var hasWaiting, hasDirect, hasDERP, hasNextHop, hasUnresolved bool
+	var hasWaiting, hasDirect, hasDERP, hasNextHop, hasDegraded, hasUnresolved bool
 	var relayURL string
 	for _, r := range routes {
 		path := routePath(r)
@@ -295,12 +295,20 @@ func summarizeRoutes(active bool, routes []*routing.PeerRoute) (bool, string, st
 			}
 		case "next-hop":
 			hasNextHop = true
+		case "degraded":
+			hasDegraded = true
+			if relayURL == "" {
+				relayURL = r.DERPURL
+			}
 		default:
 			hasUnresolved = true
 		}
 	}
 	if hasUnresolved {
 		return hasDERP, relayURL, "degraded"
+	}
+	if hasDegraded {
+		return relayURL != "", relayURL, "degraded"
 	}
 	if hasWaiting {
 		return false, relayURL, "waiting"
@@ -359,6 +367,9 @@ func routePath(r *routing.PeerRoute) string {
 	}
 	if r.ICEReady {
 		return "direct"
+	}
+	if r.LastError != "" && r.DERPURL != "" && r.DERPNodeKey != "" {
+		return "degraded"
 	}
 	if r.DERPURL != "" && r.DERPNodeKey != "" {
 		return "derp"
@@ -695,6 +706,9 @@ const (
 	iceValidationInterval = 1 * time.Second
 	iceValidationTimeout  = 12 * time.Second
 	iceValidationSamples  = 3
+	directHealthInterval  = 1 * time.Second
+	directHealthWindow    = 5
+	directHealthMaxMisses = 1
 )
 
 func (d *daemon) validatePeerICE(ctx context.Context, peerKey string, pk wgtypes.Key, started time.Time) {
@@ -755,6 +769,7 @@ func (d *daemon) validatePeerICE(ctx context.Context, peerKey string, pk wgtypes
 				}
 				d.connMu.Unlock()
 				log.Printf("peer upgraded to ICE direct: %s", peerKey[:min(len(peerKey), 12)])
+				go d.monitorPeerDirectHealth(ctx, peerKey, pk)
 				return
 			}
 			d.connMu.Unlock()
@@ -775,6 +790,9 @@ func (d *daemon) failPeerICEValidation(peerKey string, pk wgtypes.Key, reason st
 	if err := d.tunIf.ConfigureIPC(d.table.BuildIPCConfig(d.keyPair.Private)); err != nil {
 		log.Printf("ice fallback apply for %s: %v", peerKey[:min(len(peerKey), 12)], err)
 		return
+	}
+	if d.iceMgr != nil {
+		d.iceMgr.ClosePeer(peerKey)
 	}
 	log.Printf("peer ICE validation failed; fallback state applied: %s reason=%s", peerKey[:min(len(peerKey), 12)], reason)
 }
@@ -812,6 +830,98 @@ func peerICEValidated(stats, baseline wgPeerStats, started time.Time) bool {
 		return stats.RXBytes > baseline.RXBytes
 	}
 	return stats.RXBytes > 0
+}
+
+func (d *daemon) monitorPeerDirectHealth(ctx context.Context, peerKey string, pk wgtypes.Key) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	tick := time.NewTicker(directHealthInterval)
+	defer tick.Stop()
+
+	var prev wgPeerStats
+	d.connMu.Lock()
+	if d.tunIf != nil {
+		if stats, err := readPeerStats(d.tunIf, pk); err == nil {
+			prev = stats
+		} else {
+			log.Printf("direct health stats baseline %s: %v", peerKey[:min(len(peerKey), 12)], err)
+		}
+	}
+	d.connMu.Unlock()
+
+	window := make([]bool, 0, directHealthWindow)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+			d.connMu.Lock()
+			if d.table == nil || d.tunIf == nil || !routeICEReady(d.table.All(), pk) {
+				d.connMu.Unlock()
+				return
+			}
+			stats, err := readPeerStats(d.tunIf, pk)
+			d.connMu.Unlock()
+			if err != nil {
+				log.Printf("direct health stats %s: %v", peerKey[:min(len(peerKey), 12)], err)
+				continue
+			}
+			active, miss := directHealthSample(prev, stats)
+			prev = stats
+			if !active {
+				continue
+			}
+			window = appendDirectHealthSample(window, miss)
+			if directHealthDegraded(window) {
+				d.failPeerICEValidation(peerKey, pk, "direct-health-degraded")
+				return
+			}
+		}
+	}
+}
+
+func routeICEReady(routes []*routing.PeerRoute, pk wgtypes.Key) bool {
+	for _, r := range routes {
+		if r != nil && r.PublicKey == pk {
+			return r.ICEReady
+		}
+	}
+	return false
+}
+
+func directHealthSample(prev, stats wgPeerStats) (active bool, miss bool) {
+	if !stats.Found {
+		return true, true
+	}
+	txGrew := stats.TXBytes > prev.TXBytes
+	rxGrew := stats.RXBytes > prev.RXBytes
+	if !txGrew && !rxGrew {
+		return false, false
+	}
+	return true, txGrew && !rxGrew
+}
+
+func appendDirectHealthSample(window []bool, miss bool) []bool {
+	window = append(window, miss)
+	if len(window) > directHealthWindow {
+		copy(window, window[len(window)-directHealthWindow:])
+		window = window[:directHealthWindow]
+	}
+	return window
+}
+
+func directHealthDegraded(window []bool) bool {
+	if len(window) < directHealthWindow {
+		return false
+	}
+	misses := 0
+	for _, miss := range window {
+		if miss {
+			misses++
+		}
+	}
+	return misses > directHealthMaxMisses
 }
 
 func readPeerStats(iface tunIface, pk wgtypes.Key) (wgPeerStats, error) {

@@ -227,6 +227,23 @@ func (m *Manager) Close() error {
 	return nil
 }
 
+func (m *Manager) ClosePeer(peerKey string) {
+	m.mu.Lock()
+	s := m.sessions[peerKey]
+	if s == nil {
+		m.mu.Unlock()
+		return
+	}
+	delete(m.sessions, peerKey)
+	m.mu.Unlock()
+	if s.conn != nil {
+		_ = s.conn.Close()
+	}
+	if s.agent != nil {
+		_ = s.agent.Close()
+	}
+}
+
 func (m *Manager) ensureSession(peerKey string, controlling bool) (*session, bool, error) {
 	m.mu.Lock()
 	if s := m.sessions[peerKey]; s != nil {

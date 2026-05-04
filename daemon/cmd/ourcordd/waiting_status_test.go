@@ -112,6 +112,34 @@ func TestConnectedPeersDERPBaselineIgnoresDirectCandidate(t *testing.T) {
 	}
 }
 
+func TestConnectedPeersDERPFallbackDegraded(t *testing.T) {
+	routes := []*routing.PeerRoute{{
+		PublicKey:   testKey(t, 0x17),
+		VPN4:        netip.MustParseAddr("198.18.0.7"),
+		DERPURL:     "http://relay.example/derp",
+		DERPNodeKey: "nodekey:jkl",
+		LastError:   "direct-health-degraded",
+	}}
+	relayUsed, relayURL, summary := summarizeRoutes(true, routes)
+	if summary != "degraded" || !relayUsed || relayURL != "http://relay.example/derp" {
+		t.Fatalf("summary/relay = %q/%v/%q", summary, relayUsed, relayURL)
+	}
+
+	peers := connectedPeers(routes)
+	if len(peers) != 1 {
+		t.Fatalf("peers len = %d", len(peers))
+	}
+	if peers[0].Path != "degraded" || peers[0].Direct {
+		t.Fatalf("peer path/direct = %q/%v", peers[0].Path, peers[0].Direct)
+	}
+	if peers[0].Endpoint != "" {
+		t.Fatalf("endpoint = %q, want DERP fallback endpoint hidden from peer status", peers[0].Endpoint)
+	}
+	if peers[0].LastError != "direct-health-degraded" {
+		t.Fatalf("last_error = %q", peers[0].LastError)
+	}
+}
+
 func mustAddrPortForStatus(t *testing.T, s string) *netip.AddrPort {
 	t.Helper()
 	ap := netip.MustParseAddrPort(s)
@@ -157,5 +185,45 @@ func TestPeerICEValidatedRequiresRXGrowth(t *testing.T) {
 	}
 	if !peerICEValidated(wgPeerStats{Found: true, LastHandshake: started.Add(-2 * time.Second), RXBytes: 11, TXBytes: 20}, baseline, started) {
 		t.Fatal("expected RX growth to validate even without a fresh handshake")
+	}
+}
+
+func TestDirectHealthWindowDegradesOnRepeatedTXOnlySamples(t *testing.T) {
+	prev := wgPeerStats{Found: true, RXBytes: 10, TXBytes: 10}
+	stats := []wgPeerStats{
+		{Found: true, RXBytes: 11, TXBytes: 11},
+		{Found: true, RXBytes: 11, TXBytes: 12},
+		{Found: true, RXBytes: 12, TXBytes: 13},
+		{Found: true, RXBytes: 12, TXBytes: 14},
+		{Found: true, RXBytes: 13, TXBytes: 15},
+	}
+	var window []bool
+	for _, st := range stats {
+		active, miss := directHealthSample(prev, st)
+		if !active {
+			t.Fatalf("sample should be active: prev=%+v stats=%+v", prev, st)
+		}
+		window = appendDirectHealthSample(window, miss)
+		prev = st
+	}
+	if !directHealthDegraded(window) {
+		t.Fatalf("expected degraded window, got %v", window)
+	}
+}
+
+func TestDirectHealthWindowAllowsHealthyTraffic(t *testing.T) {
+	prev := wgPeerStats{Found: true, RXBytes: 10, TXBytes: 10}
+	var window []bool
+	for i := 0; i < directHealthWindow; i++ {
+		next := wgPeerStats{Found: true, RXBytes: prev.RXBytes + 1, TXBytes: prev.TXBytes + 1}
+		active, miss := directHealthSample(prev, next)
+		if !active || miss {
+			t.Fatalf("sample active/miss = %v/%v", active, miss)
+		}
+		window = appendDirectHealthSample(window, miss)
+		prev = next
+	}
+	if directHealthDegraded(window) {
+		t.Fatalf("healthy traffic must not degrade, got %v", window)
 	}
 }
