@@ -146,16 +146,16 @@ rx_bytes=400
 	}
 }
 
-func TestPeerICEValidatedRequiresFreshHandshakeAndRXGrowth(t *testing.T) {
+func TestPeerICEValidatedRequiresRXGrowth(t *testing.T) {
 	started := time.Unix(100, 0)
-	baseline := wgPeerStats{Found: true, LastHandshake: started, RXBytes: 10}
-	if peerICEValidated(wgPeerStats{Found: true, LastHandshake: started.Add(time.Second), RXBytes: 10}, baseline, started) {
+	baseline := wgPeerStats{Found: true, LastHandshake: started, RXBytes: 10, TXBytes: 20}
+	if peerICEValidated(wgPeerStats{Found: true, LastHandshake: started.Add(time.Second), RXBytes: 10, TXBytes: 20}, baseline, started) {
 		t.Fatal("must not validate without RX growth")
 	}
-	if !peerICEValidated(wgPeerStats{Found: true, LastHandshake: started.Add(time.Second), RXBytes: 11}, baseline, started) {
-		t.Fatal("expected fresh handshake plus RX growth to validate")
+	if peerICEValidated(wgPeerStats{Found: true, LastHandshake: started.Add(time.Second), RXBytes: 10, TXBytes: 21}, baseline, started) {
+		t.Fatal("TX-only growth must not validate the direct data path")
 	}
-	if peerICEValidated(wgPeerStats{Found: true, LastHandshake: started.Add(-2 * time.Second), RXBytes: 11}, baseline, started) {
-		t.Fatal("stale handshake must not validate")
+	if !peerICEValidated(wgPeerStats{Found: true, LastHandshake: started.Add(-2 * time.Second), RXBytes: 11, TXBytes: 20}, baseline, started) {
+		t.Fatal("expected RX growth to validate even without a fresh handshake")
 	}
 }

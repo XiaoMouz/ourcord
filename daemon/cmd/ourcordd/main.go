@@ -694,6 +694,7 @@ type wgPeerStats struct {
 const (
 	iceValidationInterval = 1 * time.Second
 	iceValidationTimeout  = 12 * time.Second
+	iceValidationSamples  = 3
 )
 
 func (d *daemon) validatePeerICE(ctx context.Context, peerKey string, pk wgtypes.Key, started time.Time) {
@@ -715,6 +716,8 @@ func (d *daemon) validatePeerICE(ctx context.Context, peerKey string, pk wgtypes
 	defer deadline.Stop()
 	tick := time.NewTicker(iceValidationInterval)
 	defer tick.Stop()
+	prev := baseline
+	healthySamples := 0
 
 	for {
 		select {
@@ -735,7 +738,13 @@ func (d *daemon) validatePeerICE(ctx context.Context, peerKey string, pk wgtypes
 				log.Printf("ice validation stats %s: %v", peerKey[:min(len(peerKey), 12)], err)
 				continue
 			}
-			if peerICEValidated(stats, baseline, started) {
+			if peerICEValidated(stats, prev, started) {
+				healthySamples++
+			} else {
+				healthySamples = 0
+			}
+			prev = stats
+			if healthySamples >= iceValidationSamples {
 				if d.table.SetICEReady(pk, true) {
 					d.setDERPSuppressedLocked(pk, true)
 					if err := d.tunIf.ConfigureIPC(d.table.BuildIPCConfig(d.keyPair.Private)); err != nil {
@@ -797,9 +806,6 @@ func (d *daemon) syncDERPSuppressionLocked(routes []*routing.PeerRoute) {
 
 func peerICEValidated(stats, baseline wgPeerStats, started time.Time) bool {
 	if !stats.Found {
-		return false
-	}
-	if stats.LastHandshake.IsZero() || stats.LastHandshake.Before(started.Add(-time.Second)) {
 		return false
 	}
 	if baseline.Found {
