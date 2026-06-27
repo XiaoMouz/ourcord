@@ -46,6 +46,7 @@ type Manager struct {
 	stunServers []string
 	signal      SignalClient
 	onReady     func(peerPublicKey string)
+	onDegrade   func(peerPublicKey string, reason string)
 	logf        func(format string, args ...any)
 
 	mu       sync.Mutex
@@ -74,6 +75,7 @@ type session struct {
 	writeMu         sync.Mutex
 	controlling     bool
 	dialing         bool
+	accepting       bool
 	gatherOnce      sync.Once
 	gatherCloseOnce sync.Once
 	gatherDone      chan struct{}
@@ -82,7 +84,7 @@ type session struct {
 	validated       bool
 }
 
-func NewManager(localKey string, stunServers []string, signal SignalClient, onReady func(peerPublicKey string), logf func(format string, args ...any)) *Manager {
+func NewManager(localKey string, stunServers []string, signal SignalClient, onReady func(peerPublicKey string), onDegrade func(peerPublicKey string, reason string), logf func(format string, args ...any)) *Manager {
 	if logf == nil {
 		logf = log.Printf
 	}
@@ -91,6 +93,7 @@ func NewManager(localKey string, stunServers []string, signal SignalClient, onRe
 		stunServers: ParseSTUNURLs(stunServers),
 		signal:      signal,
 		onReady:     onReady,
+		onDegrade:   onDegrade,
 		logf:        logf,
 		sessions:    make(map[string]*session),
 		recvCh:      make(chan Packet, 1024),
@@ -127,12 +130,12 @@ func (m *Manager) StartPeer(ctx context.Context, peerKey string) {
 		return
 	}
 	controlling := m.localKey > peerKey
-	s, _, err := m.ensureSession(peerKey, controlling)
+	s, created, err := m.ensureSession(peerKey, controlling)
 	if err != nil {
 		m.logf("ice session %s: %v", shortKey(peerKey), err)
 		return
 	}
-	if !controlling {
+	if !controlling || !created {
 		return
 	}
 	go m.sendOffer(ctx, s)
@@ -338,9 +341,19 @@ func (m *Manager) handleOffer(peerKey string, offer control.ICEOffer) {
 		m.logf("ice accept session %s: %v", shortKey(peerKey), err)
 		return
 	}
+	m.mu.Lock()
+	if s.accepting || s.conn != nil {
+		m.mu.Unlock()
+		return
+	}
+	s.accepting = true
+	m.mu.Unlock()
 	m.addRemoteCandidates(peerKey, offer.Candidates)
 	ufrag, pwd, err := s.agent.Credentials()
 	if err != nil {
+		m.mu.Lock()
+		s.accepting = false
+		m.mu.Unlock()
 		m.logf("ice answer credentials for %s: %v", shortKey(peerKey), err)
 		return
 	}
@@ -353,6 +366,9 @@ func (m *Manager) handleOffer(peerKey string, offer control.ICEOffer) {
 	cancel()
 	conn, err := s.agent.Accept(context.Background(), offer.Ufrag, offer.Pwd)
 	if err != nil {
+		m.mu.Lock()
+		s.accepting = false
+		m.mu.Unlock()
 		m.logf("ice accept %s: %v", shortKey(peerKey), err)
 		return
 	}
@@ -371,6 +387,9 @@ func (m *Manager) handleAnswer(peerKey string, answer control.ICEOffer) {
 	m.addRemoteCandidates(peerKey, answer.Candidates)
 	conn, err := s.agent.Dial(context.Background(), answer.Ufrag, answer.Pwd)
 	if err != nil {
+		m.mu.Lock()
+		s.dialing = false
+		m.mu.Unlock()
 		m.logf("ice dial %s: %v", shortKey(peerKey), err)
 		return
 	}
@@ -453,13 +472,35 @@ const (
 	iceProbeKindRequest = byte(1)
 	iceProbeKindAck     = byte(2)
 	iceProbeNonceLen    = 16
-	iceProbeTargetAcks  = 3
 	iceProbeInterval    = 250 * time.Millisecond
-	iceProbeTimeout     = 5 * time.Second
+
+	// Confirm phase: the daemon keeps WireGuard on the DERP baseline until the
+	// ICE path proves *sustained* reliability — at least iceProbeConfirmMinAcks
+	// acks spread across iceProbeConfirmWindow with delivery above the loss
+	// floor. Only then does onReady fire and the daemon switch WireGuard to ICE,
+	// so a flaky path never disrupts a working relay path. A path that cannot
+	// confirm within iceProbeConfirmDeadline is abandoned (the daemon's backoff
+	// retries it later).
+	iceProbeConfirmWindow   = 3 * time.Second
+	iceProbeConfirmMinAcks  = 8
+	iceProbeConfirmMinPct   = 60 // min ack/sent delivery percentage to confirm
+	iceProbeConfirmDeadline = 10 * time.Second
+
+	// Liveness phase: after onReady the probe keeps running as an
+	// application-independent keepalive. If no ack arrives for
+	// iceProbeLivenessTimeout the direct path is declared dead and onDegrade
+	// fires. Because the probe itself generates the traffic that proves
+	// liveness, an idle-but-healthy direct path stays direct.
+	iceProbeLivenessTimeout = 1500 * time.Millisecond
 )
 
 var iceProbeMagic = []byte("\x00ourcord-ice-probe-v1\x00")
 
+// probeLoop runs the ICE liveness probe over the connected pion conn. It has
+// two phases on a single ticker: a confirm phase that gates the WireGuard
+// endpoint switch on sustained reliability, and a liveness phase that keeps the
+// path proven (application-independent) and degrades it to DERP when the peer
+// goes silent.
 func (m *Manager) probeLoop(peerKey string, c *pionice.Conn) {
 	m.mu.Lock()
 	s := m.sessions[peerKey]
@@ -470,10 +511,12 @@ func (m *Manager) probeLoop(peerKey string, c *pionice.Conn) {
 
 	tick := time.NewTicker(iceProbeInterval)
 	defer tick.Stop()
-	deadline := time.NewTimer(iceProbeTimeout)
-	defer deadline.Stop()
 
 	pending := make(map[[iceProbeNonceLen]byte]struct{})
+	start := time.Now()
+	lastAck := start
+	confirmed := false
+	sent := 0
 	acks := 0
 	sendProbe := func() {
 		var nonce [iceProbeNonceLen]byte
@@ -488,6 +531,7 @@ func (m *Manager) probeLoop(peerKey string, c *pionice.Conn) {
 		}
 		pending[nonce] = struct{}{}
 		m.probeSent.Add(1)
+		sent++
 	}
 	sendProbe()
 
@@ -495,12 +539,21 @@ func (m *Manager) probeLoop(peerKey string, c *pionice.Conn) {
 		select {
 		case <-m.doneCh:
 			return
-		case <-deadline.C:
-			m.probeTimeouts.Add(1)
-			m.logf("ice probe timeout peer=%s acks=%d", shortKey(peerKey), acks)
-			m.closeSession(peerKey, c)
-			return
 		case <-tick.C:
+			now := time.Now()
+			if !confirmed {
+				if now.Sub(start) > iceProbeConfirmDeadline {
+					m.probeTimeouts.Add(1)
+					m.logf("ice probe confirm timeout peer=%s acks=%d sent=%d", shortKey(peerKey), acks, sent)
+					m.closeSession(peerKey, c)
+					return
+				}
+			} else if livenessLost(now.Sub(lastAck)) {
+				m.probeTimeouts.Add(1)
+				m.logf("ice direct liveness lost peer=%s silent=%v", shortKey(peerKey), now.Sub(lastAck).Round(time.Millisecond))
+				m.degradePeer(peerKey, c, "direct-health-lost")
+				return
+			}
 			sendProbe()
 		case nonce := <-s.probeAckCh:
 			if _, ok := pending[nonce]; !ok {
@@ -509,11 +562,47 @@ func (m *Manager) probeLoop(peerKey string, c *pionice.Conn) {
 			}
 			delete(pending, nonce)
 			acks++
-			if acks >= iceProbeTargetAcks {
+			lastAck = time.Now()
+			if !confirmed && probeConfirmed(acks, sent, lastAck.Sub(start)) {
+				confirmed = true
 				m.markProbeValidated(peerKey, c)
-				return
 			}
 		}
+	}
+}
+
+// probeConfirmed reports whether the ICE path has shown sustained reliability:
+// enough acks, spread across a long-enough window, with delivery above the loss
+// floor. Pure for unit testing.
+func probeConfirmed(acks, sent int, elapsed time.Duration) bool {
+	if acks < iceProbeConfirmMinAcks || elapsed < iceProbeConfirmWindow || sent <= 0 {
+		return false
+	}
+	return acks*100 >= sent*iceProbeConfirmMinPct
+}
+
+// livenessLost reports whether the direct path has gone quiet past the
+// keepalive tolerance.
+func livenessLost(sinceLastAck time.Duration) bool {
+	return sinceLastAck > iceProbeLivenessTimeout
+}
+
+// degradePeer tears down the ICE session and notifies the daemon so it reverts
+// the peer to DERP and schedules a backoff retry. Distinct from ClosePeer
+// (which the daemon calls when it is already reverting) so the onDegrade
+// notification only fires on probe-detected failures.
+func (m *Manager) degradePeer(peerKey string, c *pionice.Conn, reason string) {
+	m.mu.Lock()
+	s := m.sessions[peerKey]
+	if s == nil || s.conn != c {
+		m.mu.Unlock()
+		return
+	}
+	onDegrade := m.onDegrade
+	m.mu.Unlock()
+	m.closeSession(peerKey, c)
+	if onDegrade != nil {
+		onDegrade(peerKey, reason)
 	}
 }
 

@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/base64"
-	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
@@ -15,7 +14,6 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -43,6 +41,7 @@ func main() {
 		logLevel       = flag.String("log-level", "info", "Log level: debug, info, error")
 		wgListenPort   = flag.Int("wg-listen-port", 0, "Pin WireGuard UDP listen port (0 = ephemeral; set for smoke/manual mesh)")
 		wgEndpointHint = flag.String("wg-endpoint", "", "Public host:port hint for our wg endpoint sent to control on register (empty = none)")
+		disableICE     = flag.Bool("disable-ice", false, "Disable SignalDO/ICE direct path attempts; DERP remains available (diagnostic / constrained-network smoke)")
 	)
 	flag.Parse()
 
@@ -77,6 +76,7 @@ func main() {
 		wgListenPort:   uint16(*wgListenPort),
 		wgEndpointHint: *wgEndpointHint,
 		derpKey:        derpKey,
+		disableICE:     *disableICE,
 	}
 
 	// W3: load (or create) shared HMAC secret used by IPC clients (CLI, GUI)
@@ -131,6 +131,7 @@ type daemon struct {
 	wgListenPort   uint16 // 0 = ephemeral
 	wgEndpointHint string // host:port, sent on register
 	derpKey        key.NodePrivate
+	disableICE     bool
 
 	vpnActive atomic.Bool
 
@@ -143,6 +144,11 @@ type daemon struct {
 	cli     controlClient
 	derpMgr *ourderp.Manager
 	iceMgr  *ourice.Manager
+
+	// iceRetry tracks per-peer exponential backoff for re-attempting an ICE
+	// direct upgrade after the peer degraded to the DERP baseline. Guarded by
+	// connMu. Reset to the base interval when a new peer joins the network.
+	iceRetry map[wgtypes.Key]*iceRetryState
 
 	// assigned VPN addresses for status reporting (filled at connect, cleared
 	// at disconnect).
@@ -173,6 +179,7 @@ type controlClient interface {
 	Register(ctx context.Context, req control.RegisterRequest) (*control.RegisterResponse, error)
 	FetchConfig(ctx context.Context, roomID string) (*control.PeerConfig, error)
 	FetchSTUNServers(ctx context.Context) ([]string, error)
+	ReportConnectivity(ctx context.Context, report control.ConnectivityReport) error
 	Run(ctx context.Context, roomID string)
 	SetSignalHandler(func(control.SignalMessage))
 	InitiateHolePunch(ctx context.Context, targetKey string, offer control.ICEOffer) error
@@ -224,6 +231,7 @@ func (d *daemon) HandleIPC(ctx context.Context, req ipc.IPCRequest) ipc.IPCRespo
 				VPNActive:   d.vpnActive.Load(),
 				IP4:         ip4,
 				IP6:         ip6,
+				NetworkID:   roomID,
 				RoomID:      roomID,
 				PeerCount:   len(routes),
 				RelayUsed:   relayUsed,
@@ -245,17 +253,33 @@ func (d *daemon) HandleIPC(ctx context.Context, req ipc.IPCRequest) ipc.IPCRespo
 			return ipc.IPCResponse{OK: false, Error: err.Error()}
 		}
 		return ipc.IPCResponse{OK: true}
-	case ipc.CmdEnterRoom:
-		roomID := strings.TrimSpace(req.Params["room_id"])
-		if roomID == "" {
-			return ipc.IPCResponse{OK: false, Error: "room_id required"}
+	case ipc.CmdEnterRoom, ipc.CmdEnterNetwork:
+		networkID := strings.TrimSpace(req.Params["network_id"])
+		if networkID == "" {
+			networkID = strings.TrimSpace(req.Params["room_id"])
 		}
-		if err := d.enterRoom(ctx, roomID); err != nil {
+		if networkID == "" {
+			return ipc.IPCResponse{OK: false, Error: "network_id required"}
+		}
+		if err := d.enterRoom(ctx, networkID); err != nil {
 			return ipc.IPCResponse{OK: false, Error: err.Error()}
 		}
 		return ipc.IPCResponse{OK: true}
-	case ipc.CmdLeaveRoom:
+	case ipc.CmdLeaveRoom, ipc.CmdLeaveNetwork:
 		if err := d.leaveRoom(ctx); err != nil {
+			return ipc.IPCResponse{OK: false, Error: err.Error()}
+		}
+		return ipc.IPCResponse{OK: true}
+	case ipc.CmdForceDERP:
+		peerKey := strings.TrimSpace(req.Params["public_key"])
+		reason := strings.TrimSpace(req.Params["reason"])
+		if reason == "" {
+			reason = "diagnostic-force-derp"
+		}
+		if peerKey == "" {
+			return ipc.IPCResponse{OK: false, Error: "public_key required"}
+		}
+		if err := d.forceDERP(peerKey, reason); err != nil {
 			return ipc.IPCResponse{OK: false, Error: err.Error()}
 		}
 		return ipc.IPCResponse{OK: true}
@@ -473,7 +497,7 @@ func (d *daemon) connect(ctx context.Context) error {
 	if err != nil {
 		log.Printf("fetch STUN servers: %v (continuing with host candidates only)", err)
 	}
-	iceMgr := ourice.NewManager(d.keyPair.PublicKeyBase64(), stunServers, cli, d.markPeerICEReady, log.Printf)
+	iceMgr := ourice.NewManager(d.keyPair.PublicKeyBase64(), stunServers, cli, d.markPeerICEReady, d.handleICEDegrade, log.Printf)
 	cli.SetSignalHandler(iceMgr.HandleSignal)
 
 	regCtx, regCancel := context.WithTimeout(ctx, 15*time.Second)
@@ -557,10 +581,12 @@ func (d *daemon) connect(ctx context.Context) error {
 	d.vpnActive.Store(true)
 
 	if d.activeRoom != "" {
+		d.reportDERPReachabilityLocked(table.All(), "derp-baseline")
 		d.startSignalLocked(d.activeRoom)
 		d.startICEForRoutes(connCtx, table.All())
 	}
 	go d.meshLoop(connCtx)
+	go d.iceRetryLoop(connCtx)
 
 	return nil
 }
@@ -615,6 +641,7 @@ func (d *daemon) enterRoom(ctx context.Context, roomID string) error {
 	}
 	d.syncDERPSuppressionLocked(d.table.All())
 	d.activeRoom = roomID
+	d.reportDERPReachabilityLocked(d.table.All(), "derp-baseline")
 	d.startSignalLocked(roomID)
 	d.startICEForRoutes(d.connCtx, d.table.All())
 	return nil
@@ -645,7 +672,7 @@ func (d *daemon) leaveRoom(ctx context.Context) error {
 }
 
 func (d *daemon) startSignalLocked(roomID string) {
-	if d.cli == nil || d.connCtx == nil || roomID == "" {
+	if d.disableICE || d.cli == nil || d.connCtx == nil || roomID == "" {
 		return
 	}
 	if d.sigCxl != nil {
@@ -658,11 +685,11 @@ func (d *daemon) startSignalLocked(roomID string) {
 }
 
 func (d *daemon) startICEForRoutes(ctx context.Context, routes []*routing.PeerRoute) {
-	if d.iceMgr == nil || ctx == nil {
+	if d.disableICE || d.iceMgr == nil || ctx == nil {
 		return
 	}
 	for _, r := range routes {
-		if r == nil || r.NextHop != nil || r.ICEReady || r.ICEPending {
+		if r == nil || r.NextHop != nil || r.ICEReady || r.ICEPending || r.LastError != "" {
 			continue
 		}
 		d.iceMgr.StartPeer(ctx, r.PublicKey.String())
@@ -678,123 +705,252 @@ func (d *daemon) markPeerICEReady(peerKey string) {
 	var pk wgtypes.Key
 	copy(pk[:], raw)
 	d.connMu.Lock()
-	defer d.connMu.Unlock()
 	if d.table == nil || d.tunIf == nil {
+		d.connMu.Unlock()
 		return
 	}
-	if !d.table.SetICEPending(pk, true, "") {
+	// onReady only fires after the ICE manager's sustained-reliability probe, so
+	// the direct path is already confirmed: switch WireGuard to it now and clear
+	// any prior degrade/backoff for this peer. SetICEReady clears LastError and
+	// ICEPending, so a peer that previously degraded re-upgrades cleanly.
+	if !d.table.SetICEReady(pk, true) {
+		d.connMu.Unlock()
 		return
 	}
+	delete(d.iceRetry, pk)
 	d.setDERPSuppressedLocked(pk, true)
-	started := time.Now()
 	if err := d.tunIf.ConfigureIPC(d.table.BuildIPCConfig(d.keyPair.Private)); err != nil {
-		log.Printf("ice apply waiting endpoint for %s: %v", peerKey[:min(len(peerKey), 12)], err)
+		log.Printf("ice apply direct endpoint for %s: %v", peerKey[:min(len(peerKey), 12)], err)
+		d.connMu.Unlock()
 		return
 	}
-	log.Printf("peer waiting for ICE data-plane validation: %s", peerKey[:min(len(peerKey), 12)])
-	go d.validatePeerICE(d.connCtx, peerKey, pk, started)
+	// Release connMu before reporting: reportConnectivityAsync re-acquires it.
+	d.connMu.Unlock()
+	log.Printf("peer upgraded to ICE direct: %s", peerKey[:min(len(peerKey), 12)])
+	d.reportConnectivityAsync(peerKey, true, true, "")
 }
 
-type wgPeerStats struct {
-	Found         bool
-	LastHandshake time.Time
-	RXBytes       uint64
-	TXBytes       uint64
+// handleICEDegrade is the ICE manager's onDegrade callback: the direct path lost
+// liveness, so revert the peer to DERP and schedule a backoff retry.
+func (d *daemon) handleICEDegrade(peerKey string, reason string) {
+	raw, err := base64.StdEncoding.DecodeString(peerKey)
+	if err != nil || len(raw) != wgtypes.KeyLen {
+		log.Printf("ice degrade invalid peer key %q", peerKey)
+		return
+	}
+	var pk wgtypes.Key
+	copy(pk[:], raw)
+	d.failPeerICEValidation(peerKey, pk, reason)
+}
+
+// iceRetryState is the per-peer exponential backoff for re-attempting ICE
+// direct after a degrade. interval doubles each failed attempt up to a cap and
+// resets to the base when a new peer joins the network.
+type iceRetryState struct {
+	interval    time.Duration
+	nextAttempt time.Time
 }
 
 const (
-	iceValidationInterval = 1 * time.Second
-	iceValidationTimeout  = 12 * time.Second
-	iceValidationSamples  = 3
-	directHealthInterval  = 1 * time.Second
-	directHealthWindow    = 5
-	directHealthMaxMisses = 1
+	iceRetryBase = 10 * time.Second
+	iceRetryCap  = 10 * time.Minute
+	iceRetryTick = 5 * time.Second
 )
 
-func (d *daemon) validatePeerICE(ctx context.Context, peerKey string, pk wgtypes.Key, started time.Time) {
-	if ctx == nil {
-		ctx = context.Background()
+// scheduleICERetryLocked arms (or backs off) the retry timer for a peer that
+// just degraded. First failure waits iceRetryBase; each subsequent failure
+// doubles the wait up to iceRetryCap. Caller holds connMu.
+func (d *daemon) scheduleICERetryLocked(pk wgtypes.Key) {
+	if d.iceRetry == nil {
+		d.iceRetry = make(map[wgtypes.Key]*iceRetryState)
 	}
-	var baseline wgPeerStats
-	d.connMu.Lock()
-	if d.tunIf != nil {
-		if stats, err := readPeerStats(d.tunIf, pk); err == nil {
-			baseline = stats
-		} else {
-			log.Printf("ice validation stats baseline %s: %v", peerKey[:min(len(peerKey), 12)], err)
+	st := d.iceRetry[pk]
+	if st == nil {
+		st = &iceRetryState{interval: iceRetryBase}
+		d.iceRetry[pk] = st
+	} else {
+		st.interval *= 2
+		if st.interval > iceRetryCap {
+			st.interval = iceRetryCap
 		}
 	}
-	d.connMu.Unlock()
+	st.nextAttempt = time.Now().Add(st.interval)
+}
 
-	deadline := time.NewTimer(iceValidationTimeout)
-	defer deadline.Stop()
-	tick := time.NewTicker(iceValidationInterval)
-	defer tick.Stop()
-	prev := baseline
-	healthySamples := 0
+// resetICEBackoffLocked pulls every degraded peer's retry back to the base
+// interval and makes it due immediately. Called when a new peer joins, since a
+// topology change can open a direct path that was previously unreachable.
+// Caller holds connMu.
+func (d *daemon) resetICEBackoffLocked() {
+	now := time.Now()
+	for _, st := range d.iceRetry {
+		st.interval = iceRetryBase
+		st.nextAttempt = now
+	}
+}
 
+// iceRetryLoop periodically re-attempts ICE direct for degraded peers whose
+// backoff has elapsed. Runs for the lifetime of a connection.
+func (d *daemon) iceRetryLoop(ctx context.Context) {
+	t := time.NewTicker(iceRetryTick)
+	defer t.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-deadline.C:
-			d.failPeerICEValidation(peerKey, pk, "ice-validation-failed")
-			return
-		case <-tick.C:
-			d.connMu.Lock()
-			if d.table == nil || d.tunIf == nil {
-				d.connMu.Unlock()
-				return
-			}
-			stats, err := readPeerStats(d.tunIf, pk)
-			if err != nil {
-				d.connMu.Unlock()
-				log.Printf("ice validation stats %s: %v", peerKey[:min(len(peerKey), 12)], err)
-				continue
-			}
-			if peerICEValidated(stats, prev, started) {
-				healthySamples++
-			} else {
-				healthySamples = 0
-			}
-			prev = stats
-			if healthySamples >= iceValidationSamples {
-				if d.table.SetICEReady(pk, true) {
-					d.setDERPSuppressedLocked(pk, true)
-					if err := d.tunIf.ConfigureIPC(d.table.BuildIPCConfig(d.keyPair.Private)); err != nil {
-						log.Printf("ice apply direct endpoint for %s: %v", peerKey[:min(len(peerKey), 12)], err)
-						d.connMu.Unlock()
-						return
-					}
-				}
-				d.connMu.Unlock()
-				log.Printf("peer upgraded to ICE direct: %s", peerKey[:min(len(peerKey), 12)])
-				go d.monitorPeerDirectHealth(ctx, peerKey, pk)
-				return
-			}
-			d.connMu.Unlock()
+		case <-t.C:
+			d.retryDegradedICE(ctx)
 		}
+	}
+}
+
+// retryDegradedICE re-initiates ICE for degraded peers past their backoff
+// deadline. WireGuard stays on DERP and LastError stays set until the ICE
+// manager's sustained probe confirms and markPeerICEReady clears it; the next
+// attempt is pushed out by the current interval so an in-flight probe isn't
+// restarted, and failPeerICEValidation doubles the interval on failure.
+func (d *daemon) retryDegradedICE(ctx context.Context) {
+	if d.disableICE || d.iceMgr == nil {
+		return
+	}
+	d.connMu.Lock()
+	if d.table == nil {
+		d.connMu.Unlock()
+		return
+	}
+	now := time.Now()
+	var retry []string
+	for _, r := range d.table.All() {
+		if r == nil || r.NextHop != nil || r.LastError == "" {
+			continue
+		}
+		st := d.iceRetry[r.PublicKey]
+		if st == nil || now.Before(st.nextAttempt) {
+			continue
+		}
+		st.nextAttempt = now.Add(st.interval)
+		retry = append(retry, r.PublicKey.String())
+	}
+	d.connMu.Unlock()
+	for _, pkStr := range retry {
+		log.Printf("ice retry attempt for degraded peer %s", pkStr[:min(len(pkStr), 12)])
+		d.iceMgr.ClosePeer(pkStr)
+		d.iceMgr.StartPeer(ctx, pkStr)
 	}
 }
 
 func (d *daemon) failPeerICEValidation(peerKey string, pk wgtypes.Key, reason string) {
 	d.connMu.Lock()
-	defer d.connMu.Unlock()
 	if d.table == nil || d.tunIf == nil {
+		d.connMu.Unlock()
 		return
 	}
 	if !d.table.SetDERPFallback(pk, reason) {
+		d.connMu.Unlock()
 		return
+	}
+	wgReachable := false
+	for _, r := range d.table.All() {
+		if r != nil && r.PublicKey == pk && r.DERPURL != "" && r.DERPNodeKey != "" {
+			wgReachable = true
+			break
+		}
 	}
 	d.setDERPSuppressedLocked(pk, false)
 	if err := d.tunIf.ConfigureIPC(d.table.BuildIPCConfig(d.keyPair.Private)); err != nil {
 		log.Printf("ice fallback apply for %s: %v", peerKey[:min(len(peerKey), 12)], err)
+		d.connMu.Unlock()
 		return
 	}
 	if d.iceMgr != nil {
 		d.iceMgr.ClosePeer(peerKey)
 	}
+	d.scheduleICERetryLocked(pk)
+	d.connMu.Unlock()
 	log.Printf("peer ICE validation failed; fallback state applied: %s reason=%s", peerKey[:min(len(peerKey), 12)], reason)
+	reportReason := reason
+	if wgReachable {
+		reportReason = "derp-fallback"
+		if reason != "" {
+			reportReason += ":" + reason
+		}
+	}
+	d.reportConnectivityAsync(peerKey, false, wgReachable, reportReason)
+}
+
+func (d *daemon) forceDERP(peerKey string, reason string) error {
+	raw, err := base64.StdEncoding.DecodeString(peerKey)
+	if err != nil || len(raw) != wgtypes.KeyLen {
+		return fmt.Errorf("invalid public_key")
+	}
+	var pk wgtypes.Key
+	copy(pk[:], raw)
+	d.connMu.Lock()
+	if !d.vpnActive.Load() || d.table == nil || d.tunIf == nil {
+		d.connMu.Unlock()
+		return errors.New("VPN is not active")
+	}
+	table := d.table
+	d.connMu.Unlock()
+	found := false
+	for _, r := range table.All() {
+		if r != nil && r.PublicKey == pk {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return errors.New("peer not found")
+	}
+	d.failPeerICEValidation(peerKey, pk, reason)
+	return nil
+}
+
+func (d *daemon) reportConnectivityAsync(peerKey string, iceDirect bool, wgReachable bool, reason string) {
+	d.connMu.Lock()
+	cli, networkID, ctx := d.cli, d.activeRoom, d.connCtx
+	d.connMu.Unlock()
+	d.reportConnectivityWith(cli, networkID, ctx, peerKey, iceDirect, wgReachable, reason)
+}
+
+func (d *daemon) reportDERPReachabilityLocked(routes []*routing.PeerRoute, reason string) {
+	cli, networkID, ctx := d.cli, d.activeRoom, d.connCtx
+	if cli == nil || networkID == "" || ctx == nil {
+		return
+	}
+	for _, r := range routes {
+		if r == nil || r.NextHop != nil || r.ICEReady || r.DERPURL == "" || r.DERPNodeKey == "" {
+			continue
+		}
+		d.reportConnectivityWith(cli, networkID, ctx, r.PublicKey.String(), false, true, reason)
+	}
+}
+
+func (d *daemon) reportConnectivityWith(cli controlClient, networkID string, ctx context.Context, peerKey string, iceDirect bool, wgReachable bool, reason string) {
+	if cli == nil || networkID == "" || ctx == nil {
+		return
+	}
+	transport := ""
+	if iceDirect {
+		transport = "ice"
+	} else if wgReachable && strings.HasPrefix(reason, "derp") {
+		transport = "derp"
+	}
+	go func() {
+		reportCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		defer cancel()
+		if err := cli.ReportConnectivity(reportCtx, control.ConnectivityReport{
+			NetworkID:     networkID,
+			PeerPublicKey: peerKey,
+			Direct:        iceDirect,
+			ICEDirect:     iceDirect,
+			WGReachable:   wgReachable,
+			Transport:     transport,
+			Reason:        reason,
+		}); err != nil {
+			log.Printf("report connectivity %s ice_direct=%v wg_reachable=%v: %v", peerKey[:min(len(peerKey), 12)], iceDirect, wgReachable, err)
+		}
+	}()
 }
 
 func (d *daemon) setDERPSuppressedLocked(pk wgtypes.Key, suppressed bool) {
@@ -822,157 +978,26 @@ func (d *daemon) syncDERPSuppressionLocked(routes []*routing.PeerRoute) {
 	}
 }
 
-func peerICEValidated(stats, baseline wgPeerStats, started time.Time) bool {
-	if !stats.Found {
-		return false
-	}
-	if baseline.Found {
-		return stats.RXBytes > baseline.RXBytes
-	}
-	return stats.RXBytes > 0
-}
-
-func (d *daemon) monitorPeerDirectHealth(ctx context.Context, peerKey string, pk wgtypes.Key) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	tick := time.NewTicker(directHealthInterval)
-	defer tick.Stop()
-
-	var prev wgPeerStats
-	d.connMu.Lock()
-	if d.tunIf != nil {
-		if stats, err := readPeerStats(d.tunIf, pk); err == nil {
-			prev = stats
-		} else {
-			log.Printf("direct health stats baseline %s: %v", peerKey[:min(len(peerKey), 12)], err)
-		}
-	}
-	d.connMu.Unlock()
-
-	window := make([]bool, 0, directHealthWindow)
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-tick.C:
-			d.connMu.Lock()
-			if d.table == nil || d.tunIf == nil || !routeICEReady(d.table.All(), pk) {
-				d.connMu.Unlock()
-				return
-			}
-			stats, err := readPeerStats(d.tunIf, pk)
-			d.connMu.Unlock()
-			if err != nil {
-				log.Printf("direct health stats %s: %v", peerKey[:min(len(peerKey), 12)], err)
-				continue
-			}
-			active, miss := directHealthSample(prev, stats)
-			prev = stats
-			if !active {
-				continue
-			}
-			window = appendDirectHealthSample(window, miss)
-			if directHealthDegraded(window) {
-				d.failPeerICEValidation(peerKey, pk, "direct-health-degraded")
-				return
-			}
-		}
-	}
-}
-
-func routeICEReady(routes []*routing.PeerRoute, pk wgtypes.Key) bool {
+func peerKeySet(routes []*routing.PeerRoute) map[wgtypes.Key]struct{} {
+	set := make(map[wgtypes.Key]struct{}, len(routes))
 	for _, r := range routes {
-		if r != nil && r.PublicKey == pk {
-			return r.ICEReady
+		if r != nil {
+			set[r.PublicKey] = struct{}{}
+		}
+	}
+	return set
+}
+
+func hasNewPeer(before map[wgtypes.Key]struct{}, after []*routing.PeerRoute) bool {
+	for _, r := range after {
+		if r == nil {
+			continue
+		}
+		if _, ok := before[r.PublicKey]; !ok {
+			return true
 		}
 	}
 	return false
-}
-
-func directHealthSample(prev, stats wgPeerStats) (active bool, miss bool) {
-	if !stats.Found {
-		return true, true
-	}
-	txGrew := stats.TXBytes > prev.TXBytes
-	rxGrew := stats.RXBytes > prev.RXBytes
-	if !txGrew && !rxGrew {
-		return false, false
-	}
-	return true, txGrew && !rxGrew
-}
-
-func appendDirectHealthSample(window []bool, miss bool) []bool {
-	window = append(window, miss)
-	if len(window) > directHealthWindow {
-		copy(window, window[len(window)-directHealthWindow:])
-		window = window[:directHealthWindow]
-	}
-	return window
-}
-
-func directHealthDegraded(window []bool) bool {
-	if len(window) < directHealthWindow {
-		return false
-	}
-	misses := 0
-	for _, miss := range window {
-		if miss {
-			misses++
-		}
-	}
-	return misses > directHealthMaxMisses
-}
-
-func readPeerStats(iface tunIface, pk wgtypes.Key) (wgPeerStats, error) {
-	raw, err := iface.GetIPC()
-	if err != nil {
-		return wgPeerStats{}, err
-	}
-	return parsePeerStats(raw, pk), nil
-}
-
-func parsePeerStats(raw string, pk wgtypes.Key) wgPeerStats {
-	want := hex.EncodeToString(pk[:])
-	var cur string
-	var stats wgPeerStats
-	var sec, nsec int64
-	flushHandshake := func() {
-		if stats.Found && sec > 0 {
-			stats.LastHandshake = time.Unix(sec, nsec)
-		}
-	}
-	for _, line := range strings.Split(raw, "\n") {
-		if line == "" {
-			continue
-		}
-		k, v, ok := strings.Cut(line, "=")
-		if !ok {
-			continue
-		}
-		if k == "public_key" {
-			flushHandshake()
-			cur = v
-			stats = wgPeerStats{Found: v == want}
-			sec, nsec = 0, 0
-			continue
-		}
-		if cur != want {
-			continue
-		}
-		switch k {
-		case "last_handshake_time_sec":
-			sec, _ = strconv.ParseInt(v, 10, 64)
-		case "last_handshake_time_nsec":
-			nsec, _ = strconv.ParseInt(v, 10, 64)
-		case "rx_bytes":
-			stats.RXBytes, _ = strconv.ParseUint(v, 10, 64)
-		case "tx_bytes":
-			stats.TXBytes, _ = strconv.ParseUint(v, 10, 64)
-		}
-	}
-	flushHandshake()
-	return stats
 }
 
 func (d *daemon) meshLoop(ctx context.Context) {
@@ -997,11 +1022,19 @@ func (d *daemon) meshLoop(ctx context.Context) {
 				d.connMu.Unlock()
 				continue
 			}
+			before := peerKeySet(table.All())
 			if err := applyConfig(tunIf, table, d.keyPair.Private, cfg); err != nil {
 				log.Printf("mesh apply: %v", err)
 			}
+			// A new peer joining can open a direct path that was previously
+			// unreachable, so pull every degraded peer's ICE retry back to the
+			// base interval and let it re-attempt immediately.
+			if hasNewPeer(before, table.All()) {
+				d.resetICEBackoffLocked()
+			}
 			d.syncDERPSuppressionLocked(table.All())
 			if roomID != "" {
+				d.reportDERPReachabilityLocked(table.All(), "derp-baseline")
 				d.startICEForRoutes(ctx, table.All())
 			}
 			d.connMu.Unlock()

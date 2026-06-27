@@ -19,11 +19,11 @@ type CandidateType = pionice.CandidateType
 
 // HolePunchResult is the outcome of a hole punching attempt.
 type HolePunchResult struct {
-	Success      bool
-	LocalAddr    net.Addr
-	RemoteAddr   net.Addr
-	RTTMs        float64 // round-trip time in milliseconds
-	Method       string  // "direct-ipv6", "nat-ipv4", "derp-relay"
+	Success    bool
+	LocalAddr  net.Addr
+	RemoteAddr net.Addr
+	RTTMs      float64 // round-trip time in milliseconds
+	Method     string  // "direct-ipv6", "nat-ipv4", "derp-relay"
 }
 
 // Agent manages ICE for a single peer connection.
@@ -68,6 +68,13 @@ func NewAgent(cfg Config) (*Agent, error) {
 			pionice.CandidateTypeServerReflexive,
 			pionice.CandidateTypePeerReflexive,
 		},
+		// Never gather host candidates on our own VPN/overlay TUN: ICE must
+		// discover the underlay path between peers. Pairing with our own utun
+		// address would loop WireGuard back through the tunnel (over DERP),
+		// yielding a "direct" path that is actually circular — it passes the
+		// probe but then loses liveness and flaps. Underlay NICs (eth0/en0) are
+		// kept, so same-LAN RFC1918/ULA host candidates still work.
+		InterfaceFilter: func(name string) bool { return !isVPNInterface(name) },
 		// Prefer IPv6 host candidates
 		InsecureSkipVerify: false,
 	})
@@ -108,6 +115,18 @@ func NewAgent(cfg Config) (*Agent, error) {
 	}
 
 	return a, nil
+}
+
+// isVPNInterface reports whether an interface name belongs to a local VPN /
+// overlay tunnel that ICE must not gather candidates on. Covers our own TUN
+// ("utun" on Linux, "utunN" on macOS, or an "ourcord"-named device).
+func isVPNInterface(name string) bool {
+	for _, prefix := range []string{"utun", "ourcord"} {
+		if strings.HasPrefix(name, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // GatherCandidates starts candidate gathering. Candidates are delivered via OnCandidates callback.

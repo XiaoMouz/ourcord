@@ -19,6 +19,7 @@ import (
 
 	"github.com/ourcord/ourcord/daemon/pkg/control"
 	"github.com/ourcord/ourcord/daemon/pkg/ipc"
+	"github.com/ourcord/ourcord/daemon/pkg/routing"
 	"github.com/ourcord/ourcord/daemon/pkg/wg"
 )
 
@@ -63,16 +64,39 @@ func (f *fakeTun) lastIPC() string {
 	return f.ipcCalls[len(f.ipcCalls)-1]
 }
 
+func mustTestKey(b byte) wgtypes.Key {
+	var k wgtypes.Key
+	for i := range k {
+		k[i] = b
+	}
+	return k
+}
+
 // fakeClient wraps a real *control.Client pointed at httptest, but stubs Run
 // to a no-op so the test doesn't try to open a websocket.
 type fakeClient struct {
 	*control.Client
 	runCalled atomic.Bool
+	mu        sync.Mutex
+	reports   []control.ConnectivityReport
 }
 
 func (f *fakeClient) Run(ctx context.Context, roomID string) {
 	f.runCalled.Store(true)
 	<-ctx.Done()
+}
+
+func (f *fakeClient) ReportConnectivity(_ context.Context, report control.ConnectivityReport) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.reports = append(f.reports, report)
+	return nil
+}
+
+func (f *fakeClient) connectivityReports() []control.ConnectivityReport {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]control.ConnectivityReport(nil), f.reports...)
 }
 
 // mockControlPlane returns an httptest.Server that emulates the two endpoints
@@ -338,6 +362,359 @@ func TestEnterLeaveRoom_UsesRoomScopedConfigAndReplacesPeers(t *testing.T) {
 	}
 	if strings.Contains(uapi, "allowed_ip=198.18.0.22/32") {
 		t.Fatalf("room peer leaked after leave:\n%s", uapi)
+	}
+}
+
+func TestEnterNetwork_UsesNetworkIDParam(t *testing.T) {
+	stateDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(stateDir, "token"), []byte("test-jwt-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	kp, err := wg.LoadOrCreateKeyPair(filepath.Join(stateDir, "wg.key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var roomsSeen []string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/peers/register", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(control.RegisterResponse{
+			Peer: control.PeerInfo{
+				ID: "peer-self", UserID: "u1", PublicKey: kp.PublicKeyBase64(),
+				Name: "self", Platform: "test",
+				IP4: "198.18.0.10", IP6: "fdab:cdef:123::a",
+			},
+		})
+	})
+	mux.HandleFunc("/api/peers/config", func(w http.ResponseWriter, r *http.Request) {
+		roomsSeen = append(roomsSeen, r.URL.Query().Get("room_id"))
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(control.PeerConfig{Peers: []control.RemotePeer{}})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	d := &daemon{
+		controlURL: srv.URL,
+		keyPair:    kp,
+		stateDir:   stateDir,
+		newTun:     func(string, []netip.Prefix) (tunIface, error) { return &fakeTun{}, nil },
+		newClient: func(u, t, p string) controlClient {
+			return &fakeClient{Client: control.New(u, t, p)}
+		},
+	}
+	if err := d.connect(context.Background()); err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer d.disconnect()
+
+	resp := d.HandleIPC(context.Background(), ipc.IPCRequest{
+		Cmd:    ipc.CmdEnterNetwork,
+		Params: map[string]string{"network_id": "lobby-l1-room-v1-voice"},
+	})
+	if !resp.OK {
+		t.Fatalf("enter network failed: %s", resp.Error)
+	}
+	if got := roomsSeen; len(got) != 2 || got[1] != "lobby-l1-room-v1-voice" {
+		t.Fatalf("rooms after enter-network = %v", got)
+	}
+
+	status := d.HandleIPC(context.Background(), ipc.IPCRequest{Cmd: ipc.CmdStatus})
+	st, ok := status.Data.(ipc.DaemonStatus)
+	if !ok {
+		t.Fatalf("status data has type %T", status.Data)
+	}
+	if st.NetworkID != "lobby-l1-room-v1-voice" || st.RoomID != st.NetworkID {
+		t.Fatalf("status network/room = %q/%q", st.NetworkID, st.RoomID)
+	}
+}
+
+func TestEnterNetworkReportsStartupDERPReachability(t *testing.T) {
+	stateDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(stateDir, "token"), []byte("test-jwt-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	kp, err := wg.LoadOrCreateKeyPair(filepath.Join(stateDir, "wg.key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	remoteKey := mustTestKey(0x77)
+	remotePub := base64.StdEncoding.EncodeToString(remoteKey[:])
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/peers/register", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(control.RegisterResponse{
+			Peer: control.PeerInfo{
+				ID: "peer-self", UserID: "u1", PublicKey: kp.PublicKeyBase64(),
+				Name: "self", Platform: "test",
+				IP4: "198.18.0.10", IP6: "fdab:cdef:123::a",
+			},
+		})
+	})
+	mux.HandleFunc("/api/peers/config", func(w http.ResponseWriter, r *http.Request) {
+		roomID := r.URL.Query().Get("room_id")
+		cfg := control.PeerConfig{}
+		if roomID == "lobby-l1-room-v1-voice" {
+			cfg = control.PeerConfig{
+				Peers: []control.RemotePeer{{
+					ID: "peer-derp", PublicKey: remotePub,
+					IP4: "198.18.0.12", IP6: "fdab:cdef:123::12",
+					Name: "derp-peer", DERPNodeKey: "nodekey:0123456789abcdef",
+				}},
+				Relays: []control.RelayEntry{{Hostname: "relay.example.com", Port: 443, Region: "test"}},
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(cfg)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	fc := &fakeClient{Client: control.New(srv.URL, "test-jwt-token", kp.PublicKeyBase64())}
+	d := &daemon{
+		controlURL: srv.URL,
+		keyPair:    kp,
+		stateDir:   stateDir,
+		disableICE: true,
+		newTun:     func(string, []netip.Prefix) (tunIface, error) { return &fakeTun{}, nil },
+		newClient: func(u, t, p string) controlClient {
+			return fc
+		},
+	}
+	if err := d.connect(context.Background()); err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer d.disconnect()
+
+	resp := d.HandleIPC(context.Background(), ipc.IPCRequest{
+		Cmd:    ipc.CmdEnterNetwork,
+		Params: map[string]string{"network_id": "lobby-l1-room-v1-voice"},
+	})
+	if !resp.OK {
+		t.Fatalf("enter network failed: %s", resp.Error)
+	}
+
+	var reports []control.ConnectivityReport
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		reports = fc.connectivityReports()
+		if len(reports) > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(reports) != 1 {
+		t.Fatalf("connectivity reports = %+v, want one DERP baseline report", reports)
+	}
+	got := reports[0]
+	if got.NetworkID != "lobby-l1-room-v1-voice" || got.PeerPublicKey != remotePub {
+		t.Fatalf("unexpected report identity: %+v", got)
+	}
+	if got.ICEDirect || got.Direct || !got.WGReachable || got.Transport != "derp" || got.Reason != "derp-baseline" {
+		t.Fatalf("unexpected DERP baseline report: %+v", got)
+	}
+}
+
+func TestApplyConfig_UsesDERPAsStartupFallbackEndpoint(t *testing.T) {
+	priv, err := wgtypes.GeneratePrivateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var remoteKey wgtypes.Key
+	copy(remoteKey[:], []byte("derp-startup-fallback-peer-0001"))
+	ft := &fakeTun{}
+	table := routing.NewTable()
+
+	err = applyConfig(ft, table, priv, &control.PeerConfig{
+		Peers: []control.RemotePeer{{
+			ID:          "peer-derp",
+			PublicKey:   base64.StdEncoding.EncodeToString(remoteKey[:]),
+			IP4:         "198.18.0.44",
+			IP6:         "fdab:cdef:123::44",
+			Name:        "derp-peer",
+			DERPNodeKey: "nodekey:0123456789abcdef",
+		}},
+		Relays: []control.RelayEntry{{Hostname: "relay.example.com", Port: 443, Region: "test"}},
+	})
+	if err != nil {
+		t.Fatalf("applyConfig: %v", err)
+	}
+
+	uapi := ft.lastIPC()
+	if !strings.Contains(uapi, "endpoint=derp://") {
+		t.Fatalf("expected DERP endpoint as startup fallback:\n%s", uapi)
+	}
+	if strings.Contains(uapi, "endpoint=ice://") {
+		t.Fatalf("startup fallback must not claim ICE before validation:\n%s", uapi)
+	}
+}
+
+func TestStartICEForRoutes_Disabled(t *testing.T) {
+	d := &daemon{disableICE: true}
+	// Should be a no-op even with routes present and no iceMgr.
+	d.startICEForRoutes(context.Background(), []*routing.PeerRoute{{
+		PublicKey: mustTestKey(0x42),
+		VPN4:      netip.MustParseAddr("198.18.0.66"),
+	}})
+}
+
+func TestStartICEForRoutes_SkipsDegradedPeer(t *testing.T) {
+	d := &daemon{}
+	// Should be a no-op even with routes present and no iceMgr: degraded peers
+	// stay on DERP until an explicit retry policy clears LastError.
+	d.startICEForRoutes(context.Background(), []*routing.PeerRoute{{
+		PublicKey: mustTestKey(0x43),
+		VPN4:      netip.MustParseAddr("198.18.0.67"),
+		LastError: "direct-health-degraded",
+	}})
+}
+
+func TestMarkPeerICEReady_UpgradesAndClearsBackoff(t *testing.T) {
+	// onReady only fires after the ICE manager's sustained-reliability probe, so
+	// a previously-degraded peer must re-upgrade: ICEReady set, LastError and the
+	// backoff entry cleared.
+	priv, err := wgtypes.GeneratePrivateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pk := mustTestKey(0x44)
+	table := routing.NewTable()
+	table.Upsert(&routing.PeerRoute{
+		PublicKey: pk,
+		VPN4:      netip.MustParseAddr("198.18.0.68"),
+		LastError: "direct-health-lost",
+	})
+	d := &daemon{
+		keyPair:  &wg.KeyPair{Private: priv},
+		table:    table,
+		tunIf:    &fakeTun{},
+		connCtx:  context.Background(),
+		iceRetry: map[wgtypes.Key]*iceRetryState{pk: {interval: 40 * time.Second}},
+	}
+
+	d.markPeerICEReady(pk.String())
+
+	routes := table.All()
+	if len(routes) != 1 || !routes[0].ICEReady || routes[0].ICEPending || routes[0].LastError != "" {
+		t.Fatalf("confirmed ICE peer should upgrade and clear degrade, got %+v", routes)
+	}
+	if _, ok := d.iceRetry[pk]; ok {
+		t.Fatal("backoff entry should be cleared on successful upgrade")
+	}
+}
+
+func TestStartSignalLocked_DisabledICE(t *testing.T) {
+	d := &daemon{
+		disableICE: true,
+		cli:        &fakeClient{},
+		connCtx:    context.Background(),
+	}
+
+	d.startSignalLocked("network-a")
+
+	if d.sigCxl != nil {
+		t.Fatal("expected SignalDO client to stay stopped when ICE is disabled")
+	}
+}
+
+func TestFailPeerICEValidation_RevertsToDERPEndpoint(t *testing.T) {
+	priv, err := wgtypes.GeneratePrivateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var remoteKey wgtypes.Key
+	copy(remoteKey[:], []byte("derp-runtime-fallback-peer-0001"))
+	peerKey := base64.StdEncoding.EncodeToString(remoteKey[:])
+	ft := &fakeTun{}
+	table := routing.NewTable()
+	table.Upsert(&routing.PeerRoute{
+		PublicKey:   remoteKey,
+		VPN4:        netip.MustParseAddr("198.18.0.55"),
+		ICEReady:    true,
+		DERPURL:     "https://relay.example.com/derp",
+		DERPNodeKey: "nodekey:0123456789abcdef",
+	})
+	if err := ft.ConfigureIPC(table.BuildIPCConfig(priv)); err != nil {
+		t.Fatal(err)
+	}
+
+	fc := &fakeClient{}
+	d := &daemon{
+		keyPair:    &wg.KeyPair{Private: priv},
+		tunIf:      ft,
+		table:      table,
+		cli:        fc,
+		activeRoom: "lobby-l1-room-v1-voice",
+		connCtx:    context.Background(),
+	}
+	d.failPeerICEValidation(peerKey, remoteKey, "direct-health-degraded")
+
+	uapi := ft.lastIPC()
+	if !strings.Contains(uapi, "endpoint=derp://") {
+		t.Fatalf("expected DERP endpoint after ICE failure:\n%s", uapi)
+	}
+	if strings.Contains(uapi, "endpoint=ice://") {
+		t.Fatalf("failed ICE route must not keep ICE endpoint:\n%s", uapi)
+	}
+	peers := connectedPeers(table.All())
+	if len(peers) != 1 || peers[0].Path != "degraded" || peers[0].LastError != "direct-health-degraded" {
+		t.Fatalf("unexpected peer status after fallback: %+v", peers)
+	}
+	var reports []control.ConnectivityReport
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		reports = fc.connectivityReports()
+		if len(reports) > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(reports) != 1 {
+		t.Fatalf("connectivity reports = %+v, want one DERP fallback report", reports)
+	}
+	if got := reports[0]; got.ICEDirect || got.Direct || !got.WGReachable || got.Transport != "derp" || got.Reason != "derp-fallback:direct-health-degraded" {
+		t.Fatalf("unexpected fallback connectivity report: %+v", got)
+	}
+}
+
+func TestForceDERP_IPCDiagnosticRevertsEndpoint(t *testing.T) {
+	priv, err := wgtypes.GeneratePrivateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	remoteKey := mustTestKey(0x66)
+	peerKey := remoteKey.String()
+	ft := &fakeTun{}
+	table := routing.NewTable()
+	table.Upsert(&routing.PeerRoute{
+		PublicKey:   remoteKey,
+		VPN4:        netip.MustParseAddr("198.18.0.77"),
+		ICEReady:    true,
+		DERPURL:     "https://relay.example.com/derp",
+		DERPNodeKey: "nodekey:0123456789abcdef",
+	})
+	if err := ft.ConfigureIPC(table.BuildIPCConfig(priv)); err != nil {
+		t.Fatal(err)
+	}
+
+	d := &daemon{keyPair: &wg.KeyPair{Private: priv}, tunIf: ft, table: table}
+	d.vpnActive.Store(true)
+	resp := d.HandleIPC(context.Background(), ipc.IPCRequest{
+		Cmd:    ipc.CmdForceDERP,
+		Params: map[string]string{"public_key": peerKey, "reason": "test-force"},
+	})
+	if !resp.OK {
+		t.Fatalf("force-derp failed: %s", resp.Error)
+	}
+	uapi := ft.lastIPC()
+	if !strings.Contains(uapi, "endpoint=derp://") || strings.Contains(uapi, "endpoint=ice://") {
+		t.Fatalf("force-derp did not switch endpoint:\n%s", uapi)
+	}
+	peers := connectedPeers(table.All())
+	if len(peers) != 1 || peers[0].Path != "degraded" || peers[0].LastError != "test-force" {
+		t.Fatalf("unexpected peer status: %+v", peers)
 	}
 }
 
