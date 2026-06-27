@@ -19,3 +19,8 @@ func syncPeerV4Routes(ifname string, want []netip.Addr) error {
 	_ = want
 	return fmt.Errorf("tun: per-peer route sync not implemented on this platform (interface=%s)", ifname)
 }
+
+func enableForwarding(ifname string) error {
+	_ = ifname
+	return nil
+}

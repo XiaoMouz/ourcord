@@ -45,4 +45,4 @@
 
 ## 当前阶段
 
-阶段一已完成（含 OrbStack 双 VM smoke 验证）；正在做"补全 + 修技术债 + 阶段二准备"。改动前判断归属哪个阶段，不要提前实现阶段三/四（媒体、UI）的内容。Minecraft LAN（M 系列）属阶段二可选附加。
+阶段一尚未关闭：per-peer ICE 自动直连已通过真实 control + OrbStack 双 VM smoke 验证，但自动 DERP fallback 的受限网络验收与状态面收口仍待完成。改动前判断归属哪个阶段，不要提前实现阶段三/四（媒体、UI）的内容。Minecraft LAN（M 系列）属阶段二可选附加。

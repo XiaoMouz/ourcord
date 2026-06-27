@@ -302,6 +302,17 @@ type RemotePeer struct {
 	NextHopPublicKey string `json:"next_hop_public_key,omitempty"`
 }
 
+type ConnectivityReport struct {
+	NetworkID     string  `json:"network_id"`
+	PeerPublicKey string  `json:"peer_public_key"`
+	Direct        bool    `json:"direct"`
+	ICEDirect     bool    `json:"ice_direct"`
+	WGReachable   bool    `json:"wg_reachable"`
+	Transport     string  `json:"transport,omitempty"`
+	RTTMs         float64 `json:"rtt_ms,omitempty"`
+	Reason        string  `json:"reason,omitempty"`
+}
+
 type RelayEntry struct {
 	Hostname string `json:"hostname"`
 	Port     int    `json:"port"`
@@ -408,6 +419,28 @@ func (c *Client) FetchConfig(ctx context.Context, roomID string) (*PeerConfig, e
 		return nil, fmt.Errorf("control fetch-config decode: %w", err)
 	}
 	return &out, nil
+}
+
+func (c *Client) ReportConnectivity(ctx context.Context, report ConnectivityReport) error {
+	body, _ := json.Marshal(report)
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", c.controlURL+"/api/peers/connectivity", bytesReader(body))
+	if err != nil {
+		return err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Authorization", "Bearer "+c.authToken)
+	httpReq.Header.Set("X-Peer-Public-Key", c.publicKey)
+	resp, err := c.http.Do(httpReq)
+	if err != nil {
+		return fmt.Errorf("control report-connectivity: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		buf := make([]byte, 1024)
+		n, _ := resp.Body.Read(buf)
+		return fmt.Errorf("control report-connectivity: HTTP %d: %s", resp.StatusCode, string(buf[:n]))
+	}
+	return nil
 }
 
 // FetchSTUNServers returns STUN host:port entries used by ICE gathering.

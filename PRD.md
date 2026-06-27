@@ -59,7 +59,16 @@ Minimum network acceptance:
 
 ### Phase 1: Network Core
 
-Status: not closed. The closure bar is automatic peer connectivity: no manual endpoint injection for direct P2P, and automatic DERP fallback when direct paths fail.
+Status: close to Phase-1 closure, but not closed. Room-scoped ICE direct
+connectivity has been validated with two OrbStack VMs and the real
+control-layer flow (`register` → room-scoped `peers/config` → SignalDO → ICE
+probe → WireGuard data plane) without manual WireGuard endpoint injection.
+Startup constrained-network fallback has also been validated with real
+control/service/relay/daemon processes by disabling SignalDO/ICE and proving
+WireGuard data-plane traffic over DERP. Runtime fallback has been validated
+through the daemon diagnostic `force-derp` path after one side reached direct,
+but a true OS/network-level impairment smoke is still required before declaring
+all network-condition acceptance complete.
 
 Included:
 
@@ -69,18 +78,149 @@ Included:
 - Service Worker baseline for lobbies, rooms, invites, messages, file metadata, R2 fallback, and internal room membership lookup.
 - CI for Workers, Go modules, and daemon cross-compile.
 
+Recent validation:
+
+- 2026-06-26: two OrbStack Ubuntu VMs entered the same service-backed room and
+  reached `path_summary=direct` / peer `path=direct` over `ice://` endpoints.
+  Bidirectional ICMP over `198.18.0.2/32` ↔ `198.18.0.3/32` and a TCP payload
+  transfer succeeded with DERP counters at zero.
+- 2026-06-26: the same direct path was re-run through a real service Worker
+  product flow: create lobby, create invite, join lobby, create voice room,
+  enter the returned `vpn_namespace`, and verify direct data-plane connectivity.
+- 2026-06-26: 1:1 private-call networking was validated with a
+  `pair:<pkA>.<pkB>` namespace. Pair-scoped PeerConfig returned the exact
+  opposite device peer, SignalDO accepted the pair route, and the WireGuard data
+  plane reached direct connectivity.
+- 2026-06-26: startup DERP fallback was validated with real control + service +
+  relay + two daemons. The daemons entered the same service `vpn_namespace` with
+  `--disable-ice`, status reported `path_summary=derp`, DERP counters advanced,
+  ICE counters stayed at zero, and bidirectional ICMP over
+  `198.18.0.2/32` ↔ `198.18.0.3/32` succeeded through DERP.
+- 2026-06-26: runtime fallback was validated in the same live setup through
+  `ourcord-cli force-derp <peer_public_key>`. One daemon reached
+  `path_summary=direct`; forcing fallback rewrote the peer route to DERP,
+  both daemons reported `path_summary=degraded` / `relay_used=true`, and
+  bidirectional ICMP stayed at 0% packet loss over DERP.
+- 2026-06-26: control gained a `peer_connectivity` topology table and
+  `/api/peers/connectivity` daemon report endpoint. Room-scoped `peers/config`
+  now computes one-hop `next_hop_public_key` when A cannot directly reach C but
+  both can reach B. Unit coverage verifies the A-B-C output contract and the
+  local wrangler D1 migration was applied successfully during smoke.
+- 2026-06-26: three OrbStack VMs entered one service `vpn_namespace` and control
+  produced observed A-C/C-A `next-hop` routes through B after A-B and B-C
+  connectivity reports.
+- 2026-06-27: the topology model was split into `ice_direct` and `wg_reachable`.
+  A three-VM OrbStack smoke then validated mixed next-hop over DERP-backed
+  bottom edges: A-B and B-C were reported as `wg_reachable=true` /
+  `ice_direct=false`, A-C was reported unreachable, A/C received
+  `next-hop=B`, and bidirectional ICMP over A-C succeeded with TTL=63 and 0%
+  packet loss. The daemon also disables Linux forwarding redirects and avoids
+  assigning indirect peer AllowedIPs to the indirect peer itself, so WireGuard
+  selects the next-hop peer for forwarded CIDRs.
+- 2026-06-27: daemon now automatically reports startup DERP baseline edges as
+  `ice_direct=false,wg_reachable=true` after a room/network config is applied.
+  Unit coverage asserts this report on `enter-network`; live control logs also
+  showed `/api/peers/connectivity` writes immediately after both daemons entered
+  a service `vpn_namespace`.
+- 2026-06-27: control topology selection now uses link costs instead of treating
+  every `wg_reachable` edge as an equally good next-hop candidate. Direct ICE is
+  cheapest, unknown/user WG relay is intermediate, and DERP baseline is most
+  expensive. This prevents an all-DERP room from creating arbitrary A-B-C routes,
+  while still allowing A-B-C to beat direct DERP when A-B and B-C are better
+  edges. Unit coverage asserts both cases.
+- 2026-06-27: runtime external-impairment fallback was validated with real
+  service/control/relay/daemon processes. Two VMs joined a service-created
+  `vpn_namespace`; one side reached validated `path_summary=direct`. Adding an
+  OS-level IPv6 blackhole for the direct underlay path caused early VPN ping
+  loss, then daemon direct-health detection switched the peer to
+  `path_summary=degraded` over DERP and ping resumed. Control received
+  `/api/peers/connectivity` rows with `transport=derp` and
+  `wg_reachable=true`. The smoke also exposed ICE retry churn after degraded
+  fallback; daemon now skips new ICE-ready events for peers with `LastError`
+  until an explicit retry policy is added.
+
 Known gaps:
 
-- Per-peer ICE agents are not wired into the daemon connection loop.
-- Daemon-side DERP client transport is still a placeholder.
-- Manual endpoint hints are still needed for some end-to-end smoke tests.
+- Runtime DERP fallback has true external-network validation for a peer that
+  reached validated direct and was then impaired by an OS route blackhole. A
+  fully symmetric "both peers direct first, then both observe impairment" smoke
+  is still desirable, but the daemon fallback path is no longer only diagnostic.
+- A-B-C mixed DERP data-plane forwarding has been validated. Startup DERP
+  reachable-edge reports are automatic; the remaining topology automation gap is
+  detecting/reporting direct pair unreachability under real constrained networks
+  without manually shaping `/api/peers/connectivity`.
+- Some legacy smoke documentation still describes mock-control endpoint
+  injection; those flows are useful for regression testing but are no longer
+  the primary direct-connect acceptance path.
+- Room/network identity is being split into an explicit contract:
+  `rooms.id` remains the service-layer business key for messages/files/CRUD,
+  while `rooms.vpn_namespace` is accepted by control/service/daemon as the
+  network namespace for voice/video/file overlays. Existing `room_id` query
+  names remain for wire compatibility during the transition.
+- Pair signaling exists in the control-layer SignalDO route and pair-scoped
+  peer config now resolves the two exact device public keys; product-level
+  private-call permission and UI flow still need full end-to-end validation.
 - Windows address assignment and route sync are not implemented.
 - UI and proto schemas are placeholders.
 
-Exit criteria:
+Implementation decisions to close:
 
-- Two real machines can connect directly through ICE without manual endpoint injection.
-- A constrained network can fall back to DERP automatically and remain usable for the voice floor.
+- **Room identity contract**: `rooms.id` is the business identity used by
+  service APIs (`messages`, `files`, room CRUD). `rooms.vpn_namespace` is the
+  network identity for overlays. The service internal member lookup accepts
+  either value; daemon exposes `enter-network <network_id>` while keeping
+  `enter-room` as a compatibility alias.
+- **`vpn_namespace` capacity model**: a namespace is a membership and policy
+  scope, not a transport mode. One namespace can contain a 5-10 person voice
+  mesh where each peer independently uses direct ICE, DERP, or later
+  next-hop routing. It can also mix user-owned relay servers and official relay
+  servers because relay choice is attached to the returned peer/relay config,
+  not encoded into the namespace string. A-B-C or longer product dependencies
+  should still be represented as per-peer route/topology output from control
+  (`AllowedIPs` / `NextHop`) rather than by inventing nested namespace ids.
+  Product-wise this means the namespace can represent multiplayer voice,
+  P2P-only, P2P+DERP, user-relay+P2P, and A-B-C route chains. The control model
+  now separates `ice_direct` from `wg_reachable`, so a DERP-backed peer edge can
+  still be used as a valid next-hop when policy allows it.
+- **Signal room conventions**: control currently accepts two SignalDO room id
+  forms. Service-room ids map to lobby/room membership and should correspond
+  to the same identity used for `peers/config`. `pair:<pkA>.<pkB>` maps to
+  standalone 1:1 peer signaling without service membership. Decide whether
+  pair signaling remains an internal/direct-connect primitive only, or whether
+  it needs a matching peer-config path for product flows such as calls outside
+  a lobby.
+- **DERP fallback acceptance**: Phase 1 must prove both startup fallback
+  (direct ICE is unavailable from the beginning) and runtime fallback (direct
+  path fails after being established). The daemon should automatically route
+  through DERP without manual endpoint injection and report the transition.
+  Unit coverage now asserts startup DERP endpoint selection and runtime
+  fallback from ICE to DERP. Real startup constrained-network DERP data-plane
+  smoke is validated; runtime fallback is validated both through the diagnostic
+  `force-derp` path and through a live OS route-blackhole impairment smoke.
+- **Connectivity topology reports**: daemon/control now distinguish
+  `ice_direct` from `wg_reachable` in `/api/peers/connectivity`. Control stores
+  recent reachable edges per `network_id`, and `peers/config` derives a one-hop
+  next-hop route only when the hop path is cheaper than the direct edge. Reports
+  are mirrored because the transport edge is bidirectional for route selection.
+  Runtime ICE fallback reports `ice_direct=false` while keeping
+  `wg_reachable=true` when DERP remains configured and uses a
+  `derp-fallback:<reason>` report reason. Startup DERP peer configs are also
+  reported automatically as reachable baseline edges, but those DERP baseline
+  edges carry high route cost and no longer create arbitrary relay chains by
+  themselves.
+- **ICE startup dedup/noise**: record and reduce the observed duplicate-start
+  and gather-timeout noise (`attempted to start agent twice`, repeated
+  `ice gather timeout`) so successful direct paths do not look degraded in
+  logs or UI diagnostics.
+
+Remaining exit criteria:
+
+- A fully symmetric runtime impairment smoke where both peers first reach direct
+  and then both fall back without ICE retry churn should be re-run after the
+  degraded-peer retry suppression fix is included in the live binary.
+- Daemon should automatically report constrained-network unreachable edges
+  needed for topology calculation, rather than relying on manual smoke shaping
+  for blocked direct pairs.
 - Daemon status exposes per-peer path state: direct, DERP, next-hop, degraded, and last error.
 - Phase 1 documentation no longer depends on mock endpoint injection for its primary acceptance path.
 
@@ -122,6 +262,31 @@ Required:
 - Published security contact and release process.
 
 ## 5. Core User Journeys
+
+### Discord Mapping And Data Flow
+
+- **Lobby** maps to a Discord server/guild. It owns membership, roles, invites,
+  room list, file policy, and default relay/storage preferences.
+- **Room** maps to a Discord channel. `rooms.id` is the service-layer channel id
+  used by room CRUD, messages, files, and permissions.
+- **`vpn_namespace`** is the network-layer id for a voice/video/file-capable
+  room. Entering a namespace means "build an overlay with the members currently
+  authorized for this room"; it does not decide whether the resulting packets
+  are direct P2P, DERP-relayed, user-relay-backed, or next-hop routed.
+- **Voice/video/screen-share packets** are sent over the daemon VPN data plane.
+  Control and SignalDO only authorize membership and exchange ICE metadata;
+  they do not carry media.
+- **Text messages** are service-layer records. Text and voice rooms accept text
+  messages; video and file rooms do not store text history in MVP.
+- **Attachments/files** are service-layer metadata plus a storage backend chosen
+  by policy. The priority chain is user-owned server → shared user server →
+  lobby server → R2 fallback. R2 data flows through the Worker today; non-R2
+  storage returns metadata/intent until the federated upload/download protocol
+  is implemented.
+- **1:1 private calls** use a `pair:<pkA>.<pkB>` network id today. That maps to
+  two exact daemon device public keys rather than a lobby room. Product-level
+  private-call permissions and call records still need to be attached above
+  this primitive.
 
 ### Create And Join A Lobby
 

@@ -259,7 +259,7 @@ func TestDiffV4Routes_DropsInvalidAndV6(t *testing.T) {
 	want := []netip.Addr{
 		netip.MustParseAddr("198.18.0.1"),
 		netip.MustParseAddr("fdab::1"), // v6, must be ignored
-		{},                              // zero addr, must be ignored
+		{},                             // zero addr, must be ignored
 	}
 	add, del := DiffV4Routes(map[netip.Addr]struct{}{}, want)
 	if len(add) != 1 || add[0].String() != "198.18.0.1" {

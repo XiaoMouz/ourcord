@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { getPeerConfig, lookupPeers, registerPeer } from "./peers";
+import { getPeerConfig, lookupPeers, registerPeer, reportPeerConnectivity } from "./peers";
 import type { Env } from "./types";
 
 const SECRET = "test-secret-1234567890abcdef";
@@ -132,6 +132,9 @@ async function getConfig(token: string, publicKey: string): Promise<Request> {
 }
 
 const VALID_WG_KEY = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+const OTHER_WG_KEY = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=";
+const THIRD_WG_KEY = "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=";
+const PAIR_ROOM = "pair:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA.AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE";
 
 describe("registerPeer / getPeerConfig endpoint hints", () => {
   it("updates an existing peer's wg_endpoint during register", async () => {
@@ -237,6 +240,419 @@ describe("registerPeer / getPeerConfig endpoint hints", () => {
     expect(resp.status).toBe(200);
     expect(cap.sqls[2]).toMatch(/public_key <> \?/);
     expect(cap.binds[2]).toEqual(["u1", VALID_WG_KEY]);
+  });
+
+  it("returns caller-visible personal relays alongside peer config for mixed user-relay + P2P", async () => {
+    const token = await makeToken();
+    const cap = makeCapturingDB([
+      { first: null }, // ban check
+      {}, // last_seen update
+      {
+        all: {
+          results: [
+            {
+              id: "peer-b",
+              user_id: "u1",
+              public_key: OTHER_WG_KEY,
+              name: "friend",
+              platform: "linux",
+              last_seen: 42,
+              ip4: "198.18.0.12",
+              ip6: "fdab:cdef:123::b",
+              derp_node_key: "nodekey:b",
+              endpoint: "",
+            },
+          ],
+        },
+      },
+      {
+        all: {
+          results: [
+            {
+              id: "personal-r1",
+              region: "home",
+              hostname: "relay.home.example",
+              port: 443,
+              mode: "personal",
+              capacity_kbps: 5000,
+              active_conns: 0,
+              bytes_per_sec: 0,
+            },
+          ],
+        },
+      },
+    ]);
+
+    const resp = await getPeerConfig(await getConfig(token, VALID_WG_KEY), makeEnv(cap.db));
+
+    expect(resp.status).toBe(200);
+    expect(cap.sqls[3]).toMatch(/mode <> 'personal' OR r\.owner_id = \?/);
+    expect(cap.binds[3][1]).toBe("u1");
+    const body = await resp.json<{
+      peers: Array<{ public_key: string }>;
+      relays: Array<{ id: string; mode: string; hostname: string }>;
+    }>();
+    expect(body.peers[0].public_key).toBe(OTHER_WG_KEY);
+    expect(body.relays[0]).toMatchObject({
+      id: "personal-r1",
+      mode: "personal",
+      hostname: "relay.home.example",
+    });
+  });
+
+  it("pair room config is scoped by exact peer public keys", async () => {
+    const token = await makeToken();
+    const cap = makeCapturingDB([
+      { first: null }, // ban check
+      {}, // last_seen update
+      {
+        all: {
+          results: [
+            {
+              id: "peer-b",
+              user_id: "u2",
+              public_key: OTHER_WG_KEY,
+              name: "friend-phone",
+              platform: "linux",
+              last_seen: 42,
+              ip4: "198.18.0.12",
+              ip6: "fdab:cdef:123::c",
+              derp_node_key: "nodekey:friend",
+              endpoint: "",
+            },
+          ],
+        },
+      },
+      { all: { results: [] } }, // relay map
+    ]);
+    const req = new Request(`https://control.example/api/peers/config?room_id=${encodeURIComponent(PAIR_ROOM)}`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "X-Peer-Public-Key": VALID_WG_KEY,
+      },
+    });
+    const resp = await getPeerConfig(req, makeEnv(cap.db));
+
+    expect(resp.status).toBe(200);
+    expect(cap.sqls[2]).toMatch(/public_key IN/);
+    expect(cap.binds[2]).toEqual([VALID_WG_KEY, OTHER_WG_KEY, VALID_WG_KEY]);
+    const body = await resp.json<{ peers: Array<{ public_key: string; user_id: string }> }>();
+    expect(body.peers).toHaveLength(1);
+    expect(body.peers[0]).toMatchObject({ public_key: OTHER_WG_KEY, user_id: "u2" });
+  });
+
+  it("rejects pair room config when requester public key is not in the pair", async () => {
+    const token = await makeToken();
+    const resp = await getPeerConfig(
+      new Request(`https://control.example/api/peers/config?room_id=${encodeURIComponent(PAIR_ROOM)}`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "X-Peer-Public-Key": "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=",
+        },
+      }),
+      makeEnv(makeDB([{ first: null }, {}])),
+    );
+
+    expect(resp.status).toBe(403);
+  });
+
+  it("annotates one-hop next_hop_public_key from DERP-backed bottom edges when the direct edge is missing", async () => {
+    const token = await makeToken();
+    const cap = makeCapturingDB([
+      { first: null }, // ban check
+      {}, // last_seen update
+      {
+        all: {
+          results: [
+            {
+              id: "peer-b",
+              user_id: "u2",
+              public_key: OTHER_WG_KEY,
+              name: "relay-hop",
+              platform: "linux",
+              last_seen: 30,
+              ip4: "198.18.0.12",
+              ip6: "fdab:cdef:123::b",
+              derp_node_key: "nodekey:b",
+              endpoint: "",
+            },
+            {
+              id: "peer-c",
+              user_id: "u3",
+              public_key: THIRD_WG_KEY,
+              name: "behind-hop",
+              platform: "linux",
+              last_seen: 20,
+              ip4: "198.18.0.13",
+              ip6: "fdab:cdef:123::c",
+              derp_node_key: "nodekey:c",
+              endpoint: "",
+            },
+          ],
+        },
+      },
+      {
+        all: {
+          results: [
+            { src_public_key: VALID_WG_KEY, dst_public_key: OTHER_WG_KEY, ice_direct: 0, wg_reachable: 1, reason: "derp-baseline" },
+            { src_public_key: OTHER_WG_KEY, dst_public_key: VALID_WG_KEY, ice_direct: 0, wg_reachable: 1, reason: "derp-baseline" },
+            { src_public_key: OTHER_WG_KEY, dst_public_key: THIRD_WG_KEY, ice_direct: 0, wg_reachable: 1, reason: "derp-baseline" },
+            { src_public_key: THIRD_WG_KEY, dst_public_key: OTHER_WG_KEY, ice_direct: 0, wg_reachable: 1, reason: "derp-baseline" },
+          ],
+        },
+      },
+      { all: { results: [] } }, // relay map
+    ]);
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ user_ids: ["u1", "u2", "u3"] })));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const env = {
+      ...makeEnv(cap.db),
+      SERVICE_URL: "https://service.example",
+      SERVICE_INTERNAL_TOKEN: "s2s",
+    };
+    const req = new Request("https://control.example/api/peers/config?room_id=lobby-L-room-R-voice", {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "X-Peer-Public-Key": VALID_WG_KEY,
+      },
+    });
+    const resp = await getPeerConfig(req, env);
+
+    expect(resp.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(cap.sqls[3]).toMatch(/peer_connectivity/);
+    expect(cap.sqls[3]).toMatch(/wg_reachable = 1/);
+    const body = await resp.json<{ peers: Array<{ public_key: string; next_hop_public_key?: string }> }>();
+    const hop = body.peers.find((p) => p.public_key === OTHER_WG_KEY);
+    const behind = body.peers.find((p) => p.public_key === THIRD_WG_KEY);
+    expect(hop?.next_hop_public_key).toBeUndefined();
+    expect(behind?.next_hop_public_key).toBe(OTHER_WG_KEY);
+
+    vi.unstubAllGlobals();
+  });
+
+  it("does not create arbitrary one-hop routes when every edge is DERP baseline", async () => {
+    const token = await makeToken();
+    const cap = makeCapturingDB([
+      { first: null }, // ban check
+      {}, // last_seen update
+      {
+        all: {
+          results: [
+            {
+              id: "peer-b",
+              user_id: "u2",
+              public_key: OTHER_WG_KEY,
+              name: "derp-b",
+              platform: "linux",
+              last_seen: 30,
+              ip4: "198.18.0.12",
+              ip6: "fdab:cdef:123::b",
+              derp_node_key: "nodekey:b",
+              endpoint: "",
+            },
+            {
+              id: "peer-c",
+              user_id: "u3",
+              public_key: THIRD_WG_KEY,
+              name: "derp-c",
+              platform: "linux",
+              last_seen: 20,
+              ip4: "198.18.0.13",
+              ip6: "fdab:cdef:123::c",
+              derp_node_key: "nodekey:c",
+              endpoint: "",
+            },
+          ],
+        },
+      },
+      {
+        all: {
+          results: [
+            { src_public_key: VALID_WG_KEY, dst_public_key: OTHER_WG_KEY, ice_direct: 0, wg_reachable: 1, reason: "derp-baseline" },
+            { src_public_key: OTHER_WG_KEY, dst_public_key: VALID_WG_KEY, ice_direct: 0, wg_reachable: 1, reason: "derp-baseline" },
+            { src_public_key: VALID_WG_KEY, dst_public_key: THIRD_WG_KEY, ice_direct: 0, wg_reachable: 1, reason: "derp-baseline" },
+            { src_public_key: THIRD_WG_KEY, dst_public_key: VALID_WG_KEY, ice_direct: 0, wg_reachable: 1, reason: "derp-baseline" },
+            { src_public_key: OTHER_WG_KEY, dst_public_key: THIRD_WG_KEY, ice_direct: 0, wg_reachable: 1, reason: "derp-baseline" },
+            { src_public_key: THIRD_WG_KEY, dst_public_key: OTHER_WG_KEY, ice_direct: 0, wg_reachable: 1, reason: "derp-baseline" },
+          ],
+        },
+      },
+      { all: { results: [] } }, // relay map
+    ]);
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ user_ids: ["u1", "u2", "u3"] }))));
+
+    const resp = await getPeerConfig(
+      new Request("https://control.example/api/peers/config?room_id=lobby-L-room-R-voice", {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "X-Peer-Public-Key": VALID_WG_KEY,
+        },
+      }),
+      {
+        ...makeEnv(cap.db),
+        SERVICE_URL: "https://service.example",
+        SERVICE_INTERNAL_TOKEN: "s2s",
+      },
+    );
+
+    expect(resp.status).toBe(200);
+    const body = await resp.json<{ peers: Array<{ next_hop_public_key?: string }> }>();
+    expect(body.peers.every((p) => p.next_hop_public_key === undefined)).toBe(true);
+
+    vi.unstubAllGlobals();
+  });
+
+  it("prefers a lower-cost ICE relay path over direct DERP fallback", async () => {
+    const token = await makeToken();
+    const cap = makeCapturingDB([
+      { first: null }, // ban check
+      {}, // last_seen update
+      {
+        all: {
+          results: [
+            {
+              id: "peer-b",
+              user_id: "u2",
+              public_key: OTHER_WG_KEY,
+              name: "relay-hop",
+              platform: "linux",
+              last_seen: 30,
+              ip4: "198.18.0.12",
+              ip6: "fdab:cdef:123::b",
+              derp_node_key: "nodekey:b",
+              endpoint: "",
+            },
+            {
+              id: "peer-c",
+              user_id: "u3",
+              public_key: THIRD_WG_KEY,
+              name: "behind-hop",
+              platform: "linux",
+              last_seen: 20,
+              ip4: "198.18.0.13",
+              ip6: "fdab:cdef:123::c",
+              derp_node_key: "nodekey:c",
+              endpoint: "",
+            },
+          ],
+        },
+      },
+      {
+        all: {
+          results: [
+            { src_public_key: VALID_WG_KEY, dst_public_key: THIRD_WG_KEY, ice_direct: 0, wg_reachable: 1, reason: "derp-baseline" },
+            { src_public_key: THIRD_WG_KEY, dst_public_key: VALID_WG_KEY, ice_direct: 0, wg_reachable: 1, reason: "derp-baseline" },
+            { src_public_key: VALID_WG_KEY, dst_public_key: OTHER_WG_KEY, ice_direct: 1, wg_reachable: 1, reason: "ice-validated" },
+            { src_public_key: OTHER_WG_KEY, dst_public_key: VALID_WG_KEY, ice_direct: 1, wg_reachable: 1, reason: "ice-validated" },
+            { src_public_key: OTHER_WG_KEY, dst_public_key: THIRD_WG_KEY, ice_direct: 1, wg_reachable: 1, reason: "ice-validated" },
+            { src_public_key: THIRD_WG_KEY, dst_public_key: OTHER_WG_KEY, ice_direct: 1, wg_reachable: 1, reason: "ice-validated" },
+          ],
+        },
+      },
+      { all: { results: [] } }, // relay map
+    ]);
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ user_ids: ["u1", "u2", "u3"] }))));
+
+    const resp = await getPeerConfig(
+      new Request("https://control.example/api/peers/config?room_id=lobby-L-room-R-voice", {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "X-Peer-Public-Key": VALID_WG_KEY,
+        },
+      }),
+      {
+        ...makeEnv(cap.db),
+        SERVICE_URL: "https://service.example",
+        SERVICE_INTERNAL_TOKEN: "s2s",
+      },
+    );
+
+    expect(resp.status).toBe(200);
+    const body = await resp.json<{ peers: Array<{ public_key: string; next_hop_public_key?: string }> }>();
+    const behind = body.peers.find((p) => p.public_key === THIRD_WG_KEY);
+    expect(behind?.next_hop_public_key).toBe(OTHER_WG_KEY);
+
+    vi.unstubAllGlobals();
+  });
+});
+
+describe("reportPeerConnectivity", () => {
+  it("mirrors direct connectivity observations", async () => {
+    const token = await makeToken();
+    const cap = makeCapturingDB([
+      { first: null }, // ban check
+      { first: { 1: 1 } }, // owned peer
+      {}, // forward upsert
+      {}, // reverse upsert
+    ]);
+    const body = JSON.stringify({
+      network_id: "lobby-L-room-R-voice",
+      peer_public_key: OTHER_WG_KEY,
+      ice_direct: true,
+      wg_reachable: true,
+      rtt_ms: 12.7,
+    });
+    const resp = await reportPeerConnectivity(
+      new Request("https://control.example/api/peers/connectivity", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "X-Peer-Public-Key": VALID_WG_KEY,
+          "Content-Type": "application/json",
+          "Content-Length": String(body.length),
+        },
+        body,
+      }),
+      makeEnv(cap.db),
+    );
+
+    expect(resp.status).toBe(200);
+    expect(cap.sqls[2]).toMatch(/INSERT INTO peer_connectivity/);
+    expect(cap.sqls[3]).toMatch(/INSERT INTO peer_connectivity/);
+    expect(cap.binds[2].slice(0, 6)).toEqual(["lobby-L-room-R-voice", VALID_WG_KEY, OTHER_WG_KEY, 1, 1, 1]);
+    expect(cap.binds[3].slice(0, 6)).toEqual(["lobby-L-room-R-voice", OTHER_WG_KEY, VALID_WG_KEY, 1, 1, 1]);
+    expect(cap.binds[2][6]).toBe("ice");
+    expect(cap.binds[3][6]).toBe("ice");
+  });
+
+  it("keeps WG-reachable edges when ICE direct degrades to DERP", async () => {
+    const token = await makeToken();
+    const cap = makeCapturingDB([
+      { first: null }, // ban check
+      { first: { 1: 1 } }, // owned peer
+      {}, // forward delete
+      {}, // reverse delete
+    ]);
+    const body = JSON.stringify({
+      network_id: "lobby-L-room-R-voice",
+      peer_public_key: OTHER_WG_KEY,
+      ice_direct: false,
+      wg_reachable: true,
+      reason: "derp-fallback:direct-health-degraded",
+    });
+    const resp = await reportPeerConnectivity(
+      new Request("https://control.example/api/peers/connectivity", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "X-Peer-Public-Key": VALID_WG_KEY,
+          "Content-Type": "application/json",
+          "Content-Length": String(body.length),
+        },
+        body,
+      }),
+      makeEnv(cap.db),
+    );
+
+    expect(resp.status).toBe(200);
+    expect(cap.sqls[2]).toMatch(/INSERT INTO peer_connectivity/);
+    expect(cap.sqls[3]).toMatch(/INSERT INTO peer_connectivity/);
+    expect(cap.binds[2].slice(0, 6)).toEqual(["lobby-L-room-R-voice", VALID_WG_KEY, OTHER_WG_KEY, 0, 0, 1]);
+    expect(cap.binds[3].slice(0, 6)).toEqual(["lobby-L-room-R-voice", OTHER_WG_KEY, VALID_WG_KEY, 0, 0, 1]);
+    expect(cap.binds[2][6]).toBe("derp");
+    expect(cap.binds[3][6]).toBe("derp");
   });
 });
 

@@ -79,14 +79,16 @@ func (t *Table) Replace(routes []*PeerRoute) {
 			continue
 		}
 		if old := t.routes[r.PublicKey.String()]; old != nil {
-			r.ICEReady = old.ICEReady
-			r.ICEPending = old.ICEPending
-			if r.LastError == "" {
-				r.LastError = old.LastError
-			}
-			if r.DirectAddr == nil && old.DirectAddr != nil {
-				ap := *old.DirectAddr
-				r.DirectAddr = &ap
+			if r.NextHop == nil {
+				r.ICEReady = old.ICEReady
+				r.ICEPending = old.ICEPending
+				if r.LastError == "" {
+					r.LastError = old.LastError
+				}
+				if r.DirectAddr == nil && old.DirectAddr != nil {
+					ap := *old.DirectAddr
+					r.DirectAddr = &ap
+				}
 			}
 		}
 		next[r.PublicKey.String()] = r
@@ -199,13 +201,17 @@ func (t *Table) BuildIPCConfig(privateKey wgtypes.Key) string {
 	for _, r := range t.routes {
 		sb.WriteString(fmt.Sprintf("public_key=%x\n", r.PublicKey[:]))
 
-		// AllowedIPs: the peer's own VPN addresses plus any chain-routed CIDRs.
+		// AllowedIPs: direct peers own their VPN addresses plus any chain-routed
+		// CIDRs. Indirect peers deliberately own no AllowedIPs here; their VPN
+		// addresses are attached to the next-hop peer by AddRelayChainRoutes.
 		allowedIPs := []string{}
-		if r.VPN4.IsValid() {
-			allowedIPs = append(allowedIPs, r.VPN4.String()+"/32")
-		}
-		if r.VPN6.IsValid() {
-			allowedIPs = append(allowedIPs, r.VPN6.String()+"/128")
+		if r.NextHop == nil {
+			if r.VPN4.IsValid() {
+				allowedIPs = append(allowedIPs, r.VPN4.String()+"/32")
+			}
+			if r.VPN6.IsValid() {
+				allowedIPs = append(allowedIPs, r.VPN6.String()+"/128")
+			}
 		}
 		if extras, ok := chainExtra[r.PublicKey.String()]; ok {
 			allowedIPs = append(allowedIPs, extras...)

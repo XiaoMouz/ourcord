@@ -53,6 +53,10 @@ func NewWithBind(name string, addrs []netip.Prefix, bind conn.Bind) (*Interface,
 			return nil, fmt.Errorf("assign addrs to %s: %w", actualName, err)
 		}
 	}
+	if err := enableForwarding(actualName); err != nil {
+		_ = tunDev.Close()
+		return nil, fmt.Errorf("enable forwarding for %s: %w", actualName, err)
+	}
 
 	logger := device.NewLogger(device.LogLevelError, fmt.Sprintf("[wg/%s] ", actualName))
 	wgDev := device.NewDevice(tunDev, bind, logger)

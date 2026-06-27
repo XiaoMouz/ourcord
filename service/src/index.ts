@@ -109,9 +109,14 @@ export default {
       }
 
       // ── Internal (control → service) ───────────────────────────────────────
-      // Returns the user_ids of every member of the lobby that owns the room.
-      // Used by control-layer getPeerConfig?room_id=... for per-room mesh
-      // scoping. Authenticated via X-Internal-Token shared secret.
+      // Returns the user_ids of every member of the lobby that owns the room
+      // or network namespace. Used by control-layer getPeerConfig?room_id=...
+      // for per-network mesh scoping. Authenticated via X-Internal-Token.
+      //
+      // `parts[3]` is intentionally accepted as either rooms.id or
+      // rooms.vpn_namespace. Product APIs keep using rooms.id for messages,
+      // files, and CRUD; daemon/control may use vpn_namespace as the network
+      // routing domain for voice/video/file overlays.
       if (method === "GET" && parts[1] === "internal" && parts[2] === "rooms" && parts[4] === "member-ids") {
         const token = request.headers.get("X-Internal-Token");
         // J5: constant-time compare so timing oracles can't leak the token
@@ -120,23 +125,28 @@ export default {
         if (!env.SERVICE_INTERNAL_TOKEN || !token || !constantTimeEqual(token, env.SERVICE_INTERNAL_TOKEN)) {
           return json({ error: "Forbidden" }, 403);
         }
-        const roomId = parts[3];
+        const roomOrNamespace = decodeURIComponent(parts[3]);
         const room = await env.DB
-          .prepare("SELECT lobby_id FROM rooms WHERE id = ?")
-          .bind(roomId)
-          .first<{ lobby_id: string }>();
+          .prepare("SELECT id, lobby_id, vpn_namespace FROM rooms WHERE id = ? OR vpn_namespace = ?")
+          .bind(roomOrNamespace, roomOrNamespace)
+          .first<{ id: string; lobby_id: string; vpn_namespace: string | null }>();
         if (!room) return json({ error: "Room not found" }, 404);
         const members = await env.DB
           .prepare("SELECT user_id FROM lobby_members WHERE lobby_id = ?")
           .bind(room.lobby_id)
           .all<{ user_id: string }>();
-        return json({ user_ids: members.results.map((m) => m.user_id), room_id: roomId, lobby_id: room.lobby_id });
+        return json({
+          user_ids: members.results.map((m) => m.user_id),
+          room_id: room.id,
+          vpn_namespace: room.vpn_namespace,
+          lobby_id: room.lobby_id,
+        });
       }
 
       // ── Admin ──────────────────────────────────────────────────────────────
       if (method === "POST" && path === "/api/admin/init-db") {
         if (env.ENVIRONMENT !== "development") return json({ error: "Dev only" }, 403);
-        await env.DB.exec(SCHEMA_SQL);
+        await applySchema(env.DB, SCHEMA_SQL);
         return json({ message: "Schema initialized" });
       }
 
@@ -179,3 +189,18 @@ export default {
     log({ event: "cron.r2_cleanup", deleted: result.deleted, failed: result.failed });
   },
 } satisfies ExportedHandler<Env>;
+
+function applySchema(db: D1Database, sql: string): Promise<unknown[]> {
+  const statements = stripSQLLineComments(sql)
+    .split(";")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return db.batch(statements.map((s) => db.prepare(s)));
+}
+
+function stripSQLLineComments(sql: string): string {
+  return sql
+    .split("\n")
+    .filter((line) => !line.trimStart().startsWith("--"))
+    .join("\n");
+}

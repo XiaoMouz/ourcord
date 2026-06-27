@@ -23,7 +23,7 @@ DERP 中继节点 (Go)            ←→  UI (Tauri / Flutter / React)
 |---|---|
 | P2P 直连 | ICE/STUN，IPv6 优先，IPv4 NAT 穿透 |
 | 中继兜底 | DERP over TCP/443 TLS |
-| 中继链 A-B-C | WireGuard AllowedIPs 路由 |
+| 中继链 A-B-C | Control 按链路成本下发 `next_hop_public_key`，daemon 用 WireGuard AllowedIPs 路由 |
 | 语音保障 | DERP 节点 128 Kbps 限速下限 |
 | 加密 | WireGuard (Curve25519 + ChaCha20-Poly1305) |
 
@@ -143,7 +143,7 @@ go build -o ourcord-cli ./cmd/ourcord-cli
 
 ## 开发路线图
 
-- [ ] **阶段一** — VPN 核心 + 控制层 + DERP 节点 + daemon 连接管线（进行中；关闭标准是 per-peer ICE 自动直连 + daemon DERP fallback，无需手工 endpoint 注入）
+- [ ] **阶段一** — VPN 核心 + 控制层 + DERP 节点 + daemon 连接管线（per-peer ICE 自动直连、startup DERP fallback、runtime DERP 诊断切换、runtime 外部阻断 fallback、1:1 pair network、service `vpn_namespace`、三 VM A-B-C mixed DERP next-hop 数据面已用真实 control/service/relay + OrbStack 验证；关闭前仍需复跑包含 degraded retry 抑制的新 binary 对称 smoke，并补强 constrained topology 自动发现）
 - [ ] **阶段二** — 网络完整性优先（A-B-C 拓扑闭环、Windows Wintun、设备级凭证、control↔service HMAC、自治文件后端；服务层大厅/房间/消息/R2 文件已有基础能力）
 - [ ] **阶段三** — 媒体层（语音/视频/屏幕共享/远控）
 - [ ] **阶段四** — 分发与产品化（Tauri/Flutter/React UI、安装器、更新、运营监控）

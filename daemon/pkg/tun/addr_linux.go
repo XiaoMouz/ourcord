@@ -5,7 +5,9 @@ package tun
 import (
 	"fmt"
 	"net/netip"
+	"os"
 	"os/exec"
+	"strings"
 )
 
 // assignAddrs uses iproute2 to bring the interface up and add v4/v6 addresses.
@@ -135,4 +137,49 @@ func routeExistsErr(out []byte) bool {
 func routeMissingErr(out []byte) bool {
 	s := string(out)
 	return indexOf(s, "No such process") >= 0 || indexOf(s, "Cannot find") >= 0
+}
+
+func enableForwarding(ifname string) error {
+	// A-B-C relay chains rely on the relay node's kernel forwarding packets
+	// that arrive decrypted from one WireGuard peer back into the same TUN for
+	// another peer. Disable redirects as well: same-interface forwarding makes
+	// Linux try to teach the sender a "better" next hop, which breaks the
+	// overlay because only the relay node owns the full path decision.
+	for _, item := range []struct {
+		path string
+		want string
+	}{
+		{"/proc/sys/net/ipv4/ip_forward", "1"},
+		{"/proc/sys/net/ipv4/conf/all/send_redirects", "0"},
+		{"/proc/sys/net/ipv4/conf/" + ifname + "/send_redirects", "0"},
+		{"/proc/sys/net/ipv4/conf/all/accept_redirects", "0"},
+		{"/proc/sys/net/ipv4/conf/" + ifname + "/accept_redirects", "0"},
+		{"/proc/sys/net/ipv6/conf/all/forwarding", "1"},
+		{"/proc/sys/net/ipv6/conf/" + ifname + "/forwarding", "1"},
+		{"/proc/sys/net/ipv6/conf/all/accept_redirects", "0"},
+		{"/proc/sys/net/ipv6/conf/" + ifname + "/accept_redirects", "0"},
+	} {
+		if err := writeSysctlValue(item.path, item.want); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func writeSysctlOne(path string) error {
+	return writeSysctlValue(path, "1")
+}
+
+func writeSysctlValue(path string, want string) error {
+	cur, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", path, err)
+	}
+	if strings.TrimSpace(string(cur)) == want {
+		return nil
+	}
+	if err := os.WriteFile(path, []byte(want+"\n"), 0o644); err != nil {
+		return fmt.Errorf("write %s: %w", path, err)
+	}
+	return nil
 }

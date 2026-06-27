@@ -165,6 +165,10 @@ func TestBuildIPCConfig_IndirectPeerNoEndpoint(t *testing.T) {
 	priv, _ := wgtypes.GeneratePrivateKey()
 	hop := mustKey(t, 0xCC)
 	tbl.Upsert(&PeerRoute{
+		PublicKey: hop,
+		VPN4:      mustAddr(t, "198.18.0.20"),
+	})
+	tbl.Upsert(&PeerRoute{
 		PublicKey:  mustKey(t, 0xDD),
 		VPN4:       mustAddr(t, "198.18.0.30"),
 		NextHop:    &hop,
@@ -173,6 +177,9 @@ func TestBuildIPCConfig_IndirectPeerNoEndpoint(t *testing.T) {
 	got := tbl.BuildIPCConfig(priv)
 	if strings.Contains(got, "endpoint=") {
 		t.Errorf("indirect peer must not emit endpoint:\n%s", got)
+	}
+	if count := strings.Count(got, "allowed_ip=198.18.0.30/32\n"); count != 1 {
+		t.Fatalf("indirect address must be owned only by hop peer, count=%d:\n%s", count, got)
 	}
 }
 
@@ -215,6 +222,37 @@ func TestAddRelayChainRoutes_DirectPeersIgnored(t *testing.T) {
 	chain := tbl.AddRelayChainRoutes()
 	if len(chain) != 0 {
 		t.Errorf("expected empty chain map, got %v", chain)
+	}
+}
+
+func TestReplace_NextHopClearsPreservedICEState(t *testing.T) {
+	tbl := NewTable()
+	peer := mustKey(t, 0xAA)
+	hop := mustKey(t, 0xBB)
+	tbl.Upsert(&PeerRoute{
+		PublicKey:   peer,
+		VPN4:        mustAddr(t, "198.18.0.10"),
+		ICEReady:    true,
+		DERPURL:     "http://127.0.0.1:3340",
+		DERPNodeKey: "nodekey:old",
+	})
+
+	tbl.Replace([]*PeerRoute{{
+		PublicKey: peer,
+		VPN4:      mustAddr(t, "198.18.0.10"),
+		NextHop:   &hop,
+	}})
+
+	routes := tbl.All()
+	if len(routes) != 1 {
+		t.Fatalf("expected one route, got %d", len(routes))
+	}
+	if routes[0].ICEReady || routes[0].ICEPending || routes[0].LastError != "" {
+		t.Fatalf("next-hop route preserved stale ICE state: %+v", routes[0])
+	}
+	got := tbl.BuildIPCConfig(mustKey(t, 0xCC))
+	if strings.Contains(got, "endpoint=ice://") || strings.Contains(got, "endpoint=derp://") {
+		t.Fatalf("next-hop route must not emit stale endpoint:\n%s", got)
 	}
 }
 

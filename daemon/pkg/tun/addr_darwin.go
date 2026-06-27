@@ -111,3 +111,8 @@ func routeMissingErr(out []byte) bool {
 	s := string(out)
 	return strings.Contains(s, "not in table") || strings.Contains(s, "no such process")
 }
+
+func enableForwarding(ifname string) error {
+	_ = ifname
+	return nil
+}

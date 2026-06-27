@@ -1,5 +1,5 @@
 import { Env } from "./types";
-import { registerPeer, getPeerConfig, lookupPeers } from "./peers";
+import { registerPeer, getPeerConfig, lookupPeers, reportPeerConnectivity } from "./peers";
 import { getStunServers, addStunServer } from "./stun";
 import { registerRelay, getRelayMap, getBannedKeys, denyPeerOnRelay, allowPeerOnRelay } from "./relay";
 import { createBan, removeBan, checkBan } from "./ban";
@@ -61,6 +61,11 @@ export default {
         if (rl) return rl;
         return lookupPeers(request, env);
       }
+      if (method === "POST" && path === "/api/peers/connectivity") {
+        const rl = await checkRateLimit(request, env, "peers-connectivity", 120, 60);
+        if (rl) return rl;
+        return reportPeerConnectivity(request, env);
+      }
       if (method === "GET" && path === "/api/peers/config") return getPeerConfig(request, env);
 
       // ── Hole-punching signal (WebSocket via Durable Object) ─────────────────
@@ -69,13 +74,9 @@ export default {
         if (rl) return rl;
         const rawRoomId = path.split("/")[3];
         if (!rawRoomId) return json({ error: "room_id required" }, 400);
-        // I4: normalize service-room ids so case variants ("Room1" vs "room1")
-        // can't fan out into separate Durable Objects. Pair ids are kept
-        // verbatim (they're already lowercase hex from the client and order
-        // is checked below). For service rooms, lowercase + tight charset.
         const isPair = rawRoomId.startsWith("pair:");
-        const roomId = isPair ? rawRoomId : rawRoomId.toLowerCase();
-        if (!isPair && !/^[a-z0-9-]{1,64}$/.test(roomId)) {
+        const roomId = rawRoomId;
+        if (!isPair && !/^[A-Za-z0-9-]{1,128}$/.test(roomId)) {
           return json({ error: "invalid room_id" }, 400);
         }
 

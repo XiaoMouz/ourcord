@@ -42,6 +42,7 @@ export interface Peer {
   ip6: string; // assigned VPN IPv6
   derp_node_key: string; // optional Tailscale DERP NodePublic.String() (G12)
   wg_endpoint: string; // optional host:port endpoint hint reported by daemon
+  next_hop_public_key?: string; // optional WG public key for one-hop relay routing
 }
 
 export interface RelayServer {

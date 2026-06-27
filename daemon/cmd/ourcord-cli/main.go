@@ -18,7 +18,7 @@ func main() {
 	args := flag.Args()
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, "Usage: ourcord-cli [--socket path] <command> [args...]")
-		fmt.Fprintln(os.Stderr, "Commands: status, connect, disconnect, ping, peers, enter-room <room_id>, leave-room")
+		fmt.Fprintln(os.Stderr, "Commands: status, connect, disconnect, ping, peers, enter-room <room_id>, leave-room, enter-network <network_id>, leave-network, force-derp <peer_public_key> [reason]")
 		os.Exit(1)
 	}
 
@@ -51,6 +51,20 @@ func main() {
 		cmdName = ipc.CmdEnterRoom
 	case "leave-room":
 		cmdName = ipc.CmdLeaveRoom
+	case "enter-network":
+		if len(args) < 2 {
+			fmt.Fprintln(os.Stderr, "Usage: ourcord-cli enter-network <network_id>")
+			os.Exit(1)
+		}
+		cmdName = ipc.CmdEnterNetwork
+	case "leave-network":
+		cmdName = ipc.CmdLeaveNetwork
+	case "force-derp":
+		if len(args) < 2 {
+			fmt.Fprintln(os.Stderr, "Usage: ourcord-cli force-derp <peer_public_key> [reason]")
+			os.Exit(1)
+		}
+		cmdName = ipc.CmdForceDERP
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown command: %s\n", cmd)
 		os.Exit(1)
@@ -59,6 +73,16 @@ func main() {
 	params := map[string]string(nil)
 	if cmdName == ipc.CmdEnterRoom {
 		params = map[string]string{"room_id": args[1]}
+	}
+	if cmdName == ipc.CmdEnterNetwork {
+		params = map[string]string{"network_id": args[1]}
+	}
+	if cmdName == ipc.CmdForceDERP {
+		reason := "diagnostic-force-derp"
+		if len(args) >= 3 {
+			reason = args[2]
+		}
+		params = map[string]string{"public_key": args[1], "reason": reason}
 	}
 	resp, err := client.Call(cmdName, params)
 	if err != nil {

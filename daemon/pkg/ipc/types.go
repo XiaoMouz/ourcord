@@ -8,6 +8,7 @@ type DaemonStatus struct {
 	VPNActive   bool           `json:"vpn_active"`
 	IP4         string         `json:"ip4"`
 	IP6         string         `json:"ip6"`
+	NetworkID   string         `json:"network_id,omitempty"`
 	RoomID      string         `json:"room_id,omitempty"`
 	PeerCount   int            `json:"peer_count"`
 	RelayUsed   bool           `json:"relay_used"` // true if currently relaying via DERP
@@ -57,13 +58,16 @@ type ConnectedPeer struct {
 
 // Command types sent from UI to daemon via IPC.
 const (
-	CmdConnect    = "connect"
-	CmdDisconnect = "disconnect"
-	CmdStatus     = "status"
-	CmdListPeers  = "list_peers"
-	CmdEnterRoom  = "enter_room"
-	CmdLeaveRoom  = "leave_room"
-	CmdPing       = "ping"
+	CmdConnect      = "connect"
+	CmdDisconnect   = "disconnect"
+	CmdStatus       = "status"
+	CmdListPeers    = "list_peers"
+	CmdEnterRoom    = "enter_room"
+	CmdLeaveRoom    = "leave_room"
+	CmdEnterNetwork = "enter_network"
+	CmdLeaveNetwork = "leave_network"
+	CmdForceDERP    = "force_derp"
+	CmdPing         = "ping"
 )
 
 // IPCRequest is the JSON format for IPC commands.

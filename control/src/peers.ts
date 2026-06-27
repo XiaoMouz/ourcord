@@ -180,13 +180,25 @@ export async function getPeerConfig(request: Request, env: Env): Promise<Respons
   let scopeWarning: string | null = null;
 
   if (roomId) {
-    // J1: roomId is interpolated into a service-worker URL below. Validate the
-    // shape (matches I4 normalization in index.ts) BEFORE encoding so we fail
-    // closed on path-traversal attempts (e.g. "foo/../internal/admin/evil").
-    if (!/^[a-z0-9-]{1,64}$/.test(roomId)) {
+    if (roomId.startsWith("pair:")) {
+      const pair = parsePairRoom(roomId);
+      if (!pair) return json({ error: "malformed pair room_id" }, 400);
+      if (!pubKey || !pair.includes(pubKey)) {
+        return json({ error: "requesting peer is not part of this pair" }, 403);
+      }
+      memberIds = [];
+    } else if (!isNetworkID(roomId)) {
+      // J1: roomId/network namespace is interpolated into a service-worker URL
+      // below. Validate before encodeURIComponent so path traversal fails
+      // closed. Keep the alphabet URL-path-safe and compatible with generated
+      // vpn_namespace values.
       return json({ error: "invalid room_id" }, 400);
     }
-    if (!env.SERVICE_URL || !env.SERVICE_INTERNAL_TOKEN) {
+    if (roomId.startsWith("pair:")) {
+      // Pair configs are device-pair scoped and do not rely on service-layer
+      // lobby membership. The SQL below switches from user_id membership to
+      // exact public_key membership.
+    } else if (!env.SERVICE_URL || !env.SERVICE_INTERNAL_TOKEN) {
       scopeWarning = "room scoping requested but SERVICE_URL/SERVICE_INTERNAL_TOKEN not configured";
     } else {
       try {
@@ -228,21 +240,31 @@ export async function getPeerConfig(request: Request, env: Env): Promise<Respons
   // H8: explicit column list — never `SELECT *`. derp_node_key is included
   // because daemon-side DERP fallback needs each peer's DERP identity to route
   // WireGuard packets through a relay. Ban feeds still use /api/relay/banned-keys.
-  const placeholders = memberIds.map(() => "?").join(",");
-  const params: string[] = [...memberIds];
+  const pairKeys = roomId?.startsWith("pair:") ? parsePairRoom(roomId) : null;
+  const placeholders = pairKeys
+    ? pairKeys.map(() => "?").join(",")
+    : memberIds.map(() => "?").join(",");
+  const params: string[] = pairKeys ? [...pairKeys] : [...memberIds];
   let selfFilter = "";
   if (pubKey) {
     selfFilter = " AND public_key <> ?";
     params.push(pubKey);
   }
+  const where = pairKeys
+    ? `public_key IN (${placeholders})${selfFilter}`
+    : `user_id IN (${placeholders})${selfFilter}`;
   const peers = await env.DB
     .prepare(
       `SELECT id, user_id, public_key, name, platform, last_seen, ip4, ip6, derp_node_key,
               wg_endpoint AS endpoint
-       FROM peers WHERE user_id IN (${placeholders})${selfFilter} ORDER BY last_seen DESC`
+       FROM peers WHERE ${where} ORDER BY last_seen DESC`
     )
     .bind(...params)
     .all<Peer>();
+  const peerRows = peers.results ?? [];
+  if (roomId && !pairKeys && pubKey && isNetworkID(roomId)) {
+    await annotateNextHops(env, roomId, pubKey, peerRows);
+  }
 
   // J2: relay map is per-caller now (personal relays scoped to owner).
   // Query live; relay_servers is small. Region filter is N/A here — return
@@ -252,7 +274,200 @@ export async function getPeerConfig(request: Request, env: Env): Promise<Respons
 
   const headers: HeadersInit = { "Content-Type": "application/json" };
   if (scopeWarning) headers["X-Scope-Warning"] = scopeWarning;
-  return new Response(JSON.stringify({ peers: peers.results, relays }), { headers });
+  return new Response(JSON.stringify({ peers: peerRows, relays }), { headers });
+}
+
+// POST /api/peers/connectivity — daemon reports per-peer link capabilities in
+// a network namespace. `ice_direct` is a direct UDP path; `wg_reachable` means
+// the WireGuard peer remains usable through some transport (ICE, DERP, or a
+// user relay). Next-hop routing uses a cost model: direct ICE is preferred,
+// DERP is the most expensive baseline, and one-hop relay is selected only when
+// it improves on the direct edge or the direct edge is unavailable.
+export async function reportPeerConnectivity(request: Request, env: Env): Promise<Response> {
+  const tooBig = checkBodySize(request, 4 * 1024);
+  if (tooBig) return tooBig;
+  const authResult = await requireAuth(request, env);
+  if (authResult instanceof Response) return authResult;
+  const { sub: userId } = authResult;
+
+  const selfKey = request.headers.get("X-Peer-Public-Key") ?? "";
+  if (!/^[A-Za-z0-9+/]{43}=$/.test(selfKey)) {
+    return json({ error: "X-Peer-Public-Key required" }, 400);
+  }
+  const owned = await env.DB
+    .prepare("SELECT 1 FROM peers WHERE public_key = ? AND user_id = ?")
+    .bind(selfKey, userId)
+    .first();
+  if (!owned) return json({ error: "peer not owned by user" }, 403);
+
+  let body: {
+    network_id?: unknown;
+    peer_public_key?: unknown;
+    direct?: unknown;
+    ice_direct?: unknown;
+    wg_reachable?: unknown;
+    transport?: unknown;
+    rtt_ms?: unknown;
+    reason?: unknown;
+  };
+  try {
+    body = await request.json();
+  } catch {
+    return json({ error: "invalid JSON body" }, 400);
+  }
+
+  const networkID = typeof body.network_id === "string" ? body.network_id.trim() : "";
+  const peerKey = typeof body.peer_public_key === "string" ? body.peer_public_key.trim() : "";
+  if (!isNetworkID(networkID)) return json({ error: "invalid network_id" }, 400);
+  if (!/^[A-Za-z0-9+/]{43}=$/.test(peerKey)) return json({ error: "invalid peer_public_key" }, 400);
+  if (peerKey === selfKey) return json({ error: "peer_public_key must differ from self" }, 400);
+  const legacyDirect = body.direct === true;
+  const iceDirect = body.ice_direct === true || legacyDirect;
+  const wgReachable = typeof body.wg_reachable === "boolean" ? body.wg_reachable : legacyDirect;
+  const requestedTransport = typeof body.transport === "string" ? body.transport.trim() : "";
+  const rttMs = typeof body.rtt_ms === "number" && Number.isFinite(body.rtt_ms)
+    ? Math.max(0, Math.min(600_000, Math.round(body.rtt_ms)))
+    : null;
+  const reason = typeof body.reason === "string" ? body.reason.slice(0, 128) : "";
+  const transport = normalizeConnectivityTransport(requestedTransport, iceDirect, wgReachable, reason);
+  const now = Math.floor(Date.now() / 1000);
+
+  try {
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO peer_connectivity
+           (network_id, src_public_key, dst_public_key, direct, ice_direct, wg_reachable, transport, rtt_ms, reason, reported_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?)
+         ON CONFLICT(network_id, src_public_key, dst_public_key)
+         DO UPDATE SET direct = excluded.direct, ice_direct = excluded.ice_direct,
+                       wg_reachable = excluded.wg_reachable, transport = excluded.transport, rtt_ms = excluded.rtt_ms,
+                       reason = excluded.reason, reported_at = excluded.reported_at`,
+      ).bind(networkID, selfKey, peerKey, iceDirect ? 1 : 0, iceDirect ? 1 : 0, wgReachable ? 1 : 0, transport, rttMs, reason, now),
+      env.DB.prepare(
+        `INSERT INTO peer_connectivity
+           (network_id, src_public_key, dst_public_key, direct, ice_direct, wg_reachable, transport, rtt_ms, reason, reported_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?)
+         ON CONFLICT(network_id, src_public_key, dst_public_key)
+         DO UPDATE SET direct = excluded.direct, ice_direct = excluded.ice_direct,
+                       wg_reachable = excluded.wg_reachable, transport = excluded.transport, rtt_ms = excluded.rtt_ms,
+                       reason = excluded.reason, reported_at = excluded.reported_at`,
+      ).bind(networkID, peerKey, selfKey, iceDirect ? 1 : 0, iceDirect ? 1 : 0, wgReachable ? 1 : 0, transport, rttMs, reason, now),
+    ]);
+  } catch (e) {
+    log({ event: "peers.connectivity_write_failed", level: "error", network_id: networkID, error: String(e) });
+    return json({ error: "connectivity table unavailable" }, 503);
+  }
+
+  return json({ ok: true });
+}
+
+async function annotateNextHops(env: Env, networkID: string, selfKey: string, peers: Peer[]): Promise<void> {
+  if (peers.length < 2) return;
+  const peerKeys = peers.map((p) => p.public_key).filter(Boolean);
+  const graphKeys = [selfKey, ...peerKeys];
+  if (graphKeys.length > 100) {
+    log({ event: "peers.topology_too_large", level: "warn", network_id: networkID, count: graphKeys.length });
+    return;
+  }
+  const placeholders = graphKeys.map(() => "?").join(",");
+  let rows: Array<{
+    src_public_key: string;
+    dst_public_key: string;
+    ice_direct: number;
+    wg_reachable: number;
+    transport: string;
+    reason: string;
+  }>;
+  try {
+    const res = await env.DB
+      .prepare(
+        `SELECT src_public_key, dst_public_key, ice_direct, wg_reachable, transport, reason
+         FROM peer_connectivity
+         WHERE network_id = ?
+           AND wg_reachable = 1
+           AND reported_at > ?
+           AND src_public_key IN (${placeholders})
+           AND dst_public_key IN (${placeholders})`,
+      )
+      .bind(networkID, Math.floor(Date.now() / 1000) - 120, ...graphKeys, ...graphKeys)
+      .all<{
+        src_public_key: string;
+        dst_public_key: string;
+        ice_direct: number;
+        wg_reachable: number;
+        transport: string;
+        reason: string;
+      }>();
+    rows = res.results ?? [];
+  } catch (e) {
+    // Older local DBs may not have run 0003 yet. Keep peer config usable and
+    // log the missing topology instead of failing room entry.
+    log({ event: "peers.topology_read_failed", level: "warn", network_id: networkID, error: String(e) });
+    return;
+  }
+  const edges = new Map(rows.map((r) => [`${r.src_public_key}\n${r.dst_public_key}`, r]));
+  const edgeCost = (a: string, b: string): number => {
+    const edge = edges.get(`${a}\n${b}`);
+    if (!edge || edge.wg_reachable !== 1) return Number.POSITIVE_INFINITY;
+    if (edge.ice_direct === 1) return 10;
+    if (edge.transport === "wg_relay") return 100;
+    if (edge.transport === "derp") return 1000;
+    // DERP is a reliable fallback, but it should not create arbitrary
+    // A-B-C paths when every pair is merely DERP-reachable. Unknown
+    // non-DERP WG transports, including user relays, sit between ICE and DERP.
+    return edge.reason.startsWith("derp") ? 1000 : 100;
+  };
+  for (const target of peers) {
+    const directCost = edgeCost(selfKey, target.public_key);
+    let bestHop: Peer | null = null;
+    let bestHopCost = directCost;
+    for (const candidate of peers) {
+      if (candidate.public_key === target.public_key) continue;
+      const hopCost = edgeCost(selfKey, candidate.public_key) + edgeCost(candidate.public_key, target.public_key) + 5;
+      if (hopCost < bestHopCost) {
+        bestHop = candidate;
+        bestHopCost = hopCost;
+      }
+    }
+    if (bestHop) target.next_hop_public_key = bestHop.public_key;
+  }
+}
+
+function isNetworkID(s: string): boolean {
+  return /^[A-Za-z0-9-]{1,128}$/.test(s);
+}
+
+function normalizeConnectivityTransport(requested: string, iceDirect: boolean, wgReachable: boolean, reason: string): "" | "ice" | "derp" | "wg_relay" {
+  if (!wgReachable) return "";
+  if (iceDirect) return "ice";
+  if (requested === "derp" || requested === "wg_relay") return requested;
+  if (requested === "ice") return "ice";
+  if (reason.startsWith("derp")) return "derp";
+  return "";
+}
+
+function parsePairRoom(roomId: string): [string, string] | null {
+  const body = roomId.slice("pair:".length);
+  const parts = body.split(".");
+  if (parts.length !== 2 || !parts[0] || !parts[1]) return null;
+  if (parts[0] > parts[1]) return null;
+  const a = decodeBase64URLKey(parts[0]);
+  const b = decodeBase64URLKey(parts[1]);
+  if (!a || !b) return null;
+  return [a, b];
+}
+
+function decodeBase64URLKey(s: string): string | null {
+  if (!/^[A-Za-z0-9_-]+$/.test(s)) return null;
+  const std = s.replace(/-/g, "+").replace(/_/g, "/");
+  const padded = std + "=".repeat((4 - (std.length % 4)) % 4);
+  try {
+    const bin = atob(padded);
+    if (bin.length !== 32) return null;
+    return btoa(bin);
+  } catch {
+    return null;
+  }
 }
 
 interface RelayEntry {
