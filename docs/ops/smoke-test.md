@@ -171,6 +171,29 @@ ip -6 route add blackhole fd07:b51a:cc66:0:2030:a7ff:fe2e:ab06/128
 
 ---
 
+## OrbStack 双 VM + ICE 直连稳定性重构验证
+
+2026-06-28 已实现并验证（真实 control + relay + 双 daemon，pair 网络）：
+
+- 直连不再依赖应用层流量保活。ICE manager 改为两阶段 probe：切换 WireGuard
+  endpoint 前必须先持续探测确认可靠（≥8 acks/≥3s、≥60% 到达率），之后每
+  250ms 持续 keepalive；连续静默 >1.5s 才降级。空闲直连（无任何业务流量）
+  稳定保持 >70s、0 次降级（旧实现 ~12s 内必降级、单次抖动即 flap）。
+- 降级后自动指数退避重升：10s→10min（×2），新 peer 加入重置回基准。
+  `force-derp` 触发降级后，daemon 自动经退避重连并重新升级 direct 且稳定保持。
+  这取代了此前"`LastError` 非空跳过 `markPeerICEReady`"的抖动缓解（已不再需要）。
+- ICE 候选过滤：排除自身 `utun*`/`ourcord*` 覆盖接口，避免重升时配对到 VPN
+  overlay 地址造成 WireGuard 经隧道自环（会过探测但随后 flap）；现仅配对
+  underlay（eth0 的 198.19.249.x / fd07 ULA）。
+- pair 连通上报修复：`POST /api/peers/connectivity` 现接受 `pair:` network_id
+  （按成员鉴权），不再每 ~30s 刷 `400 invalid network_id`；control D1
+  `peer_connectivity` 正确记录该 pair 的两条 `ice` 有向边。
+
+单测：daemon `go test -race ./...` 全过（新增 probeConfirmed/livenessLost、
+isVPNInterface、退避数学单测）；control vitest 126 过（新增 3 条 pair 连通用例）。
+
+---
+
 ## Control topology / A-B-C contract
 
 2026-06-26 已实现并单测：
