@@ -654,6 +654,98 @@ describe("reportPeerConnectivity", () => {
     expect(cap.binds[2][6]).toBe("derp");
     expect(cap.binds[3][6]).toBe("derp");
   });
+
+  it("records a pair-network edge when both peers are pair members", async () => {
+    const token = await makeToken();
+    const cap = makeCapturingDB([
+      { first: null }, // ban check
+      { first: { 1: 1 } }, // owned peer
+      {}, // forward upsert
+      {}, // reverse upsert
+    ]);
+    const body = JSON.stringify({
+      network_id: PAIR_ROOM,
+      peer_public_key: OTHER_WG_KEY,
+      ice_direct: true,
+      wg_reachable: true,
+    });
+    const resp = await reportPeerConnectivity(
+      new Request("https://control.example/api/peers/connectivity", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "X-Peer-Public-Key": VALID_WG_KEY,
+          "Content-Type": "application/json",
+          "Content-Length": String(body.length),
+        },
+        body,
+      }),
+      makeEnv(cap.db),
+    );
+
+    expect(resp.status).toBe(200);
+    expect(cap.sqls[2]).toMatch(/INSERT INTO peer_connectivity/);
+    expect(cap.binds[2].slice(0, 3)).toEqual([PAIR_ROOM, VALID_WG_KEY, OTHER_WG_KEY]);
+    expect(cap.binds[3].slice(0, 3)).toEqual([PAIR_ROOM, OTHER_WG_KEY, VALID_WG_KEY]);
+  });
+
+  it("rejects a pair report when the caller is not a pair member (403)", async () => {
+    const token = await makeToken();
+    const cap = makeCapturingDB([
+      { first: null }, // ban check
+      { first: { 1: 1 } }, // owned peer
+    ]);
+    const body = JSON.stringify({
+      network_id: PAIR_ROOM,
+      peer_public_key: THIRD_WG_KEY, // not one of the two pair members
+      ice_direct: true,
+      wg_reachable: true,
+    });
+    const resp = await reportPeerConnectivity(
+      new Request("https://control.example/api/peers/connectivity", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "X-Peer-Public-Key": VALID_WG_KEY,
+          "Content-Type": "application/json",
+          "Content-Length": String(body.length),
+        },
+        body,
+      }),
+      makeEnv(cap.db),
+    );
+
+    expect(resp.status).toBe(403);
+    expect(cap.sqls.some((s) => /INSERT INTO peer_connectivity/.test(s))).toBe(false);
+  });
+
+  it("rejects a malformed pair network_id (400)", async () => {
+    const token = await makeToken();
+    const cap = makeCapturingDB([
+      { first: null }, // ban check
+      { first: { 1: 1 } }, // owned peer
+    ]);
+    const body = JSON.stringify({
+      network_id: "pair:onlyone",
+      peer_public_key: OTHER_WG_KEY,
+      wg_reachable: true,
+    });
+    const resp = await reportPeerConnectivity(
+      new Request("https://control.example/api/peers/connectivity", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "X-Peer-Public-Key": VALID_WG_KEY,
+          "Content-Type": "application/json",
+          "Content-Length": String(body.length),
+        },
+        body,
+      }),
+      makeEnv(cap.db),
+    );
+
+    expect(resp.status).toBe(400);
+  });
 });
 
 describe("lookupPeers", () => {

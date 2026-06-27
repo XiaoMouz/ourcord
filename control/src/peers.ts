@@ -318,9 +318,22 @@ export async function reportPeerConnectivity(request: Request, env: Env): Promis
 
   const networkID = typeof body.network_id === "string" ? body.network_id.trim() : "";
   const peerKey = typeof body.peer_public_key === "string" ? body.peer_public_key.trim() : "";
-  if (!isNetworkID(networkID)) return json({ error: "invalid network_id" }, 400);
+  // Accept the same two roomId conventions as getPeerConfig: a network namespace
+  // (alphanumeric/hyphen) or a 1:1 "pair:<keyA>.<keyB>" room. parsePairRoom decodes
+  // to the two standard-base64 member keys; a pair report is only authorized when
+  // the caller and the reported peer are exactly those two members (checked below,
+  // once peerKey format is validated).
+  const pair = networkID.startsWith("pair:") ? parsePairRoom(networkID) : null;
+  if (networkID.startsWith("pair:")) {
+    if (!pair) return json({ error: "invalid pair network_id" }, 400);
+  } else if (!isNetworkID(networkID)) {
+    return json({ error: "invalid network_id" }, 400);
+  }
   if (!/^[A-Za-z0-9+/]{43}=$/.test(peerKey)) return json({ error: "invalid peer_public_key" }, 400);
   if (peerKey === selfKey) return json({ error: "peer_public_key must differ from self" }, 400);
+  if (pair && !(pair.includes(selfKey) && pair.includes(peerKey))) {
+    return json({ error: "peers are not part of this pair" }, 403);
+  }
   const legacyDirect = body.direct === true;
   const iceDirect = body.ice_direct === true || legacyDirect;
   const wgReachable = typeof body.wg_reachable === "boolean" ? body.wg_reachable : legacyDirect;
