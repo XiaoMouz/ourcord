@@ -41,8 +41,15 @@ fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 
 cleanup() {
   set +e
-  for pid in "${PIDS[@]:-}"; do kill "$pid" 2>/dev/null || true; done
-    for p in "${PIDS[@]:-}"; do kill "$p" 2>/dev/null || true; done
+  # Kill each worker's whole process group: `wrangler dev` spawns a workerd
+  # child, and killing only the recorded pid leaks workerd (it keeps holding the
+  # control/service ports across runs). run_bg uses setsid so $pid == pgid.
+  for pid in "${PIDS[@]:-}"; do
+    kill -- "-$pid" 2>/dev/null
+    kill "$pid" 2>/dev/null
+  done
+  # Backstop: reap anything still pinned to this run's workdir.
+  pkill -9 -f "$WORKDIR" 2>/dev/null
   for name in "${NAMES[@]}"; do
     sudo ip netns del "ocabc-$name" 2>/dev/null || true
   done
@@ -57,6 +64,18 @@ trap cleanup EXIT INT TERM
 
 need() {
   command -v "$1" >/dev/null 2>&1 || fail "missing required command: $1"
+}
+
+# The repo's node_modules is shared with the macOS host via the OrbStack mount,
+# so a `npm install` run on macOS leaves wrong-platform native binaries (workerd)
+# that crash `wrangler dev` here. Fail fast with a fix hint instead of timing out
+# on "service did not become ready".
+check_node_modules() {
+  log "Checking Workers node_modules build for this platform"
+  for dir in control service; do
+    node22 -e 'require(require("path").resolve("'"$ROOT/$dir"'/node_modules/workerd"))' >/dev/null 2>&1 \
+      || fail "$dir/node_modules has a wrong-platform native build (workerd won't load). Fix: (cd $dir && rm -rf node_modules package-lock.json && npm install)"
+  done
 }
 
 wait_http() {
@@ -136,7 +155,9 @@ api_json() {
 run_bg() {
   local name=$1; shift
   log "Starting $name"
-  "$@" >"$WORKDIR/$name.log" 2>&1 &
+  # setsid → new session/process group so cleanup can kill the whole tree
+  # (wrangler + its workerd child) via the negative-pid group signal.
+  setsid "$@" >"$WORKDIR/$name.log" 2>&1 &
   PIDS+=("$!")
 }
 
@@ -318,8 +339,10 @@ main() {
   need ip
   need tc
   need npx
+  need node22
   [[ -c /dev/net/tun ]] || fail "/dev/net/tun is missing"
 
+  check_node_modules
   build_bins
   setup_netns
   check_netns_underlay
