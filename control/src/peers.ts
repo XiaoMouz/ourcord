@@ -345,6 +345,10 @@ export async function reportPeerConnectivity(request: Request, env: Env): Promis
   const transport = normalizeConnectivityTransport(requestedTransport, iceDirect, wgReachable, reason);
   const now = Math.floor(Date.now() / 1000);
 
+  // TODO(topology): both directed edges are written with identical values, so
+  // asymmetric reachability (A reaches C but not vice-versa) isn't representable.
+  // Acceptable for the symmetric "dead edge" case the daemon reports today; if
+  // per-direction reachability is ever needed, split the two upserts' values.
   try {
     await env.DB.batch([
       env.DB.prepare(
@@ -354,7 +358,14 @@ export async function reportPeerConnectivity(request: Request, env: Env): Promis
          ON CONFLICT(network_id, src_public_key, dst_public_key)
          DO UPDATE SET direct = excluded.direct, ice_direct = excluded.ice_direct,
                        wg_reachable = excluded.wg_reachable, transport = excluded.transport, rtt_ms = excluded.rtt_ms,
-                       reason = excluded.reason, reported_at = excluded.reported_at`,
+                       reason = excluded.reason, reported_at = excluded.reported_at
+         WHERE NOT (
+           peer_connectivity.wg_reachable = 0
+           AND peer_connectivity.reason = 'unreachable'
+           AND excluded.wg_reachable = 1
+           AND excluded.ice_direct = 0
+           AND excluded.reason = 'derp-baseline'
+         )`,
       ).bind(networkID, selfKey, peerKey, iceDirect ? 1 : 0, iceDirect ? 1 : 0, wgReachable ? 1 : 0, transport, rttMs, reason, now),
       env.DB.prepare(
         `INSERT INTO peer_connectivity
@@ -363,7 +374,14 @@ export async function reportPeerConnectivity(request: Request, env: Env): Promis
          ON CONFLICT(network_id, src_public_key, dst_public_key)
          DO UPDATE SET direct = excluded.direct, ice_direct = excluded.ice_direct,
                        wg_reachable = excluded.wg_reachable, transport = excluded.transport, rtt_ms = excluded.rtt_ms,
-                       reason = excluded.reason, reported_at = excluded.reported_at`,
+                       reason = excluded.reason, reported_at = excluded.reported_at
+         WHERE NOT (
+           peer_connectivity.wg_reachable = 0
+           AND peer_connectivity.reason = 'unreachable'
+           AND excluded.wg_reachable = 1
+           AND excluded.ice_direct = 0
+           AND excluded.reason = 'derp-baseline'
+         )`,
       ).bind(networkID, peerKey, selfKey, iceDirect ? 1 : 0, iceDirect ? 1 : 0, wgReachable ? 1 : 0, transport, rttMs, reason, now),
     ]);
   } catch (e) {

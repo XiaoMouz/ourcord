@@ -576,6 +576,83 @@ describe("registerPeer / getPeerConfig endpoint hints", () => {
 
     vi.unstubAllGlobals();
   });
+
+  it("routes via a next hop when the direct edge is unreachable (absent from wg_reachable rows)", async () => {
+    // The daemon reported A-C wg_reachable=false, so the A-C/C-A edges are
+    // filtered out by the WHERE wg_reachable=1 query. A-B and B-C survive (even
+    // as plain DERP), so C must be reached via B — the A-B-C auto-discovery case.
+    const token = await makeToken();
+    const cap = makeCapturingDB([
+      { first: null }, // ban check
+      {}, // last_seen update
+      {
+        all: {
+          results: [
+            {
+              id: "peer-b",
+              user_id: "u2",
+              public_key: OTHER_WG_KEY,
+              name: "reachable-hop",
+              platform: "linux",
+              last_seen: 30,
+              ip4: "198.18.0.12",
+              ip6: "fdab:cdef:123::b",
+              derp_node_key: "nodekey:b",
+              endpoint: "",
+            },
+            {
+              id: "peer-c",
+              user_id: "u3",
+              public_key: THIRD_WG_KEY,
+              name: "unreachable-direct",
+              platform: "linux",
+              last_seen: 20,
+              ip4: "198.18.0.13",
+              ip6: "fdab:cdef:123::c",
+              derp_node_key: "nodekey:c",
+              endpoint: "",
+            },
+          ],
+        },
+      },
+      {
+        all: {
+          // A-C / C-A intentionally absent: reported wg_reachable=false → filtered.
+          results: [
+            { src_public_key: VALID_WG_KEY, dst_public_key: OTHER_WG_KEY, ice_direct: 0, wg_reachable: 1, reason: "derp-baseline" },
+            { src_public_key: OTHER_WG_KEY, dst_public_key: VALID_WG_KEY, ice_direct: 0, wg_reachable: 1, reason: "derp-baseline" },
+            { src_public_key: OTHER_WG_KEY, dst_public_key: THIRD_WG_KEY, ice_direct: 0, wg_reachable: 1, reason: "derp-baseline" },
+            { src_public_key: THIRD_WG_KEY, dst_public_key: OTHER_WG_KEY, ice_direct: 0, wg_reachable: 1, reason: "derp-baseline" },
+          ],
+        },
+      },
+      { all: { results: [] } }, // relay map
+    ]);
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ user_ids: ["u1", "u2", "u3"] }))));
+
+    const resp = await getPeerConfig(
+      new Request("https://control.example/api/peers/config?room_id=lobby-L-room-R-voice", {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "X-Peer-Public-Key": VALID_WG_KEY,
+        },
+      }),
+      {
+        ...makeEnv(cap.db),
+        SERVICE_URL: "https://service.example",
+        SERVICE_INTERNAL_TOKEN: "s2s",
+      },
+    );
+
+    expect(resp.status).toBe(200);
+    const body = await resp.json<{ peers: Array<{ public_key: string; next_hop_public_key?: string }> }>();
+    const hop = body.peers.find((p) => p.public_key === OTHER_WG_KEY);
+    const behind = body.peers.find((p) => p.public_key === THIRD_WG_KEY);
+    expect(hop?.next_hop_public_key).toBeUndefined();
+    expect(behind?.next_hop_public_key).toBe(OTHER_WG_KEY);
+
+    vi.unstubAllGlobals();
+  });
 });
 
 describe("reportPeerConnectivity", () => {
@@ -653,6 +730,77 @@ describe("reportPeerConnectivity", () => {
     expect(cap.binds[3].slice(0, 6)).toEqual(["lobby-L-room-R-voice", OTHER_WG_KEY, VALID_WG_KEY, 0, 0, 1]);
     expect(cap.binds[2][6]).toBe("derp");
     expect(cap.binds[3][6]).toBe("derp");
+  });
+
+  it("does not let periodic DERP baseline overwrite an unreachable edge", async () => {
+    const token = await makeToken();
+    const cap = makeCapturingDB([
+      { first: null }, // ban check
+      { first: { 1: 1 } }, // owned peer
+      {}, // forward upsert
+      {}, // reverse upsert
+    ]);
+    const body = JSON.stringify({
+      network_id: "lobby-L-room-R-voice",
+      peer_public_key: OTHER_WG_KEY,
+      ice_direct: false,
+      wg_reachable: true,
+      reason: "derp-baseline",
+    });
+    const resp = await reportPeerConnectivity(
+      new Request("https://control.example/api/peers/connectivity", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "X-Peer-Public-Key": VALID_WG_KEY,
+          "Content-Type": "application/json",
+          "Content-Length": String(body.length),
+        },
+        body,
+      }),
+      makeEnv(cap.db),
+    );
+
+    expect(resp.status).toBe(200);
+    expect(cap.sqls[2]).toMatch(/WHERE NOT \(/);
+    expect(cap.sqls[2]).toMatch(/peer_connectivity\.reason = 'unreachable'/);
+    expect(cap.sqls[2]).toMatch(/excluded\.reason = 'derp-baseline'/);
+    expect(cap.binds[2].slice(0, 8)).toEqual(["lobby-L-room-R-voice", VALID_WG_KEY, OTHER_WG_KEY, 0, 0, 1, "derp", null]);
+    expect(cap.binds[2][8]).toBe("derp-baseline");
+  });
+
+  it("allows reachability recovery reports to restore a previously unreachable DERP edge", async () => {
+    const token = await makeToken();
+    const cap = makeCapturingDB([
+      { first: null }, // ban check
+      { first: { 1: 1 } }, // owned peer
+      {}, // forward upsert
+      {}, // reverse upsert
+    ]);
+    const body = JSON.stringify({
+      network_id: "lobby-L-room-R-voice",
+      peer_public_key: OTHER_WG_KEY,
+      ice_direct: false,
+      wg_reachable: true,
+      reason: "derp-recovery",
+    });
+    const resp = await reportPeerConnectivity(
+      new Request("https://control.example/api/peers/connectivity", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "X-Peer-Public-Key": VALID_WG_KEY,
+          "Content-Type": "application/json",
+          "Content-Length": String(body.length),
+        },
+        body,
+      }),
+      makeEnv(cap.db),
+    );
+
+    expect(resp.status).toBe(200);
+    expect(cap.binds[2].slice(0, 8)).toEqual(["lobby-L-room-R-voice", VALID_WG_KEY, OTHER_WG_KEY, 0, 0, 1, "derp", null]);
+    expect(cap.binds[2][8]).toBe("derp-recovery");
   });
 
   it("records a pair-network edge when both peers are pair members", async () => {

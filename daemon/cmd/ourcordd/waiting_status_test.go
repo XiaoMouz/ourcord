@@ -137,6 +137,34 @@ func TestConnectedPeersDERPFallbackDegraded(t *testing.T) {
 	}
 }
 
+func TestConnectedPeersNextHopStatus(t *testing.T) {
+	hop := testKey(t, 0x18)
+	routes := []*routing.PeerRoute{{
+		PublicKey: testKey(t, 0x19),
+		VPN4:      netip.MustParseAddr("198.18.0.8"),
+		NextHop:   &hop,
+	}}
+
+	relayUsed, relayURL, summary := summarizeRoutes(true, routes)
+	if summary != "next-hop" || relayUsed || relayURL != "" {
+		t.Fatalf("summary/relay = %q/%v/%q", summary, relayUsed, relayURL)
+	}
+
+	peers := connectedPeers(routes)
+	if len(peers) != 1 {
+		t.Fatalf("peers len = %d", len(peers))
+	}
+	if peers[0].Path != "next-hop" || peers[0].Direct {
+		t.Fatalf("peer path/direct = %q/%v", peers[0].Path, peers[0].Direct)
+	}
+	if peers[0].NextHop != hop.String() {
+		t.Fatalf("next_hop = %q, want %q", peers[0].NextHop, hop.String())
+	}
+	if peers[0].LastError != "" {
+		t.Fatalf("last_error = %q", peers[0].LastError)
+	}
+}
+
 func mustAddrPortForStatus(t *testing.T, s string) *netip.AddrPort {
 	t.Helper()
 	ap := netip.MustParseAddrPort(s)

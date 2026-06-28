@@ -1,6 +1,8 @@
 # OurCord smoke 测试
 
-> 当前脚本验证 daemon connect 管线对真实 kernel TUN + WireGuard 的端到端表现；它不是完整 Phase 1 关闭验收。
+> Phase 1 的主验收路径是下面的 OrbStack real control/service/relay/daemon
+> smoke。单机脚本和 mock-control 流程只作为 daemon connect 管线的快速回归，
+> 不是 Phase 1 关闭验收。
 > 离线版（mock-control + fake TUN）见 `daemon/cmd/ourcordd/connect_test.go`。
 
 ## 前置
@@ -10,7 +12,7 @@
 - Go ≥ 1.22（需能 `go build`）
 - Python 3（mock control plane 用，无外部依赖）
 
-## 跑一遍
+## 本地 legacy smoke
 
 ```bash
 cd /path/to/ourcord
@@ -71,15 +73,12 @@ bash tests/e2e/smoke_two_node.sh
   control 的 pair-scoped PeerConfig 返回对端 peer，SignalDO pair route 返回 101，
   两端最终 direct 并完成双向 VPN ping。
 
-仍未覆盖：
+当前 direct smoke 未覆盖：
 
-- Runtime 受限网络 fallback：当前已有单元测试覆盖 ICE failure 后回写
-  `derp://` UAPI endpoint；`force-derp` 诊断路径已通过真实 relay 验证
-  runtime 数据面；2026-06-27 又通过真实 OS route blackhole 验证了一个已
-  validated direct peer 自动进入 degraded/DERP 并恢复 ping。仍建议补一次
-  双端都先 direct 的完全对称 smoke。
-- 真实受限网络下的 A-C 不可达自动发现：A-B-C 三 VM 数据面已经跑通，
-  但本轮 A-C blocked edge 仍通过 `/api/peers/connectivity` 手工塑形。
+- Runtime 受限网络 fallback 已由后续“OrbStack 对称 runtime impairment
+  smoke（当前新 binary）”覆盖。
+- 真实受限网络下的 A-C 自动拓扑已由后续“三 netns A-B-C smoke”覆盖；
+  三独立 VM 仍可作为环境复核，但不再是唯一可重复验收入口。
 - Windows Wintun。
 
 ---
@@ -108,8 +107,8 @@ bash tests/e2e/smoke_two_node.sh
 
 这个 smoke 覆盖的是 startup fallback：没有 ICE 信令参与时，daemon 从
 control 返回的 relay map 自动选择 `derp://` endpoint，WireGuard 数据面可用。
-Phase 1 关闭前还需要 runtime fallback smoke：先建立 direct，再人为破坏直连，
-观察 daemon 是否自动切回 DERP。
+Runtime fallback 已由后续“OrbStack 对称 runtime impairment smoke（当前新
+binary）”覆盖。
 
 ---
 
@@ -166,8 +165,8 @@ ip -6 route add blackhole fd07:b51a:cc66:0:2030:a7ff:fe2e:ab06/128
   `transport='derp'`、`wg_reachable=1`、`reason='derp-fallback:...'`。
 
 本次 smoke 同时暴露了一个抖动：fallback 后新的 SignalDO ICE ready 事件会再次
-把 degraded peer 拉回 pending。代码已修复为 `LastError` 非空时跳过新的
-`markPeerICEReady`，并新增单测；完整对称 smoke 需要用包含该修复的新 binary 复跑。
+把 degraded peer 拉回 pending。当前实现已改为 sustained probe + 指数退避重试；
+完整对称 smoke 需要用包含该实现的新 binary 复跑。
 
 ---
 
@@ -188,9 +187,44 @@ ip -6 route add blackhole fd07:b51a:cc66:0:2030:a7ff:fe2e:ab06/128
 - pair 连通上报修复：`POST /api/peers/connectivity` 现接受 `pair:` network_id
   （按成员鉴权），不再每 ~30s 刷 `400 invalid network_id`；control D1
   `peer_connectivity` 正确记录该 pair 的两条 `ice` 有向边。
+- next-hop 后直达恢复探测：daemon 对当前 `NextHop` 间接 peer 仍会启动后台 ICE
+  探测；探测通过 `markPeerICEReady` 后会清除 `NextHop`，重新给该 peer 分配自身
+  `AllowedIPs` 并切到 `ice://` endpoint，随后向 control 上报 direct 恢复。
 
-单测：daemon `go test -race ./...` 全过（新增 probeConfirmed/livenessLost、
-isVPNInterface、退避数学单测）；control vitest 126 过（新增 3 条 pair 连通用例）。
+---
+
+## OrbStack 对称 runtime impairment smoke（当前新 binary）
+
+2026-06-28 复跑通过（真实 service + control + relay + 双 daemon）：
+
+- 业务入口使用 service 创建 lobby、邀请第二用户、创建 voice room，并让两个 daemon
+  进入同一个 `vpn_namespace`：
+  `lobby-42291a68cab4d1d5cdbfeae1a155d7cc-3681053568a0ac25be70e59a0375f074-voice`。
+- 初始两端 status 均为 `path_summary=direct`、`relay_used=false`，peer endpoint
+  为 `ice`；control `peer_connectivity` 记录两条 `transport='ice'`、
+  `ice_direct=1`、`wg_reachable=1` 的有向边。
+- 单纯 blackhole 对端 IPv4/ULA 不足以构造对称阻断：ICE 会继续找到 IPv6
+  link-local 或 NAT 映射候选并恢复 direct。这是预期的直连恢复能力，不应算失败。
+- 稳定压到 DERP 的 impairment 使用 `tc clsact` 在两个客户端 VM 的 `eth0 egress`
+  drop UDP。DERP/control/service 走 TCP，因此仍可用：
+  `sudo tc qdisc replace dev eth0 clsact`
+  `sudo tc filter replace dev eth0 egress protocol ip pref 1 flower ip_proto udp action drop`
+  `sudo tc filter replace dev eth0 egress protocol ipv6 pref 2 flower ip_proto udp action drop`
+- 双向 UDP drop 后，两端在约 1.5s liveness 静默后记录
+  `peer ICE validation failed; fallback state applied: ... reason=direct-health-lost`，
+  status 均为 `path_summary=degraded`、`relay_used=true`，双向 VPN ping 仍
+  `6 transmitted, 6 received, 0% packet loss`。
+- 失败 ICE retry 不再固定 10s 刷屏。观测到 A 侧 retry 约为
+  `20:01:29 -> 20:01:49 -> 20:02:34 -> 20:03:54`，B 侧约为
+  `20:01:30 -> 20:01:55 -> 20:02:40 -> 20:04:05`，即后续 retry 逐步拉开。
+- 移除 impairment：
+  `sudo tc qdisc del dev eth0 clsact`
+  清掉残留 blackhole route 后，两端自动恢复 `path_summary=direct`、
+  `relay_used=false`；control D1 最终仍记录两条 `transport='ice'`、
+  `ice_direct=1`、`wg_reachable=1`。
+
+验证矩阵：daemon `go test -race ./...` 全过；control vitest 127 过；service
+vitest 68 过；relay `go test ./...`、daemon/relay `go vet ./...` 全过。
 
 ---
 
@@ -209,6 +243,61 @@ isVPNInterface、退避数学单测）；control vitest 126 过（新增 3 条 p
   才在 C 的 peer record 上返回 `next_hop_public_key=B`。
 - daemon 已能消费 `next_hop_public_key` 并生成 WireGuard `AllowedIPs`：
   next-hop peer 获得被转发 peer 的 `/32`/`/128`，间接 peer 自身不写 endpoint。
+- daemon 的 reachability monitor 已有单测覆盖：DERP-baseline peer 长时间无
+  handshake/rx 进展时自动上报 `wg_reachable=false, reason='unreachable'`；
+  恢复后上报 `transport='derp', wg_reachable=true, reason='derp-recovery'`；
+  已判死的 peer 不会被周期性 `derp-baseline` 报告覆盖回 true。
+- control 已补防抖：当前 edge 为 `reason='unreachable'` 时，普通周期性
+  `derp-baseline` 不会覆盖回 true；只有 ICE direct 或 daemon 明确上报
+  `derp-recovery` 才能恢复该 edge。
+
+2026-06-29 OrbStack 单 VM 三 netns smoke 通过：
+
+- 新增可重复入口：`tests/e2e/smoke_abc_netns.sh`。脚本在 `ourcord-test`
+  Linux VM 内创建 `ocabc-a/b/c` 三个 network namespace，使用 veth bridge
+  模拟三台主机；control/service Workers、relay、三个 daemon 都是真进程，
+  daemon 使用真实 TUN/WireGuard。
+- 产品流完整执行：service 创建 lobby、invite、u2/u3 join、voice room，
+  daemon 进入返回的 `vpn_namespace`：
+  `lobby-a46238b85e42134af5ba24041ad980d0-e24bfadc2c436f8ad4ca2810057fad92-voice`
+  （本次运行值）。
+- 脚本只阻断 A<->C UDP underlay，保留 control/service/DERP TCP 和 A-B/B-C
+  UDP；daemon 自动上报连通性，control 自动下发 `next_hop_public_key=B`。
+- A/C status 均显示 `path_summary=next-hop`；A 的 C peer、C 的 A peer 均
+  显示 `path=next-hop` 且 `next_hop` 为 B 的 WireGuard public key，B 保持
+  `path_summary=direct`。
+- A ping C 的 VPN IPv4 `198.18.0.4`：`4 transmitted, 4 received, 0% packet
+  loss`，TTL=63，证明经 B 做内核转发。
+
+2026-06-29 三独立 VM smoke 复跑通过（真实 service + control + relay + 三 daemon）：
+
+- 环境：A=`ourcord-test`、B=`ourcord-peer3`、C=`ourcord-peer4`；control/service
+  Workers 与 relay 跑在 C，三个 daemon 使用同一个 service voice `vpn_namespace`：
+  `lobby-919767d055e0d0c07c7702c538e94954-c6d51f0b4f3074f77a7871d6c4a4764d-voice`。
+- 为构造 A-B-C，只在 A 与 C 的 `eth0 egress` 阻断彼此 UDP underlay；由于 ICE
+  仍能找到 NAT 公网候选，本轮额外阻断 A/C 到 `103.142.140.228` 的 UDP，A-B
+  与 B-C 保持可达。
+- daemon 自动上报 A-C `derp-fallback:direct-health-lost` 与 A-B/B-C 周期性
+  `ice_direct=1` 直连边；control 不需要手工写 `/api/peers/connectivity`，
+  自动下发 A->C、C->A 的 `next_hop_public_key=B`。
+- A/C peer status 分别显示对端 `path=next-hop` 且 `next_hop` 为 B 的 WireGuard
+  public key；B 到 A/C 保持 `path=direct`。
+- 数据面通过：A->C `198.18.0.4` 与 C->A `198.18.0.3` 各 `5 transmitted,
+  5 received, 0% packet loss`，TTL=63，证明经 B 转发。
+- 本轮暴露并修复两个卡点：
+  1. ICE direct edge 只在升级瞬间上报，超过 control 的 freshness window 后
+     A-B/B-C 会变 stale，导致 next-hop 不再被选择；daemon 现每个 mesh poll
+     刷新 `ice_direct=1,wg_reachable=1`。
+  2. A-C 进入 next-hop 后 `Table.Replace` 会清掉 `LastError`，旧 retry state
+     因 `retryDegradedICE` 只看 `LastError` 而不再触发；daemon 现把当前
+     `NextHop` peer 也纳入恢复探测，并在缺少 retry state 时补一个到期 state。
+- 解除 A-C 公网候选阻断后，A/C 在 `path=next-hop` 状态下自动发起 ICE retry，
+  日志出现 `ice connected`、`ice probe validated`、`peer upgraded to ICE direct`；
+  最终 control D1 记录 A-C/C-A `transport='ice', ice_direct=1, wg_reachable=1`，
+  peer status 回到 `path=direct`，双向 ping `5/5 received` 且 TTL=64。
+- 复测尾声观察：A-C 恢复 direct 后，B 相关边在该次重启窗口内暂时落到
+  DERP baseline；这不影响 next-hop 恢复结论，但后续可继续降低 ICE startup
+  duplicate/gather-timeout 噪音。
 
 2026-06-26 三 VM smoke 进展：
 
@@ -233,9 +322,8 @@ isVPNInterface、退避数学单测）；control vitest 126 过（新增 3 条 p
   但控制层不会再把所有 `wg_reachable` 边视为同等优先级。
 - 单元测试已覆盖两个容易误判的拓扑：全员仅 DERP baseline 时不生成任意
   next-hop；A-C 仅 DERP 而 A-B/B-C 为 ICE 时优先下发 A-B-C。
-- 仍需把 startup DERP reachable edge 与真实 constrained-network unreachable
-  edge 做成 daemon 自动上报；本次三 VM smoke 中 A-C blocked edge 是通过
-  `/api/peers/connectivity` 手工塑形，用于验证控制层和数据面能力。
+- 三独立 OrbStack VM 曾作为环境复核项阻塞在 VM provisioning；2026-06-29
+  已完成独立 VM 复核，三 netns smoke 保留为更快的回归入口。
 
 ---
 

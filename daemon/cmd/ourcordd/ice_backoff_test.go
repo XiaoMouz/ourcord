@@ -39,6 +39,27 @@ func TestScheduleICERetryDoublesAndCaps(t *testing.T) {
 	}
 }
 
+func TestICERetryAttemptBacksOffNextAttempt(t *testing.T) {
+	now := time.Unix(1_000, 0)
+	st := &iceRetryState{interval: iceRetryBase}
+
+	st.backoffAfterAttempt(now)
+	if st.interval != 2*iceRetryBase {
+		t.Fatalf("interval after first retry = %v, want %v", st.interval, 2*iceRetryBase)
+	}
+	if !st.nextAttempt.Equal(now.Add(2 * iceRetryBase)) {
+		t.Fatalf("next attempt = %v, want %v", st.nextAttempt, now.Add(2*iceRetryBase))
+	}
+
+	st.backoffAfterAttempt(now)
+	if st.interval != 4*iceRetryBase {
+		t.Fatalf("interval after second retry = %v, want %v", st.interval, 4*iceRetryBase)
+	}
+	if !st.nextAttempt.Equal(now.Add(4 * iceRetryBase)) {
+		t.Fatalf("next attempt = %v, want %v", st.nextAttempt, now.Add(4*iceRetryBase))
+	}
+}
+
 func TestResetICEBackoffPullsToBaseAndDue(t *testing.T) {
 	d := &daemon{}
 	pk := mustTestKey(0x53)
@@ -81,4 +102,43 @@ func TestRetryDegradedICENoopWhenDisabled(t *testing.T) {
 	d.table.Upsert(&routing.PeerRoute{PublicKey: mustTestKey(0x56), LastError: "direct-health-lost"})
 	d.iceRetry = map[wgtypes.Key]*iceRetryState{mustTestKey(0x56): {interval: iceRetryBase, nextAttempt: time.Now().Add(-time.Second)}}
 	d.retryDegradedICE(context.Background())
+}
+
+func TestCollectICERetryIncludesNextHopRecovery(t *testing.T) {
+	now := time.Unix(2_000, 0)
+	peer := mustTestKey(0x57)
+	hop := mustTestKey(0x58)
+	d := &daemon{table: routing.NewTable()}
+	d.table.Upsert(&routing.PeerRoute{
+		PublicKey: peer,
+		NextHop:   &hop,
+	})
+
+	got := d.collectICERetryLocked(now)
+	if len(got) != 1 || got[0] != peer.String() {
+		t.Fatalf("retry keys = %v, want next-hop peer %s", got, peer.String())
+	}
+	st := d.iceRetry[peer]
+	if st == nil {
+		t.Fatal("next-hop recovery should create retry state")
+	}
+	if !st.nextAttempt.After(now) {
+		t.Fatalf("next attempt should back off after probe, got %v", st.nextAttempt)
+	}
+}
+
+func TestCollectICERetrySkipsHealthyDirectPeer(t *testing.T) {
+	now := time.Unix(3_000, 0)
+	peer := mustTestKey(0x59)
+	d := &daemon{
+		table: routing.NewTable(),
+		iceRetry: map[wgtypes.Key]*iceRetryState{
+			peer: {interval: iceRetryBase, nextAttempt: now.Add(-time.Second)},
+		},
+	}
+	d.table.Upsert(&routing.PeerRoute{PublicKey: peer})
+
+	if got := d.collectICERetryLocked(now); len(got) != 0 {
+		t.Fatalf("healthy direct peer must not retry, got %v", got)
+	}
 }

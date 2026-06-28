@@ -14,6 +14,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -149,6 +150,12 @@ type daemon struct {
 	// direct upgrade after the peer degraded to the DERP baseline. Guarded by
 	// connMu. Reset to the base interval when a new peer joins the network.
 	iceRetry map[wgtypes.Key]*iceRetryState
+
+	// reach tracks per-peer DERP-baseline reachability. The daemon reports
+	// wg_reachable=false when a peer is dead on every transport (no ICE and no
+	// live DERP data plane) so control can pick an A-B-C next hop without manual
+	// /api/peers/connectivity shaping. Guarded by connMu.
+	reach map[wgtypes.Key]*peerReachState
 
 	// assigned VPN addresses for status reporting (filled at connect, cleared
 	// at disconnect).
@@ -587,6 +594,7 @@ func (d *daemon) connect(ctx context.Context) error {
 	}
 	go d.meshLoop(connCtx)
 	go d.iceRetryLoop(connCtx)
+	go d.reachabilityLoop(connCtx)
 
 	return nil
 }
@@ -689,7 +697,7 @@ func (d *daemon) startICEForRoutes(ctx context.Context, routes []*routing.PeerRo
 		return
 	}
 	for _, r := range routes {
-		if r == nil || r.NextHop != nil || r.ICEReady || r.ICEPending || r.LastError != "" {
+		if r == nil || r.ICEReady || r.ICEPending || r.LastError != "" {
 			continue
 		}
 		d.iceMgr.StartPeer(ctx, r.PublicKey.String())
@@ -757,6 +765,17 @@ const (
 	iceRetryTick = 5 * time.Second
 )
 
+func (st *iceRetryState) backoffAfterAttempt(now time.Time) {
+	if st.interval <= 0 {
+		st.interval = iceRetryBase
+	}
+	st.interval *= 2
+	if st.interval > iceRetryCap {
+		st.interval = iceRetryCap
+	}
+	st.nextAttempt = now.Add(st.interval)
+}
+
 // scheduleICERetryLocked arms (or backs off) the retry timer for a peer that
 // just degraded. First failure waits iceRetryBase; each subsequent failure
 // doubles the wait up to iceRetryCap. Caller holds connMu.
@@ -818,25 +837,43 @@ func (d *daemon) retryDegradedICE(ctx context.Context) {
 		d.connMu.Unlock()
 		return
 	}
-	now := time.Now()
-	var retry []string
-	for _, r := range d.table.All() {
-		if r == nil || r.NextHop != nil || r.LastError == "" {
-			continue
-		}
-		st := d.iceRetry[r.PublicKey]
-		if st == nil || now.Before(st.nextAttempt) {
-			continue
-		}
-		st.nextAttempt = now.Add(st.interval)
-		retry = append(retry, r.PublicKey.String())
-	}
+	retry := d.collectICERetryLocked(time.Now())
 	d.connMu.Unlock()
 	for _, pkStr := range retry {
 		log.Printf("ice retry attempt for degraded peer %s", pkStr[:min(len(pkStr), 12)])
 		d.iceMgr.ClosePeer(pkStr)
 		d.iceMgr.StartPeer(ctx, pkStr)
 	}
+}
+
+func (d *daemon) collectICERetryLocked(now time.Time) []string {
+	if d.table == nil {
+		return nil
+	}
+	if d.iceRetry == nil {
+		d.iceRetry = make(map[wgtypes.Key]*iceRetryState)
+	}
+	var retry []string
+	for _, r := range d.table.All() {
+		if r == nil {
+			continue
+		}
+		needsProbe := r.LastError != "" || r.NextHop != nil
+		if !needsProbe {
+			continue
+		}
+		st := d.iceRetry[r.PublicKey]
+		if st == nil && r.NextHop != nil {
+			st = &iceRetryState{interval: iceRetryBase, nextAttempt: now}
+			d.iceRetry[r.PublicKey] = st
+		}
+		if st == nil || now.Before(st.nextAttempt) {
+			continue
+		}
+		st.backoffAfterAttempt(now)
+		retry = append(retry, r.PublicKey.String())
+	}
+	return retry
 }
 
 func (d *daemon) failPeerICEValidation(peerKey string, pk wgtypes.Key, reason string) {
@@ -922,7 +959,26 @@ func (d *daemon) reportDERPReachabilityLocked(routes []*routing.PeerRoute, reaso
 		if r == nil || r.NextHop != nil || r.ICEReady || r.DERPURL == "" || r.DERPNodeKey == "" {
 			continue
 		}
+		// Don't optimistically re-assert reachability for a peer the reachability
+		// monitor has already found dead on every transport, or this periodic
+		// baseline report would clobber its wg_reachable=false back to true.
+		if st := d.reach[r.PublicKey]; st != nil && st.reportedUnreachable {
+			continue
+		}
 		d.reportConnectivityWith(cli, networkID, ctx, r.PublicKey.String(), false, true, reason)
+	}
+}
+
+func (d *daemon) reportICEDirectReachabilityLocked(routes []*routing.PeerRoute) {
+	cli, networkID, ctx := d.cli, d.activeRoom, d.connCtx
+	if cli == nil || networkID == "" || ctx == nil {
+		return
+	}
+	for _, r := range routes {
+		if r == nil || r.NextHop != nil || !r.ICEReady {
+			continue
+		}
+		d.reportConnectivityWith(cli, networkID, ctx, r.PublicKey.String(), true, true, "")
 	}
 }
 
@@ -975,6 +1031,171 @@ func (d *daemon) syncDERPSuppressionLocked(routes []*routing.PeerRoute) {
 			continue
 		}
 		d.derpMgr.SetSuppressed(r.DERPNodeKey, r.ICEPending || r.ICEReady)
+	}
+}
+
+// peerReachState tracks DERP-baseline liveness for one peer between monitor
+// ticks. lastProgress is the last time we saw a fresh WG handshake or growing
+// rx_bytes (persistent-keepalive=25s keeps a healthy DERP path producing rx).
+type peerReachState struct {
+	firstSeen           time.Time
+	lastRx              uint64
+	haveLastRx          bool
+	lastProgress        time.Time
+	reportedUnreachable bool
+}
+
+type peerLiveness struct {
+	lastHandshakeSec int64
+	rxBytes          uint64
+}
+
+const (
+	reachMonitorTick = 10 * time.Second
+	reachGraceSec    = 30 // wait this long after first seeing a peer before judging (initial handshake)
+	reachStaleSec    = 70 // no handshake/rx progress for this long ⇒ dead (≈3 missed 25s keepalives)
+)
+
+// reachableFromSample reports whether a single liveness sample shows the DERP
+// baseline path is alive: a fresh handshake, or rx_bytes that grew since the
+// previous sample. Pure for unit testing.
+func reachableFromSample(prevRx uint64, havePrev bool, l peerLiveness, nowUnix, staleSec int64) bool {
+	if l.lastHandshakeSec > 0 && nowUnix-l.lastHandshakeSec <= staleSec {
+		return true
+	}
+	return havePrev && l.rxBytes > prevRx
+}
+
+// flagUnreachable reports whether a baseline peer that has shown no progress
+// should now be declared unreachable: past the initial grace and with no
+// progress for longer than the stale window. Pure for unit testing.
+func flagUnreachable(firstSeen, lastProgress, now time.Time, graceSec, staleSec int64) bool {
+	return now.Sub(firstSeen) > time.Duration(graceSec)*time.Second &&
+		now.Sub(lastProgress) > time.Duration(staleSec)*time.Second
+}
+
+// readPeerLiveness parses the WireGuard UAPI snapshot into per-peer handshake
+// age and rx byte counters, keyed by lowercase-hex public key (UAPI format).
+func readPeerLiveness(iface tunIface) (map[string]peerLiveness, error) {
+	raw, err := iface.GetIPC()
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]peerLiveness)
+	var cur string
+	for _, line := range strings.Split(raw, "\n") {
+		k, v, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		switch k {
+		case "public_key":
+			cur = v
+			out[cur] = peerLiveness{}
+		case "last_handshake_time_sec":
+			if cur != "" {
+				e := out[cur]
+				e.lastHandshakeSec, _ = strconv.ParseInt(v, 10, 64)
+				out[cur] = e
+			}
+		case "rx_bytes":
+			if cur != "" {
+				e := out[cur]
+				e.rxBytes, _ = strconv.ParseUint(v, 10, 64)
+				out[cur] = e
+			}
+		}
+	}
+	return out, nil
+}
+
+// reachabilityLoop periodically re-evaluates DERP-baseline peer reachability so
+// the daemon can report wg_reachable transitions to control. Runs for the
+// lifetime of a connection.
+func (d *daemon) reachabilityLoop(ctx context.Context) {
+	t := time.NewTicker(reachMonitorTick)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			d.checkReachability(ctx)
+		}
+	}
+}
+
+// checkReachability samples WG liveness for every DERP-baseline candidate peer
+// (direct, not ICE, with a DERP endpoint) and reports wg_reachable=false when a
+// peer goes dark / true again on recovery. ICE peers report via the ICE path.
+// Next-hop (indirect) peers are skipped here because they are not currently
+// direct WG edges; direct recovery for them is handled by background ICE probes,
+// and markPeerICEReady clears NextHop once the probe validates the path.
+func (d *daemon) checkReachability(ctx context.Context) {
+	d.connMu.Lock()
+	if d.table == nil || d.tunIf == nil {
+		d.connMu.Unlock()
+		return
+	}
+	cli, networkID := d.cli, d.activeRoom
+	routes := d.table.All()
+	live, err := readPeerLiveness(d.tunIf)
+	if err != nil {
+		d.connMu.Unlock()
+		log.Printf("reachability stats: %v", err)
+		return
+	}
+	if d.reach == nil {
+		d.reach = make(map[wgtypes.Key]*peerReachState)
+	}
+	now := time.Now()
+	nowUnix := now.Unix()
+	type change struct {
+		key       string
+		reachable bool
+	}
+	var changes []change
+	seen := make(map[wgtypes.Key]bool)
+	for _, r := range routes {
+		if r == nil || r.NextHop != nil || r.ICEReady || r.ICEPending || r.DERPURL == "" || r.DERPNodeKey == "" {
+			continue
+		}
+		seen[r.PublicKey] = true
+		st := d.reach[r.PublicKey]
+		if st == nil {
+			st = &peerReachState{firstSeen: now, lastProgress: now}
+			d.reach[r.PublicKey] = st
+		}
+		l := live[fmt.Sprintf("%x", r.PublicKey[:])]
+		if reachableFromSample(st.lastRx, st.haveLastRx, l, nowUnix, reachStaleSec) {
+			st.lastProgress = now
+			if st.reportedUnreachable {
+				st.reportedUnreachable = false
+				changes = append(changes, change{r.PublicKey.String(), true})
+			}
+		} else if !st.reportedUnreachable && flagUnreachable(st.firstSeen, st.lastProgress, now, reachGraceSec, reachStaleSec) {
+			st.reportedUnreachable = true
+			changes = append(changes, change{r.PublicKey.String(), false})
+		}
+		st.lastRx = l.rxBytes
+		st.haveLastRx = true
+	}
+	for k := range d.reach {
+		if !seen[k] {
+			delete(d.reach, k)
+		}
+	}
+	d.connMu.Unlock()
+
+	for _, c := range changes {
+		short := c.key[:min(len(c.key), 12)]
+		if c.reachable {
+			log.Printf("peer reachable again via DERP baseline: %s", short)
+			d.reportConnectivityWith(cli, networkID, ctx, c.key, false, true, "derp-recovery")
+		} else {
+			log.Printf("peer unreachable on all transports; reporting wg_reachable=false: %s", short)
+			d.reportConnectivityWith(cli, networkID, ctx, c.key, false, false, "unreachable")
+		}
 	}
 }
 
@@ -1035,6 +1256,7 @@ func (d *daemon) meshLoop(ctx context.Context) {
 			d.syncDERPSuppressionLocked(table.All())
 			if roomID != "" {
 				d.reportDERPReachabilityLocked(table.All(), "derp-baseline")
+				d.reportICEDirectReachabilityLocked(table.All())
 				d.startICEForRoutes(ctx, table.All())
 			}
 			d.connMu.Unlock()

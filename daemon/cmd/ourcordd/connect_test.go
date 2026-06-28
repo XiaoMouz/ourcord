@@ -563,7 +563,7 @@ func TestStartICEForRoutes_Disabled(t *testing.T) {
 func TestStartICEForRoutes_SkipsDegradedPeer(t *testing.T) {
 	d := &daemon{}
 	// Should be a no-op even with routes present and no iceMgr: degraded peers
-	// stay on DERP until an explicit retry policy clears LastError.
+	// stay on DERP until the retry loop probes and clears LastError.
 	d.startICEForRoutes(context.Background(), []*routing.PeerRoute{{
 		PublicKey: mustTestKey(0x43),
 		VPN4:      netip.MustParseAddr("198.18.0.67"),
@@ -602,6 +602,48 @@ func TestMarkPeerICEReady_UpgradesAndClearsBackoff(t *testing.T) {
 	}
 	if _, ok := d.iceRetry[pk]; ok {
 		t.Fatal("backoff entry should be cleared on successful upgrade")
+	}
+}
+
+func TestMarkPeerICEReady_ClearsNextHopForDirectRecovery(t *testing.T) {
+	priv, err := wgtypes.GeneratePrivateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pk := mustTestKey(0x45)
+	hop := mustTestKey(0x46)
+	ft := &fakeTun{}
+	table := routing.NewTable()
+	table.Upsert(&routing.PeerRoute{
+		PublicKey:   pk,
+		VPN4:        netip.MustParseAddr("198.18.0.69"),
+		NextHop:     &hop,
+		DERPURL:     "https://relay.example.com/derp",
+		DERPNodeKey: "nodekey:0123456789abcdef",
+	})
+	d := &daemon{
+		keyPair:  &wg.KeyPair{Private: priv},
+		table:    table,
+		tunIf:    ft,
+		connCtx:  context.Background(),
+		iceRetry: map[wgtypes.Key]*iceRetryState{pk: {interval: 40 * time.Second}},
+	}
+
+	d.markPeerICEReady(pk.String())
+
+	routes := table.All()
+	if len(routes) != 1 || routes[0].NextHop != nil || !routes[0].ICEReady {
+		t.Fatalf("confirmed ICE should switch next-hop peer to direct, got %+v", routes)
+	}
+	if _, ok := d.iceRetry[pk]; ok {
+		t.Fatal("backoff entry should be cleared on successful direct recovery")
+	}
+	uapi := ft.lastIPC()
+	if !strings.Contains(uapi, "allowed_ip=198.18.0.69/32\n") || !strings.Contains(uapi, "endpoint=ice://") {
+		t.Fatalf("direct recovery did not apply direct WireGuard config:\n%s", uapi)
+	}
+	if strings.Contains(uapi, "endpoint=derp://") {
+		t.Fatalf("direct recovery must not keep DERP endpoint:\n%s", uapi)
 	}
 }
 

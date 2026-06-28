@@ -105,9 +105,10 @@ func (t *Table) SetICEReady(publicKey wgtypes.Key, ready bool) bool {
 	if r == nil {
 		return false
 	}
-	changed := r.ICEReady != ready || r.ICEPending
+	changed := r.ICEReady != ready || r.ICEPending || (ready && r.NextHop != nil)
 	r.ICEReady = ready
 	if ready {
+		r.NextHop = nil
 		r.ICEPending = false
 		r.LastError = ""
 	}

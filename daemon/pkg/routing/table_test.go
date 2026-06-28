@@ -256,6 +256,38 @@ func TestReplace_NextHopClearsPreservedICEState(t *testing.T) {
 	}
 }
 
+func TestSetICEReadyClearsNextHopForDirectRecovery(t *testing.T) {
+	tbl := NewTable()
+	peer := mustKey(t, 0xA1)
+	hop := mustKey(t, 0xB1)
+	tbl.Upsert(&PeerRoute{
+		PublicKey:   peer,
+		VPN4:        mustAddr(t, "198.18.0.10"),
+		NextHop:     &hop,
+		DERPURL:     "http://127.0.0.1:3340",
+		DERPNodeKey: "nodekey:peer",
+	})
+
+	if !tbl.SetICEReady(peer, true) {
+		t.Fatal("expected next-hop route to change when ICE direct is confirmed")
+	}
+
+	routes := tbl.All()
+	if len(routes) != 1 {
+		t.Fatalf("expected one route, got %d", len(routes))
+	}
+	if routes[0].NextHop != nil || !routes[0].ICEReady || routes[0].ICEPending || routes[0].LastError != "" {
+		t.Fatalf("confirmed direct route did not clear next-hop state: %+v", routes[0])
+	}
+	got := tbl.BuildIPCConfig(mustKey(t, 0xC1))
+	if !strings.Contains(got, "allowed_ip=198.18.0.10/32\n") || !strings.Contains(got, "endpoint=ice://") {
+		t.Fatalf("confirmed direct route must own its CIDR and use ICE endpoint:\n%s", got)
+	}
+	if strings.Contains(got, "endpoint=derp://") {
+		t.Fatalf("confirmed direct route must not keep DERP endpoint:\n%s", got)
+	}
+}
+
 func TestUpsertRemove(t *testing.T) {
 	tbl := NewTable()
 	pk := mustKey(t, 0x01)
