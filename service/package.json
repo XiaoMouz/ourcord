@@ -10,6 +10,7 @@
   "author": "",
   "license": "ISC",
   "type": "commonjs",
+  "packageManager": "pnpm@9.15.9",
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20260426.1",
     "typescript": "^6.0.3",

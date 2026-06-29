@@ -89,9 +89,10 @@ R2 配额由后端控制（大小、永久/临时数量、保存天数）。元�
 ## 4. 构建/检查命令（在 PR 前必须全部通过）
 
 ```bash
-# Workers TypeScript
-(cd control && npx tsc --noEmit && npx vitest run)
-(cd service && npx tsc --noEmit)
+# Workers TypeScript（包管理用 pnpm；corepack 会按 package.json 的
+# packageManager 字段自动取 pnpm@9，native 依赖锁文件跨平台）
+(cd control && pnpm install && pnpm exec tsc --noEmit && pnpm test)
+(cd service && pnpm install && pnpm exec tsc --noEmit && pnpm test)
 
 # Go modules
 (cd relay  && go build ./... && go vet ./... && go test ./...)

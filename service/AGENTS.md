@@ -38,9 +38,9 @@
 
 ```bash
 cd service
-npm install
-npx tsc --noEmit
-npx wrangler deploy
+pnpm install               # corepack 自动取 pnpm@9
+pnpm exec tsc --noEmit
+pnpm exec wrangler deploy
 ```
 
 ## 设计契约（不要"修"）

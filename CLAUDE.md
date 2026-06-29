@@ -37,8 +37,9 @@
 ## 构建/检查（PR 前必跑）
 
 ```bash
-(cd control && npx tsc --noEmit)
-(cd service && npx tsc --noEmit)
+# Workers 用 pnpm（corepack 自动取 package.json 里 pinned 的 pnpm@9）
+(cd control && pnpm exec tsc --noEmit)
+(cd service && pnpm exec tsc --noEmit)
 (cd relay   && go build ./... && go vet ./...)
 (cd daemon  && go build ./... && go vet ./...)
 ```

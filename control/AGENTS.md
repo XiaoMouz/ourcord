@@ -47,9 +47,9 @@
 
 ```bash
 cd control
-npm install            # 仅首次
-npx tsc --noEmit       # 类型检查
-npx wrangler deploy    # 部署
+pnpm install               # 仅首次（corepack 自动取 pnpm@9）
+pnpm exec tsc --noEmit     # 类型检查
+pnpm exec wrangler deploy  # 部署
 ```
 
 ## 设计契约（不要"修"）

@@ -67,14 +67,21 @@ need() {
 }
 
 # The repo's node_modules is shared with the macOS host via the OrbStack mount,
-# so a `npm install` run on macOS leaves wrong-platform native binaries (workerd)
+# so a `pnpm install` run on macOS leaves wrong-platform native binaries (workerd)
 # that crash `wrangler dev` here. Fail fast with a fix hint instead of timing out
 # on "service did not become ready".
 check_node_modules() {
   log "Checking Workers node_modules build for this platform"
   for dir in control service; do
-    node22 -e 'require(require("path").resolve("'"$ROOT/$dir"'/node_modules/workerd"))' >/dev/null 2>&1 \
-      || fail "$dir/node_modules has a wrong-platform native build (workerd won't load). Fix: (cd $dir && rm -rf node_modules package-lock.json && npm install)"
+    # workerd is wrangler's transitive dep (pnpm does not hoist it to the top
+    # node_modules), so resolve it through wrangler, then require it to trigger
+    # its platform-binary check. Works for both npm-hoisted and pnpm layouts.
+    ( cd "$ROOT/$dir" && node22 -e '
+        const path = require("path");
+        const w = require.resolve("wrangler/package.json");
+        require(require.resolve("workerd", { paths: [path.dirname(w)] }));
+      ' ) >/dev/null 2>&1 \
+      || fail "$dir/node_modules has a wrong-platform native build (workerd won't load). Fix: (cd $dir && rm -rf node_modules && pnpm install)"
   done
 }
 
