@@ -187,6 +187,8 @@ type controlClient interface {
 	FetchConfig(ctx context.Context, roomID string) (*control.PeerConfig, error)
 	FetchSTUNServers(ctx context.Context) ([]string, error)
 	ReportConnectivity(ctx context.Context, report control.ConnectivityReport) error
+	ExchangeDeviceToken(ctx context.Context, deviceToken string) (*control.DeviceTokenResponse, error)
+	SetAuthToken(token string)
 	Run(ctx context.Context, roomID string)
 	SetSignalHandler(func(control.SignalMessage))
 	InitiateHolePunch(ctx context.Context, targetKey string, offer control.ICEOffer) error
@@ -482,12 +484,32 @@ func (d *daemon) connect(ctx context.Context) error {
 		return errors.New("VPN already active")
 	}
 
-	token, err := loadAuthToken(d.stateDir)
-	if err != nil {
-		return fmt.Errorf("load auth token: %w", err)
+	// Credential order: a long-lived device credential (exchanged for
+	// short-lived JWTs that the daemon refreshes on its own) beats a raw JWT
+	// (legacy: expires after 1h with no self-service renewal).
+	deviceToken := loadDeviceToken(d.stateDir)
+	var token string
+	if deviceToken == "" {
+		legacy, err := loadAuthToken(d.stateDir)
+		if err != nil {
+			return fmt.Errorf("load auth token: %w", err)
+		}
+		token = legacy
 	}
 
 	cli := d.clientFactory()(d.controlURL, token, d.keyPair.PublicKeyBase64())
+	var tokenExpiresAt int64
+	if deviceToken != "" {
+		exCtx, exCancel := context.WithTimeout(ctx, 10*time.Second)
+		exch, err := cli.ExchangeDeviceToken(exCtx, deviceToken)
+		exCancel()
+		if err != nil {
+			return fmt.Errorf("exchange device token: %w", err)
+		}
+		cli.SetAuthToken(exch.Token)
+		tokenExpiresAt = exch.ExpiresAt
+		log.Printf("device credential exchanged for user JWT (user=%s, expires=%s)", exch.UserID, time.Unix(exch.ExpiresAt, 0).Format(time.RFC3339))
+	}
 	derpKey := d.derpKey
 	if derpKey.IsZero() {
 		loaded, err := ourderp.LoadOrCreateNodeKey(filepath.Join(d.stateDir, "derp.key"))
@@ -595,6 +617,9 @@ func (d *daemon) connect(ctx context.Context) error {
 	go d.meshLoop(connCtx)
 	go d.iceRetryLoop(connCtx)
 	go d.reachabilityLoop(connCtx)
+	if deviceToken != "" {
+		go d.tokenRefreshLoop(connCtx, cli, deviceToken, tokenExpiresAt)
+	}
 
 	return nil
 }
@@ -1406,6 +1431,67 @@ func scanForOverlap(text, needle string) []string {
 		}
 	}
 	return hits
+}
+
+// loadDeviceToken reads the device credential (dt_…), if enrolled. Order:
+//  1. OURCORD_DEVICE_TOKEN env var
+//  2. <state-dir>/device.token file (mode 0600 expected)
+//
+// Returns "" when no device credential is configured; connect() then falls
+// back to the legacy raw-JWT path.
+func loadDeviceToken(stateDir string) string {
+	if v := os.Getenv("OURCORD_DEVICE_TOKEN"); v != "" {
+		return strings.TrimSpace(v)
+	}
+	data, err := os.ReadFile(filepath.Join(stateDir, "device.token"))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
+}
+
+const (
+	// Refresh the JWT well before expiry so control restarts / transient
+	// failures have headroom; never spin faster than the floor.
+	tokenRefreshLead  = 10 * time.Minute
+	tokenRefreshFloor = 30 * time.Second
+	tokenRefreshRetry = 30 * time.Second
+)
+
+// tokenRefreshDelay computes how long to wait before exchanging again. Pure
+// for unit testing.
+func tokenRefreshDelay(expiresAt, nowUnix int64) time.Duration {
+	d := time.Duration(expiresAt-nowUnix)*time.Second - tokenRefreshLead
+	if d < tokenRefreshFloor {
+		return tokenRefreshFloor
+	}
+	return d
+}
+
+// tokenRefreshLoop keeps the client's JWT fresh by re-exchanging the device
+// credential before each expiry. On failure it retries on a short interval —
+// the current JWT keeps working until its real expiry, so transient control
+// outages shorter than the refresh lead are absorbed silently.
+func (d *daemon) tokenRefreshLoop(ctx context.Context, cli controlClient, deviceToken string, expiresAt int64) {
+	for {
+		delay := tokenRefreshDelay(expiresAt, time.Now().Unix())
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(delay):
+		}
+		exCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		exch, err := cli.ExchangeDeviceToken(exCtx, deviceToken)
+		cancel()
+		if err != nil {
+			log.Printf("device token refresh failed (retrying in %s): %v", tokenRefreshRetry, err)
+			expiresAt = time.Now().Unix() + int64((tokenRefreshLead+tokenRefreshRetry)/time.Second)
+			continue
+		}
+		cli.SetAuthToken(exch.Token)
+		expiresAt = exch.ExpiresAt
+		log.Printf("device token refreshed; JWT valid until %s", time.Unix(exch.ExpiresAt, 0).Format(time.RFC3339))
+	}
 }
 
 // loadAuthToken reads the daemon's auth token. Order:

@@ -5,6 +5,7 @@ import { getStunServers, addStunServer } from "./stun";
 import { registerRelay, getRelayMap, getBannedKeys, denyPeerOnRelay, allowPeerOnRelay } from "./relay";
 import { createBan, removeBan, checkBan } from "./ban";
 import { requestOTP, verifyOTP, oauthRedirect, oauthCallback } from "./authHandler";
+import { enrollDevice, exchangeDeviceToken, listDevices, revokeDevice } from "./devices";
 import { checkRateLimit } from "./ratelimit";
 import { log, newRequestId } from "./log";
 import { json as jsonBase } from "./auth";
@@ -49,6 +50,26 @@ export default {
         const provider = parts[3];
         if (parts[4] === "callback") return oauthCallback(request, env, provider);
         return oauthRedirect(request, env, provider);
+      }
+      // Device-credential exchange is unauthenticated (it IS the auth step) —
+      // rate-limit tighter than peer traffic to blunt brute force on top of
+      // the 256-bit secret space.
+      if (method === "POST" && path === "/api/auth/device") {
+        const rl = await checkRateLimit(request, env, "auth-device", 20, 60);
+        if (rl) return rl;
+        return exchangeDeviceToken(request, env);
+      }
+
+      // ── Devices ────────────────────────────────────────────────────────────
+      if (method === "POST" && path === "/api/devices/enroll") {
+        const rl = await checkRateLimit(request, env, "devices-enroll", 10, 60);
+        if (rl) return rl;
+        return enrollDevice(request, env);
+      }
+      if (method === "GET" && path === "/api/devices") return listDevices(request, env);
+      if (method === "DELETE" && path.startsWith("/api/devices/")) {
+        const deviceId = path.slice("/api/devices/".length);
+        if (deviceId && !deviceId.includes("/")) return revokeDevice(request, env, deviceId);
       }
 
       // ── Peers ──────────────────────────────────────────────────────────────

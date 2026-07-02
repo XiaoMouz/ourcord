@@ -72,11 +72,14 @@ type ICECandidates struct {
 // after a reconnect.
 type Client struct {
 	controlURL string
-	authToken  string
-	publicKey  string
-	http       *http.Client
-	wsMu       sync.RWMutex
-	ws         *websocket.Conn
+	// authToken is guarded by tokenMu: the device-credential refresh loop
+	// rotates it while WS dials and HTTP requests read it concurrently.
+	tokenMu   sync.RWMutex
+	authToken string
+	publicKey string
+	http      *http.Client
+	wsMu      sync.RWMutex
+	ws        *websocket.Conn
 	// I5: protect onSignal — Run() ↔ SetSignalHandler can race once the
 	// daemon's main goroutine wires the callback after Run is in flight.
 	signalMu sync.RWMutex
@@ -91,6 +94,22 @@ func New(controlURL, authToken, publicKey string) *Client {
 		publicKey:  publicKey,
 		http:       &http.Client{Timeout: 10 * time.Second},
 	}
+}
+
+// token returns the current bearer token under lock.
+func (c *Client) token() string {
+	c.tokenMu.RLock()
+	defer c.tokenMu.RUnlock()
+	return c.authToken
+}
+
+// SetAuthToken swaps the bearer used for subsequent requests. Called by the
+// daemon's device-credential refresh loop; in-flight requests keep the token
+// they already read.
+func (c *Client) SetAuthToken(token string) {
+	c.tokenMu.Lock()
+	c.authToken = token
+	c.tokenMu.Unlock()
 }
 
 // SetSignalHandler sets the callback invoked for incoming signaling messages.
@@ -125,13 +144,13 @@ func (c *Client) Connect(ctx context.Context, roomID string, onClose func()) err
 	// can't send custom WebSocket headers. Native clients still get an
 	// Authorization header below for any non-WS upgrade redirect, but the
 	// query param is the load-bearing one.
-	if c.authToken != "" {
-		q.Set("token", c.authToken)
+	if tok := c.token(); tok != "" {
+		q.Set("token", tok)
 	}
 	wsURL.RawQuery = q.Encode()
 
 	ws, _, err := websocket.Dial(ctx, wsURL.String(), &websocket.DialOptions{
-		HTTPHeader: http.Header{"Authorization": []string{"Bearer " + c.authToken}},
+		HTTPHeader: http.Header{"Authorization": []string{"Bearer " + c.token()}},
 	})
 	if err != nil {
 		return fmt.Errorf("signal WS dial: %w", err)
@@ -368,7 +387,7 @@ func (c *Client) Register(ctx context.Context, req RegisterRequest) (*RegisterRe
 		return nil, err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Authorization", "Bearer "+c.authToken)
+	httpReq.Header.Set("Authorization", "Bearer "+c.token())
 	resp, err := c.http.Do(httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("control register: %w", err)
@@ -402,7 +421,7 @@ func (c *Client) FetchConfig(ctx context.Context, roomID string) (*PeerConfig, e
 	if err != nil {
 		return nil, err
 	}
-	httpReq.Header.Set("Authorization", "Bearer "+c.authToken)
+	httpReq.Header.Set("Authorization", "Bearer "+c.token())
 	httpReq.Header.Set("X-Peer-Public-Key", c.publicKey)
 	resp, err := c.http.Do(httpReq)
 	if err != nil {
@@ -428,7 +447,7 @@ func (c *Client) ReportConnectivity(ctx context.Context, report ConnectivityRepo
 		return err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Authorization", "Bearer "+c.authToken)
+	httpReq.Header.Set("Authorization", "Bearer "+c.token())
 	httpReq.Header.Set("X-Peer-Public-Key", c.publicKey)
 	resp, err := c.http.Do(httpReq)
 	if err != nil {
@@ -449,7 +468,7 @@ func (c *Client) FetchSTUNServers(ctx context.Context) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	httpReq.Header.Set("Authorization", "Bearer "+c.authToken)
+	httpReq.Header.Set("Authorization", "Bearer "+c.token())
 	resp, err := c.http.Do(httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("control fetch-stun: %w", err)
@@ -483,4 +502,42 @@ func (c *Client) FetchSTUNServers(ctx context.Context) ([]string, error) {
 // Content-Length header instead of falling back to chunked transfer encoding
 // (which some HTTP/1.0 servers — including Python BaseHTTPServer used by our
 // e2e mock control plane — do not support and will hang on indefinitely).
+// DeviceTokenResponse is the control plane's answer to a device-credential
+// exchange: a short-lived user JWT plus its expiry.
+type DeviceTokenResponse struct {
+	Token     string `json:"token"`
+	UserID    string `json:"user_id"`
+	ExpiresAt int64  `json:"expires_at"`
+}
+
+// ExchangeDeviceToken trades a long-lived device credential (dt_…) for a
+// short-lived user JWT. Unauthenticated by design — the credential is the
+// proof. The caller decides whether to install the result via SetAuthToken.
+func (c *Client) ExchangeDeviceToken(ctx context.Context, deviceToken string) (*DeviceTokenResponse, error) {
+	body, _ := json.Marshal(map[string]string{"device_token": deviceToken})
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", c.controlURL+"/api/auth/device", bytesReader(body))
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	resp, err := c.http.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("control device-token exchange: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		buf := make([]byte, 1024)
+		n, _ := resp.Body.Read(buf)
+		return nil, fmt.Errorf("control device-token exchange: HTTP %d: %s", resp.StatusCode, string(buf[:n]))
+	}
+	var out DeviceTokenResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("control device-token exchange: decode: %w", err)
+	}
+	if out.Token == "" {
+		return nil, fmt.Errorf("control device-token exchange: empty token in response")
+	}
+	return &out, nil
+}
+
 func bytesReader(b []byte) io.Reader { return bytes.NewReader(b) }
