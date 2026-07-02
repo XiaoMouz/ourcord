@@ -17,20 +17,9 @@
 // TODO(proto): this contract is duplicated in service/src/internalAuth.ts;
 // move the shared definition to proto/ when that becomes the source of truth.
 
-export const INTERNAL_SIG_WINDOW_SEC = 90;
+import { hmacSign } from "./auth";
 
-async function hmacSignB64url(secret: string, data: string): Promise<string> {
-  const key = await crypto.subtle.importKey(
-    "raw",
-    new TextEncoder().encode(secret),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"],
-  );
-  const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(data));
-  return btoa(String.fromCharCode(...new Uint8Array(sig)))
-    .replace(/\+/g, "-").replace(/\//g, "_").replace(/=/g, "");
-}
+export const INTERNAL_SIG_WINDOW_SEC = 90;
 
 export function internalSigPayload(ts: string, nonce: string, method: string, url: string): string {
   const u = new URL(url);
@@ -49,7 +38,7 @@ export async function signInternalHeaders(
   const nonceBytes = new Uint8Array(16);
   crypto.getRandomValues(nonceBytes);
   const nonce = [...nonceBytes].map((b) => b.toString(16).padStart(2, "0")).join("");
-  const sig = await hmacSignB64url(secret, internalSigPayload(ts, nonce, method, url));
+  const sig = await hmacSign(secret, internalSigPayload(ts, nonce, method, url));
   return {
     "X-Internal-Ts": ts,
     "X-Internal-Nonce": nonce,

@@ -17,25 +17,12 @@
 // TODO(proto): shared contract duplicated from control/src/internalAuth.ts;
 // move to proto/ when that becomes the source of truth.
 
-import { constantTimeEqual } from "./auth";
+import { constantTimeEqual, hmacSign } from "./auth";
 
 export const INTERNAL_SIG_WINDOW_SEC = 90;
 
 const NONCE_CACHE_MAX = 4096;
 const seenNonces = new Map<string, number>(); // nonce -> expiry unix seconds
-
-async function hmacSignB64url(secret: string, data: string): Promise<string> {
-  const key = await crypto.subtle.importKey(
-    "raw",
-    new TextEncoder().encode(secret),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"],
-  );
-  const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(data));
-  return btoa(String.fromCharCode(...new Uint8Array(sig)))
-    .replace(/\+/g, "-").replace(/\//g, "_").replace(/=/g, "");
-}
 
 function sweepNonces(now: number): void {
   if (seenNonces.size <= NONCE_CACHE_MAX) return;
@@ -72,7 +59,7 @@ export async function verifyInternalRequest(
 
   const u = new URL(request.url);
   const payload = `${ts}\n${nonce}\n${request.method.toUpperCase()}\n${u.pathname}${u.search}`;
-  const expected = await hmacSignB64url(secret, payload);
+  const expected = await hmacSign(secret, payload);
   if (!constantTimeEqual(sig, expected)) return false;
 
   // Replay check last, so an unauthenticated flood can't poison the cache.

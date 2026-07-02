@@ -4,7 +4,9 @@ import { log } from "./log";
 // Simple JWT-like token using HMAC-SHA256
 // Format: base64url(payload).base64url(signature)
 
-async function hmacSign(secret: string, data: string): Promise<string> {
+// Exported for internalAuth.ts (G6 signed internal calls) — one HMAC/base64url
+// implementation per worker so token signing and internal-call signing cannot drift.
+export async function hmacSign(secret: string, data: string): Promise<string> {
   const key = await crypto.subtle.importKey(
     "raw",
     new TextEncoder().encode(secret),

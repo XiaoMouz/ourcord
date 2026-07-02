@@ -43,7 +43,9 @@ export function checkBodySize(request: Request, maxBytes: number): Response | nu
   return null;
 }
 
-async function hmacSign(secret: string, data: string): Promise<string> {
+// Exported for internalAuth.ts (G6 signed internal calls) — one HMAC/base64url
+// implementation per worker so token verification and internal-call verification cannot drift.
+export async function hmacSign(secret: string, data: string): Promise<string> {
   const key = await crypto.subtle.importKey(
     "raw",
     new TextEncoder().encode(secret),
