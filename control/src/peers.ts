@@ -1,5 +1,6 @@
 import { Env, Peer } from "./types";
 import { requireAuth, generateId, checkBodySize, json } from "./auth";
+import { signInternalHeaders } from "./internalAuth";
 import { buildRelayMap } from "./relay";
 import { log } from "./log";
 import {
@@ -207,8 +208,10 @@ export async function getPeerConfig(request: Request, env: Env): Promise<Respons
         // O1: 3s timeout matches the signal-route fetch (index.ts K7). Without
         // it a slow/half-dead service worker would stall every daemon's mesh
         // refresh up to the CF Worker 30s wall.
-        const resp = await fetch(`${env.SERVICE_URL}/api/internal/rooms/${encodeURIComponent(roomId)}/member-ids`, {
-          headers: { "X-Internal-Token": env.SERVICE_INTERNAL_TOKEN },
+        // G6: signed short-lived headers instead of a static bearer token.
+        const memberURL = `${env.SERVICE_URL}/api/internal/rooms/${encodeURIComponent(roomId)}/member-ids`;
+        const resp = await fetch(memberURL, {
+          headers: await signInternalHeaders(env.SERVICE_INTERNAL_TOKEN, "GET", memberURL),
           signal: AbortSignal.timeout(3000),
         });
         if (!resp.ok) {

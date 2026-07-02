@@ -1,4 +1,5 @@
 import { Env } from "./types";
+import { signInternalHeaders } from "./internalAuth";
 import { registerPeer, getPeerConfig, lookupPeers, reportPeerConnectivity } from "./peers";
 import { getStunServers, addStunServer } from "./stun";
 import { registerRelay, getRelayMap, getBannedKeys, denyPeerOnRelay, allowPeerOnRelay } from "./relay";
@@ -122,8 +123,10 @@ export default {
           }
           let r: Response;
           try {
-            r = await fetch(`${env.SERVICE_URL}/api/internal/rooms/${encodeURIComponent(roomId)}/member-ids`, {
-              headers: { "X-Internal-Token": env.SERVICE_INTERNAL_TOKEN },
+            // G6: signed short-lived headers instead of a static bearer token.
+            const memberURL = `${env.SERVICE_URL}/api/internal/rooms/${encodeURIComponent(roomId)}/member-ids`;
+            r = await fetch(memberURL, {
+              headers: await signInternalHeaders(env.SERVICE_INTERNAL_TOKEN, "GET", memberURL),
               signal: AbortSignal.timeout(3000),
             });
           } catch (e) {

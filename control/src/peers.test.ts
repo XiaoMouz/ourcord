@@ -421,6 +421,13 @@ describe("registerPeer / getPeerConfig endpoint hints", () => {
 
     expect(resp.status).toBe(200);
     expect(fetchMock).toHaveBeenCalledOnce();
+    // G6: internal call must carry signed short-lived headers, not a bearer.
+    const fetchArgs = fetchMock.mock.calls[0] as unknown as [string, { headers: Record<string, string> }];
+    const fetchHeaders = fetchArgs[1].headers;
+    expect(fetchHeaders["X-Internal-Ts"]).toMatch(/^\d+$/);
+    expect(fetchHeaders["X-Internal-Nonce"]).toMatch(/^[0-9a-f]{32}$/);
+    expect(fetchHeaders["X-Internal-Sig"]).toMatch(/^[A-Za-z0-9_-]+$/);
+    expect(fetchHeaders["X-Internal-Token"]).toBeUndefined();
     expect(cap.sqls[3]).toMatch(/peer_connectivity/);
     expect(cap.sqls[3]).toMatch(/wg_reachable = 1/);
     const body = await resp.json<{ peers: Array<{ public_key: string; next_hop_public_key?: string }> }>();

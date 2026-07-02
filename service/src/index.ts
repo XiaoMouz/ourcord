@@ -4,6 +4,7 @@ import { createLobby, getLobby, joinLobby, listMembers, updateMemberRole, create
 import { getMessages, sendMessage, deleteMessage } from "./messages";
 import { initiateUpload, uploadToR2, listFiles, getDownloadUrl, getFilePolicy, updateFilePolicy, runR2Cleanup } from "./files";
 import { json, constantTimeEqual } from "./auth";
+import { verifyInternalRequest } from "./internalAuth";
 import { checkRateLimit } from "./ratelimit";
 import { log, newRequestId } from "./log";
 
@@ -111,18 +112,20 @@ export default {
       // ── Internal (control → service) ───────────────────────────────────────
       // Returns the user_ids of every member of the lobby that owns the room
       // or network namespace. Used by control-layer getPeerConfig?room_id=...
-      // for per-network mesh scoping. Authenticated via X-Internal-Token.
+      // for per-network mesh scoping.
+      //
+      // G6: authenticated via signed short-lived headers (HMAC over
+      // ts+nonce+method+path, keyed by SERVICE_INTERNAL_TOKEN) instead of the
+      // former static X-Internal-Token bearer, so a captured request can't
+      // become a permanent credential and can't be replayed. Contract lives in
+      // internalAuth.ts (mirrored in control/src/internalAuth.ts).
       //
       // `parts[3]` is intentionally accepted as either rooms.id or
       // rooms.vpn_namespace. Product APIs keep using rooms.id for messages,
       // files, and CRUD; daemon/control may use vpn_namespace as the network
       // routing domain for voice/video/file overlays.
       if (method === "GET" && parts[1] === "internal" && parts[2] === "rooms" && parts[4] === "member-ids") {
-        const token = request.headers.get("X-Internal-Token");
-        // J5: constant-time compare so timing oracles can't leak the token
-        // byte-by-byte. The token is what control-layer trusts to scope
-        // peer mesh by room membership; leaking it breaks the boundary.
-        if (!env.SERVICE_INTERNAL_TOKEN || !token || !constantTimeEqual(token, env.SERVICE_INTERNAL_TOKEN)) {
+        if (!env.SERVICE_INTERNAL_TOKEN || !(await verifyInternalRequest(request, env.SERVICE_INTERNAL_TOKEN))) {
           return json({ error: "Forbidden" }, 403);
         }
         const roomOrNamespace = decodeURIComponent(parts[3]);

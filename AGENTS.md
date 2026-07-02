@@ -79,10 +79,15 @@ R2 配额由后端控制（大小、永久/临时数量、保存天数）。元�
 - D1 prepared statement 单语句参数上限约 100 个。
 - `peers` IN(?,?,...) 查询直接绑定成员 ID，对 5–10 人小群无问题；任何"成员列表→IN 查询"的实现需要在拼 SQL 前确认成员数 ≤ 100 或拆批。
 
-### 3.9 控制 ↔ 服务层信任（G6，遗留）
-- 当前用 `SERVICE_INTERNAL_TOKEN` 共享密钥（HTTP 头）。
-- **已知缺陷**：泄漏一次永久泄漏；服务层日志可能记录；只能改环境变量轮换。
-- 阶段二必须升级为 mTLS 或 HMAC(ts+nonce) 短签名头。MVP 接受现状但不要扩散到新接口。
+### 3.9 控制 ↔ 服务层信任（G6，已升级为 HMAC 短签名）
+- `SERVICE_INTERNAL_TOKEN` 仍是双方共享密钥，但**不再作为 bearer 直接发送**。
+- control 每次内部调用发送 `X-Internal-Ts` / `X-Internal-Nonce` / `X-Internal-Sig`，
+  其中 Sig = base64url(HMAC-SHA256(secret, `ts\nnonce\nMETHOD\npathname+search`))。
+- service 校验 ±90s 时间窗 + 常数时间比较 + per-isolate nonce 重放拒绝。
+  实现：`control/src/internalAuth.ts` ↔ `service/src/internalAuth.ts`（契约需保持同步，
+  标注 `TODO(proto)` 待迁 proto/）。
+- 残余风险：nonce 缓存是 isolate 内存，跨 isolate 的 90s 窗口内重放理论上可行；
+  需要时可用 D1/KV nonce 表收口。旧的静态 `X-Internal-Token` 已被拒收，不要回退。
 
 ---
 
