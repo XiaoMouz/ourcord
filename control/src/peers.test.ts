@@ -660,6 +660,56 @@ describe("registerPeer / getPeerConfig endpoint hints", () => {
 
     vi.unstubAllGlobals();
   });
+
+  it("chunks oversized member lists and skips topology annotation (G20)", async () => {
+    const token = await makeToken();
+    // 120 member ids → two IN() chunks; 60 returned peers → graphKeys 61 > 49
+    // → annotateNextHops must bail instead of binding 2+2N params.
+    const manyIds = Array.from({ length: 120 }, (_, i) => `u${i + 1}`);
+    const rowFor = (n: number) => ({
+      id: `p-${n}`,
+      user_id: `u${n}`,
+      public_key: `PK${n}`,
+      name: `peer-${n}`,
+      platform: "linux",
+      last_seen: n,
+      ip4: `198.18.1.${n}`,
+      ip6: "",
+      derp_node_key: "",
+      endpoint: "",
+    });
+    const chunk1Rows = Array.from({ length: 60 }, (_, i) => rowFor(i + 1));
+    const cap = makeCapturingDB([
+      { first: null }, // ban check
+      {}, // last_seen update
+      { all: { results: chunk1Rows } }, // member chunk 1 (90 ids)
+      { all: { results: [] } }, // member chunk 2 (30 ids)
+      { all: { results: [] } }, // relay map (annotation skipped)
+    ]);
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ user_ids: manyIds }))));
+
+    const resp = await getPeerConfig(
+      new Request("https://control.example/api/peers/config?room_id=lobby-L-room-R-voice", {
+        headers: { Authorization: `Bearer ${token}`, "X-Peer-Public-Key": VALID_WG_KEY },
+      }),
+      { ...makeEnv(cap.db), SERVICE_URL: "https://service.example", SERVICE_INTERNAL_TOKEN: "s2s" },
+    );
+
+    expect(resp.status).toBe(200);
+    // Each chunk stays within the D1 parameter budget (chunk + self filter).
+    expect(cap.sqls[2]).toMatch(/user_id IN \((\?,){89}\?\)/);
+    expect(cap.sqls[3]).toMatch(/user_id IN \((\?,){29}\?\)/);
+    expect(cap.binds[2]).toHaveLength(91);
+    expect(cap.binds[3]).toHaveLength(31);
+    // The double-bound peer_connectivity query must not run at this size.
+    expect(cap.sqls.some((s) => /peer_connectivity/.test(s))).toBe(false);
+    const body = await resp.json<{ peers: Array<{ user_id: string }> }>();
+    expect(body.peers).toHaveLength(60);
+    // Merged output re-sorted by last_seen DESC across chunks.
+    expect(body.peers[0].user_id).toBe("u60");
+
+    vi.unstubAllGlobals();
+  });
 });
 
 describe("reportPeerConnectivity", () => {

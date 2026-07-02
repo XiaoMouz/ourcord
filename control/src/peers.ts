@@ -244,27 +244,40 @@ export async function getPeerConfig(request: Request, env: Env): Promise<Respons
   // because daemon-side DERP fallback needs each peer's DERP identity to route
   // WireGuard packets through a relay. Ban feeds still use /api/relay/banned-keys.
   const pairKeys = roomId?.startsWith("pair:") ? parsePairRoom(roomId) : null;
-  const placeholders = pairKeys
-    ? pairKeys.map(() => "?").join(",")
-    : memberIds.map(() => "?").join(",");
-  const params: string[] = pairKeys ? [...pairKeys] : [...memberIds];
-  let selfFilter = "";
-  if (pubKey) {
-    selfFilter = " AND public_key <> ?";
-    params.push(pubKey);
-  }
-  const where = pairKeys
-    ? `public_key IN (${placeholders})${selfFilter}`
-    : `user_id IN (${placeholders})${selfFilter}`;
-  const peers = await env.DB
-    .prepare(
-      `SELECT id, user_id, public_key, name, platform, last_seen, ip4, ip6, derp_node_key,
+  const SELECT_PEERS = `SELECT id, user_id, public_key, name, platform, last_seen, ip4, ip6, derp_node_key,
               wg_endpoint AS endpoint
-       FROM peers WHERE ${where} ORDER BY last_seen DESC`
-    )
-    .bind(...params)
-    .all<Peer>();
-  const peerRows = peers.results ?? [];
+       FROM peers WHERE `;
+  const selfFilter = pubKey ? " AND public_key <> ?" : "";
+  let peerRows: Peer[];
+  if (pairKeys) {
+    const params: string[] = [...pairKeys];
+    if (pubKey) params.push(pubKey);
+    const peers = await env.DB
+      .prepare(`${SELECT_PEERS}public_key IN (?,?)${selfFilter} ORDER BY last_seen DESC`)
+      .bind(...params)
+      .all<Peer>();
+    peerRows = peers.results ?? [];
+  } else {
+    // G20: D1 caps a statement at ~100 bound parameters, and memberIds comes
+    // straight from the service worker's response — never trust its size.
+    // Query in chunks and merge, preserving the last_seen DESC ordering.
+    const CHUNK = 90;
+    peerRows = [];
+    for (let i = 0; i < memberIds.length; i += CHUNK) {
+      const chunk = memberIds.slice(i, i + CHUNK);
+      const params: string[] = [...chunk];
+      if (pubKey) params.push(pubKey);
+      const placeholders = chunk.map(() => "?").join(",");
+      const peers = await env.DB
+        .prepare(`${SELECT_PEERS}user_id IN (${placeholders})${selfFilter} ORDER BY last_seen DESC`)
+        .bind(...params)
+        .all<Peer>();
+      peerRows.push(...(peers.results ?? []));
+    }
+    if (memberIds.length > CHUNK) {
+      peerRows.sort((a, b) => b.last_seen - a.last_seen);
+    }
+  }
   if (roomId && !pairKeys && pubKey && isNetworkID(roomId)) {
     await annotateNextHops(env, roomId, pubKey, peerRows);
   }
@@ -399,7 +412,11 @@ async function annotateNextHops(env: Env, networkID: string, selfKey: string, pe
   if (peers.length < 2) return;
   const peerKeys = peers.map((p) => p.public_key).filter(Boolean);
   const graphKeys = [selfKey, ...peerKeys];
-  if (graphKeys.length > 100) {
+  // G20: D1 caps a prepared statement at ~100 bound parameters. graphKeys is
+  // bound TWICE below (src IN + dst IN) plus network_id and the timestamp, so
+  // the real count is 2 + 2N — the guard must be N ≤ 49, not N ≤ 100.
+  // Next-hop annotation is an optimization, so oversize networks just skip it.
+  if (graphKeys.length > 49) {
     log({ event: "peers.topology_too_large", level: "warn", network_id: networkID, count: graphKeys.length });
     return;
   }
