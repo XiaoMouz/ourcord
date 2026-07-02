@@ -54,8 +54,20 @@ export interface FileRecord {
   size_bytes: number;
   mime_type: string;
   storage_location: "user_server" | "lobby_server" | "r2";
-  storage_key: string; // R2 key or external URL
+  storage_key: string; // R2 key or path under the backend's base_url
+  backend_id?: string | null; // registered file backend (NULL for R2)
   expires_at?: number;
+  created_at: number;
+}
+
+// A user-run HTTP file server in the autonomous storage chain (AGENTS 3.5).
+export interface FileBackend {
+  id: string;
+  owner_id: string;
+  lobby_id: string | null; // NULL = personal (自建/分享), non-NULL = 大厅
+  name: string;
+  base_url: string;
+  active: number; // 1 = live, 0 = deactivated
   created_at: number;
 }
 

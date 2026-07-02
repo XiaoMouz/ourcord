@@ -1,5 +1,6 @@
-import { Env, FileRecord, FilePolicy } from "./types";
+import { Env, FileRecord, FilePolicy, FileBackend } from "./types";
 import { requireAuth, generateId, json, err, checkBodySize } from "./auth";
+import { resolveFileBackend, joinBackendURL } from "./backends";
 import { log } from "./log";
 
 // POST /api/rooms/:roomId/files — initiate file upload
@@ -111,28 +112,13 @@ export async function initiateUpload(request: Request, env: Env, roomId: string)
     }
   }
 
-  // Storage selection: respect preference, but if it's not enabled by policy
-  // walk the priority chain (user_server → lobby_server → r2). The first
-  // enabled tier wins. Spec: "默认优先上传用户自己服务器、别人分享给用户的
-  // 服务器、大厅服务器、服务层 R2".
-  type StorageTier = "user_server" | "lobby_server" | "r2";
-  const enabledFor = (tier: StorageTier): boolean => {
-    if (tier === "user_server") return policy.user_server_enabled === 1;
-    if (tier === "lobby_server") return policy.lobby_server_enabled === 1;
-    return policy.r2_enabled === 1;
-  };
-  const chain: StorageTier[] = ["user_server", "lobby_server", "r2"];
-  // Move preferred tier to the front; the rest of the chain is the fallback order.
-  const preferred = body.storage_preference;
-  const ordered: StorageTier[] = preferred
-    ? [preferred, ...chain.filter((t) => t !== preferred)]
-    : chain;
-
-  let storageLocation: StorageTier | null = null;
-  for (const tier of ordered) {
-    if (enabledFor(tier)) { storageLocation = tier; break; }
-  }
-  if (!storageLocation) return err("No storage tier available for this lobby", 503);
+  // Storage selection: walk the autonomous chain 自建 → 分享 → 大厅 → R2 for
+  // a concretely registered backend (backends.ts). A preference reorders the
+  // walk; a tier without a live backend falls through — losing your own
+  // server degrades to a friend's, the lobby's, then R2.
+  const resolved = await resolveFileBackend(env, auth.sub, room.lobby_id, policy, body.storage_preference);
+  if (!resolved) return err("No storage tier available for this lobby", 503);
+  const { location: storageLocation, backend } = resolved;
 
   const id = generateId();
   const now = Math.floor(Date.now() / 1000);
@@ -148,20 +134,28 @@ export async function initiateUpload(request: Request, env: Env, roomId: string)
     // For now, we'll use a direct upload proxy endpoint
     uploadUrl = `/api/rooms/${roomId}/files/${id}/upload`;
   } else {
-    // For user/lobby server: return null storageKey, client handles the upload
-    storageKey = `external:${storageLocation}:${id}`;
+    // External backend: the client PUTs directly to the backend server at
+    // {base_url}/{storage_key}; only the metadata lives here.
+    storageKey = `files/${id}/${body.filename}`;
+    uploadUrl = joinBackendURL(backend!.base_url, storageKey);
   }
 
   await env.DB
     .prepare(
-      `INSERT INTO files (id, room_id, uploader_id, filename, size_bytes, mime_type, storage_location, storage_key, expires_at, created_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?)`
+      `INSERT INTO files (id, room_id, uploader_id, filename, size_bytes, mime_type, storage_location, storage_key, backend_id, expires_at, created_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?)`
     )
     .bind(id, roomId, auth.sub, body.filename, body.size_bytes, mimeType,
-      storageLocation, storageKey, expiresAt, now)
+      storageLocation, storageKey, backend?.id ?? null, expiresAt, now)
     .run();
 
-  return json({ id, storage_location: storageLocation, storage_key: storageKey, upload_url: uploadUrl }, 201);
+  return json({
+    id,
+    storage_location: storageLocation,
+    storage_key: storageKey,
+    backend_id: backend?.id ?? null,
+    upload_url: uploadUrl,
+  }, 201);
 }
 
 // PUT /api/rooms/:roomId/files/:fileId/upload — direct R2 upload proxy
@@ -294,12 +288,27 @@ export async function getDownloadUrl(
     return new Response(obj.body, { headers });
   }
 
-  // K9: non-R2 storage tiers (user_server / lobby_server) never had a real
-  // download path — initiateUpload writes `external:<tier>:<id>` as a marker,
-  // not a URL. Returning that string as `url` was actively misleading. Phase-2
-  // owns the real federated-download protocol; until then return 501 so
-  // clients fall back gracefully instead of attempting a broken redirect.
-  return json({ error: "non-R2 download not implemented" }, 501);
+  // External tiers resolve through the registered backend (backends.ts): the
+  // client downloads directly from {base_url}/{storage_key}. A deactivated or
+  // deleted backend yields 503 — the file may come back if the operator
+  // re-activates the server, so this is unavailability, not 404.
+  if (!file.backend_id) {
+    return json({ error: "file has no registered backend" }, 503);
+  }
+  const backend = await env.DB
+    .prepare("SELECT * FROM file_backends WHERE id = ? AND active = 1")
+    .bind(file.backend_id)
+    .first<FileBackend>();
+  if (!backend) {
+    return json({ error: "file backend is unavailable" }, 503);
+  }
+  return json({
+    url: joinBackendURL(backend.base_url, file.storage_key),
+    storage_location: file.storage_location,
+    backend_id: backend.id,
+    filename: file.filename,
+    mime_type: file.mime_type,
+  });
 }
 
 // GET /api/lobbies/:lobbyId/file-policy — get file policy

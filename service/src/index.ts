@@ -3,6 +3,7 @@ import { SCHEMA_SQL } from "./schema";
 import { createLobby, getLobby, joinLobby, listMembers, updateMemberRole, createInvite, revokeInvite, createRoom, updateRoom, deleteRoom } from "./lobby";
 import { getMessages, sendMessage, deleteMessage } from "./messages";
 import { initiateUpload, uploadToR2, listFiles, getDownloadUrl, getFilePolicy, updateFilePolicy, runR2Cleanup } from "./files";
+import { registerBackend, listBackends, deactivateBackend, shareBackend, unshareBackend } from "./backends";
 import { json, constantTimeEqual } from "./auth";
 import { verifyInternalRequest } from "./internalAuth";
 import { checkRateLimit } from "./ratelimit";
@@ -107,6 +108,25 @@ export default {
       }
       if (method === "GET" && parts[1] === "rooms" && parts[3] === "files" && parts[5] === "download") {
         return getDownloadUrl(request, env, parts[2], parts[4]);
+      }
+
+      // ── File backends (自建/分享/大厅 storage chain) ────────────────────────
+      if (method === "POST" && parts[1] === "backends" && !parts[2]) {
+        const rl = await checkRateLimit(request, env, "backend-reg", 10, 60);
+        if (rl) return rl;
+        return registerBackend(request, env);
+      }
+      if (method === "GET" && parts[1] === "backends" && !parts[2]) {
+        return listBackends(request, env);
+      }
+      if (method === "DELETE" && parts[1] === "backends" && parts[2] && !parts[3]) {
+        return deactivateBackend(request, env, parts[2]);
+      }
+      if (method === "POST" && parts[1] === "backends" && parts[3] === "shares" && !parts[4]) {
+        return shareBackend(request, env, parts[2]);
+      }
+      if (method === "DELETE" && parts[1] === "backends" && parts[3] === "shares" && parts[4]) {
+        return unshareBackend(request, env, parts[2], parts[4]);
       }
 
       // ── Internal (control → service) ───────────────────────────────────────

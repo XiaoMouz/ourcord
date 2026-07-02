@@ -164,12 +164,22 @@ describe("initiateUpload", () => {
     expect(body.upload_url).toBe(`/api/rooms/R1/files/${body.id}/upload`);
   });
 
-  it("happy path (non-R2) returns external storage_key and no upload_url", async () => {
+  it("happy path (registered personal backend) returns a backend upload_url", async () => {
     const token = await makeToken();
+    const backend = {
+      id: "B1",
+      owner_id: "u1",
+      lobby_id: null,
+      name: "my-server",
+      base_url: "https://files.me.example",
+      active: 1,
+      created_at: 1,
+    };
     const db = makeDB([
       { first: { lobby_id: "L1" } },
       { first: { 1: 1 } },
       { first: { ...POLICY_ALL_ON } },
+      { first: backend }, // resolver: own personal backend
       { run: { meta: { changes: 1 } } },
     ]);
     const resp = await initiateUpload(
@@ -183,10 +193,44 @@ describe("initiateUpload", () => {
       "R1",
     );
     expect(resp.status).toBe(201);
-    const body = await resp.json<{ storage_location: string; storage_key: string; upload_url: string | null }>();
+    const body = await resp.json<{
+      id: string;
+      storage_location: string;
+      storage_key: string;
+      backend_id: string | null;
+      upload_url: string | null;
+    }>();
     expect(body.storage_location).toBe("user_server");
-    expect(body.storage_key).toMatch(/^external:user_server:/);
-    expect(body.upload_url).toBeNull();
+    expect(body.backend_id).toBe("B1");
+    expect(body.storage_key).toBe(`files/${body.id}/doc.bin`);
+    expect(body.upload_url).toBe(`https://files.me.example/files/${body.id}/doc.bin`);
+  });
+
+  it("falls through 自建→分享→大厅 to R2 when no backend is registered", async () => {
+    const token = await makeToken();
+    const db = makeDB([
+      { first: { lobby_id: "L1" } },
+      { first: { 1: 1 } },
+      { first: { ...POLICY_ALL_ON } },
+      { first: null }, // resolver: no own personal backend
+      { first: null }, // resolver: nothing shared with the uploader
+      { first: null }, // resolver: no lobby backend
+      { run: { meta: { changes: 1 } } },
+    ]);
+    const resp = await initiateUpload(
+      initReq(token, {
+        filename: "doc.bin",
+        size_bytes: 10,
+        mime_type: "application/octet-stream",
+        storage_preference: "user_server",
+      }),
+      envOf(db),
+      "R1",
+    );
+    expect(resp.status).toBe(201);
+    const body = await resp.json<{ storage_location: string; backend_id: string | null }>();
+    expect(body.storage_location).toBe("r2");
+    expect(body.backend_id).toBeNull();
   });
 
   it("returns 404 when room missing", async () => {
@@ -534,8 +578,8 @@ describe("quota / cleanup", () => {
     const after = Math.floor(Date.now() / 1000);
     expect(resp.status).toBe(201);
     // INSERT bind order: id, room_id, uploader_id, filename, size_bytes,
-    // mime_type, storage_location, storage_key, expires_at, created_at
-    const expiresAt = inserted[8] as number;
+    // mime_type, storage_location, storage_key, backend_id, expires_at, created_at
+    const expiresAt = inserted[9] as number;
     expect(expiresAt).toBeGreaterThanOrEqual(before + 2 * 86400);
     expect(expiresAt).toBeLessThanOrEqual(after + 2 * 86400);
   });
@@ -578,7 +622,8 @@ describe("quota / cleanup", () => {
       "R1",
     );
     expect(resp.status).toBe(201);
-    expect(inserted[8]).toBeNull();
+    // index 9 = expires_at (index 8 is backend_id, null for R2 uploads too)
+    expect(inserted[9]).toBeNull();
   });
 
   it("runR2Cleanup deletes expired R2 objects then their D1 rows", async () => {

@@ -44,9 +44,37 @@ CREATE TABLE IF NOT EXISTS files (
   mime_type TEXT NOT NULL DEFAULT 'application/octet-stream',
   storage_location TEXT NOT NULL DEFAULT 'r2' CHECK(storage_location IN ('user_server','lobby_server','r2')),
   storage_key TEXT NOT NULL,
+  -- Which registered file backend holds this file (NULL for R2). Kept even
+  -- after the backend is deactivated, for auditability.
+  backend_id TEXT,
   expires_at INTEGER,
   created_at INTEGER NOT NULL
 );
+
+-- Autonomous file backends (Phase 2): user-run HTTP file servers forming the
+-- storage priority chain 自建 → 分享 → 大厅 ahead of the R2 fallback.
+-- lobby_id NULL = personal backend (自建, shareable); non-NULL = the lobby's
+-- backend (大厅), usable by every lobby member.
+CREATE TABLE IF NOT EXISTS file_backends (
+  id TEXT PRIMARY KEY,
+  owner_id TEXT NOT NULL,
+  lobby_id TEXT REFERENCES lobbies(id) ON DELETE CASCADE,
+  name TEXT NOT NULL DEFAULT '',
+  base_url TEXT NOT NULL,
+  active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0,1)),
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_file_backends_owner ON file_backends(owner_id);
+CREATE INDEX IF NOT EXISTS idx_file_backends_lobby ON file_backends(lobby_id);
+
+-- 分享: a personal backend granted to another user for their uploads.
+CREATE TABLE IF NOT EXISTS file_backend_shares (
+  backend_id TEXT NOT NULL REFERENCES file_backends(id) ON DELETE CASCADE,
+  grantee_id TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (backend_id, grantee_id)
+);
+CREATE INDEX IF NOT EXISTS idx_backend_shares_grantee ON file_backend_shares(grantee_id);
 
 CREATE TABLE IF NOT EXISTS file_policies (
   lobby_id TEXT PRIMARY KEY REFERENCES lobbies(id) ON DELETE CASCADE,
