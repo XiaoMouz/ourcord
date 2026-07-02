@@ -54,6 +54,10 @@ type Manager struct {
 	recvCh   chan Packet
 	doneCh   chan struct{}
 	closed   bool
+	// excludeIfaces: exact interface names (the daemon's own TUN) that must not
+	// contribute host candidates. Set once after the TUN comes up, before any
+	// session exists; guarded by mu.
+	excludeIfaces []string
 
 	sentPackets      atomic.Uint64
 	recvPackets      atomic.Uint64
@@ -99,6 +103,15 @@ func NewManager(localKey string, stunServers []string, signal SignalClient, onRe
 		recvCh:      make(chan Packet, 1024),
 		doneCh:      make(chan struct{}),
 	}
+}
+
+// SetExcludedInterfaces records the daemon's real TUN interface name(s) so ICE
+// never gathers host candidates on our own overlay. Call after the TUN is up
+// and before signaling starts (sessions snapshot the list at creation).
+func (m *Manager) SetExcludedInterfaces(names []string) {
+	m.mu.Lock()
+	m.excludeIfaces = append([]string(nil), names...)
+	m.mu.Unlock()
 }
 
 func (m *Manager) Recv() <-chan Packet {
@@ -253,11 +266,13 @@ func (m *Manager) ensureSession(peerKey string, controlling bool) (*session, boo
 		m.mu.Unlock()
 		return s, false, nil
 	}
+	excludeIfaces := append([]string(nil), m.excludeIfaces...)
 	m.mu.Unlock()
 
 	var s *session
 	a, err := NewAgent(Config{
-		STUNServers: m.stunServers,
+		STUNServers:       m.stunServers,
+		ExcludeInterfaces: excludeIfaces,
 		OnCandidates: func(candidates []string) {
 			if s == nil {
 				return
@@ -512,7 +527,7 @@ func (m *Manager) probeLoop(peerKey string, c *pionice.Conn) {
 	tick := time.NewTicker(iceProbeInterval)
 	defer tick.Stop()
 
-	pending := make(map[[iceProbeNonceLen]byte]struct{})
+	pending := make(map[[iceProbeNonceLen]byte]time.Time)
 	start := time.Now()
 	lastAck := start
 	confirmed := false
@@ -529,7 +544,17 @@ func (m *Manager) probeLoop(peerKey string, c *pionice.Conn) {
 			m.sendErrors.Add(1)
 			return
 		}
-		pending[nonce] = struct{}{}
+		// Prune nonces past any legitimate ack window: the liveness phase runs
+		// for the whole session (250ms cadence for days), so probes lost to
+		// steady-state packet loss must be reclaimed or the map grows forever.
+		now := time.Now()
+		cutoff := now.Add(-2 * iceProbeLivenessTimeout)
+		for n, sentAt := range pending {
+			if sentAt.Before(cutoff) {
+				delete(pending, n)
+			}
+		}
+		pending[nonce] = now
 		m.probeSent.Add(1)
 		sent++
 	}

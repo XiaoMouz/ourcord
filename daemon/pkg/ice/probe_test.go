@@ -29,6 +29,28 @@ func TestProbeConfirmedRequiresSustainedReliablePath(t *testing.T) {
 	}
 }
 
+func TestBuildInterfaceFilterExcludesExactTUNNameAndPrefixes(t *testing.T) {
+	keep := buildInterfaceFilter([]string{"ourvpn7"})
+	// Exact excluded name (the daemon's real TUN, whatever it's called) is dropped.
+	if keep("ourvpn7") {
+		t.Fatal("the daemon's own TUN must never contribute candidates")
+	}
+	// Prefix heuristic still applies on top.
+	if keep("utun3") || keep("ourcord0") {
+		t.Fatal("overlay-prefixed interfaces must stay excluded")
+	}
+	// Underlay NICs are kept.
+	for _, name := range []string{"eth0", "en0", "wlan0"} {
+		if !keep(name) {
+			t.Fatalf("%q is an underlay interface and must be kept", name)
+		}
+	}
+	// Empty exclusion list keeps the old behavior.
+	if !buildInterfaceFilter(nil)("eth0") {
+		t.Fatal("nil exclusions must not drop underlay interfaces")
+	}
+}
+
 func TestIsVPNInterfaceExcludesOverlayKeepsUnderlay(t *testing.T) {
 	for _, name := range []string{"utun", "utun8", "ourcord0"} {
 		if !isVPNInterface(name) {

@@ -572,6 +572,11 @@ func (d *daemon) connect(ctx context.Context) error {
 		return fmt.Errorf("tun up: %w", err)
 	}
 	log.Printf("TUN %s up; addrs=%v", tunIf.Name(), prefixes)
+	// Tell ICE the real TUN name (kernel may have renamed e.g. utun → utun7)
+	// so candidate gathering excludes our own overlay by ground truth, not
+	// just the name-prefix heuristic. Sessions only start once signaling runs,
+	// which is after connect() completes.
+	iceMgr.SetExcludedInterfaces([]string{tunIf.Name()})
 
 	table := routing.NewTable()
 	table.SetListenPort(d.wgListenPort)
@@ -812,13 +817,11 @@ func (d *daemon) scheduleICERetryLocked(pk wgtypes.Key) {
 	if st == nil {
 		st = &iceRetryState{interval: iceRetryBase}
 		d.iceRetry[pk] = st
-	} else {
-		st.interval *= 2
-		if st.interval > iceRetryCap {
-			st.interval = iceRetryCap
-		}
+		st.nextAttempt = time.Now().Add(st.interval)
+		return
 	}
-	st.nextAttempt = time.Now().Add(st.interval)
+	// Same doubling+cap curve as every other retry site — one implementation.
+	st.backoffAfterAttempt(time.Now())
 }
 
 // resetICEBackoffLocked pulls every degraded peer's retry back to the base
@@ -1162,12 +1165,23 @@ func (d *daemon) checkReachability(ctx context.Context) {
 		d.connMu.Unlock()
 		return
 	}
-	cli, networkID := d.cli, d.activeRoom
+	cli, networkID, tunIf := d.cli, d.activeRoom, d.tunIf
 	routes := d.table.All()
-	live, err := readPeerLiveness(d.tunIf)
+	d.connMu.Unlock()
+
+	// GetIPC dumps and parses the whole WireGuard device state — O(peers)
+	// string work. Do it lock-free (it touches no daemon state) so the 10s
+	// tick never stalls connect/teardown or the report paths behind connMu.
+	live, err := readPeerLiveness(tunIf)
 	if err != nil {
-		d.connMu.Unlock()
 		log.Printf("reachability stats: %v", err)
+		return
+	}
+
+	d.connMu.Lock()
+	if d.table == nil {
+		// Disconnected while we were parsing; drop the stale sample.
+		d.connMu.Unlock()
 		return
 	}
 	if d.reach == nil {

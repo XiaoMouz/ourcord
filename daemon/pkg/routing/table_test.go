@@ -225,14 +225,20 @@ func TestAddRelayChainRoutes_DirectPeersIgnored(t *testing.T) {
 	}
 }
 
-func TestReplace_NextHopClearsPreservedICEState(t *testing.T) {
+func TestReplace_NextHopClearsUnvalidatedICEState(t *testing.T) {
+	// Only *live* direct evidence (ICEReady, i.e. the liveness probe is passing
+	// right now) survives a control next-hop — that case is covered by
+	// TestReplaceKeepsLiveDirectOverStaleNextHop. A peer that is merely
+	// mid-validation or degraded has no such evidence: control's next hop must
+	// apply and no stale ICE/DERP endpoint may leak into the WG config.
 	tbl := NewTable()
 	peer := mustKey(t, 0xAA)
 	hop := mustKey(t, 0xBB)
 	tbl.Upsert(&PeerRoute{
 		PublicKey:   peer,
 		VPN4:        mustAddr(t, "198.18.0.10"),
-		ICEReady:    true,
+		ICEPending:  true,
+		LastError:   "direct-health-lost",
 		DERPURL:     "http://127.0.0.1:3340",
 		DERPNodeKey: "nodekey:old",
 	})
@@ -327,6 +333,31 @@ func TestReplacePreservesICEReady(t *testing.T) {
 	routes := tbl.All()
 	if len(routes) != 1 || !routes[0].ICEReady {
 		t.Fatalf("expected ICEReady preserved, got %+v", routes)
+	}
+}
+
+func TestReplaceKeepsLiveDirectOverStaleNextHop(t *testing.T) {
+	// A peer just upgraded to probe-validated direct; control hasn't ingested
+	// the ice_direct report yet and still returns next_hop_public_key. Local
+	// live evidence must win: keep direct, drop the stale next hop.
+	tbl := NewTable()
+	pk := mustKey(t, 0x07)
+	hop := mustKey(t, 0x08)
+	tbl.Upsert(&PeerRoute{PublicKey: pk, VPN4: mustAddr(t, "198.18.0.7"), ICEReady: true})
+	tbl.Replace([]*PeerRoute{{PublicKey: pk, VPN4: mustAddr(t, "198.18.0.7"), NextHop: &hop}})
+
+	routes := tbl.All()
+	if len(routes) != 1 || !routes[0].ICEReady || routes[0].NextHop != nil {
+		t.Fatalf("live direct must beat a stale control next hop, got %+v", routes)
+	}
+
+	// But without local direct evidence, control's next hop is authoritative.
+	tbl2 := NewTable()
+	tbl2.Upsert(&PeerRoute{PublicKey: pk, VPN4: mustAddr(t, "198.18.0.7")})
+	tbl2.Replace([]*PeerRoute{{PublicKey: pk, VPN4: mustAddr(t, "198.18.0.7"), NextHop: &hop}})
+	routes = tbl2.All()
+	if len(routes) != 1 || routes[0].NextHop == nil || routes[0].ICEReady {
+		t.Fatalf("without live direct the control next hop must apply, got %+v", routes)
 	}
 }
 

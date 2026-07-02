@@ -157,6 +157,14 @@ Known gaps:
   reached validated direct and was then impaired by an OS route blackhole, plus
   a fully symmetric "both peers direct first, then both observe impairment"
   smoke using bidirectional UDP egress drop.
+- Connectivity reporting has three async writers per edge (30s baseline
+  refresh, 10s reachability monitor, ICE upgrade/degrade callbacks) with no
+  ordering guarantee; the control-side upsert only special-cases the
+  unreachable×derp-baseline interleaving. A stale baseline report can
+  transiently downgrade a fresh ice edge for up to one refresh tick
+  (self-healing, wrong path cost only). Deep fix pending: a monotonic
+  reported_at/sequence arbitration on the upsert covering all transitions,
+  or a single per-peer reporting authority in the daemon.
 - A-B-C mixed DERP data-plane forwarding has been validated. Startup DERP
   reachable-edge reports are automatic; daemon automatic unreachable-edge
   reports are unit-tested and have independent OrbStack VM smoke coverage.

@@ -35,8 +35,26 @@ type Agent struct {
 // Config holds ICE agent configuration.
 type Config struct {
 	STUNServers []string // STUN server URLs (stun:host:port)
+	// ExcludeInterfaces lists exact interface names (typically the daemon's own
+	// TUN, e.g. "utun3") that must never contribute host candidates, on top of
+	// the isVPNInterface prefix heuristic. Ground truth beats name guessing.
+	ExcludeInterfaces []string
 	// Called when gathering is complete; send these candidates to peer via signaling
 	OnCandidates func(candidates []string)
+}
+
+// buildInterfaceFilter returns pion's keep-predicate: drop exact-named excluded
+// interfaces (the daemon's real TUN) and anything matching the VPN/overlay
+// prefix heuristic; keep underlay NICs.
+func buildInterfaceFilter(exclude []string) func(string) bool {
+	return func(name string) bool {
+		for _, ex := range exclude {
+			if ex != "" && name == ex {
+				return false
+			}
+		}
+		return !isVPNInterface(name)
+	}
 }
 
 // NewAgent creates a new ICE agent for hole punching with a specific peer.
@@ -73,8 +91,10 @@ func NewAgent(cfg Config) (*Agent, error) {
 		// address would loop WireGuard back through the tunnel (over DERP),
 		// yielding a "direct" path that is actually circular — it passes the
 		// probe but then loses liveness and flaps. Underlay NICs (eth0/en0) are
-		// kept, so same-LAN RFC1918/ULA host candidates still work.
-		InterfaceFilter: func(name string) bool { return !isVPNInterface(name) },
+		// kept, so same-LAN RFC1918/ULA host candidates still work. The
+		// daemon's actual TUN name arrives via cfg.ExcludeInterfaces so the
+		// exclusion is grounded in fact, not just the name-prefix heuristic.
+		InterfaceFilter: buildInterfaceFilter(cfg.ExcludeInterfaces),
 		// Prefer IPv6 host candidates
 		InsecureSkipVerify: false,
 	})

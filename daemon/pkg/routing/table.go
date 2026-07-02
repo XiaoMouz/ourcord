@@ -89,6 +89,19 @@ func (t *Table) Replace(routes []*PeerRoute) {
 					ap := *old.DirectAddr
 					r.DirectAddr = &ap
 				}
+			} else if old.ICEReady {
+				// Control still routes this peer via a next hop, but locally we
+				// hold a live, probe-validated direct path (ICEReady implies the
+				// ICE liveness keepalive is passing right now). Local evidence
+				// beats the control snapshot — it just hasn't ingested our
+				// ice_direct report yet. Keep direct; control converges on the
+				// next report and drops the next hop.
+				r.NextHop = nil
+				r.ICEReady = true
+				if r.DirectAddr == nil && old.DirectAddr != nil {
+					ap := *old.DirectAddr
+					r.DirectAddr = &ap
+				}
 			}
 		}
 		next[r.PublicKey.String()] = r
