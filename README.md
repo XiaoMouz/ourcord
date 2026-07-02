@@ -143,7 +143,7 @@ go build -o ourcord-cli ./cmd/ourcord-cli
 
 ## 开发路线图
 
-- [ ] **阶段一** — VPN 核心 + 控制层 + DERP 节点 + daemon 连接管线（per-peer ICE 自动直连、startup DERP fallback、runtime DERP 诊断切换、runtime 外部阻断 fallback、1:1 pair network、service `vpn_namespace`、三 VM A-B-C mixed DERP next-hop 数据面已用真实 control/service/relay + OrbStack 验证；关闭前仍需复跑包含 degraded retry 抑制的新 binary 对称 smoke，并补强 constrained topology 自动发现）
+- [ ] **阶段一** — VPN 核心 + 控制层 + DERP 节点 + daemon 连接管线（per-peer ICE 自动直连、startup DERP fallback、runtime DERP 诊断切换、runtime 对称阻断 DERP fallback、指数退避重试、1:1 pair network、service `vpn_namespace`、A-B-C next-hop 数据面与 next-hop 后直达恢复已用真实 control/service/relay + OrbStack 验证；`tests/e2e/smoke_abc_netns.sh` 保留为自动 A-B-C 回归入口）
 - [ ] **阶段二** — 网络完整性优先（A-B-C 拓扑闭环、Windows Wintun、设备级凭证、control↔service HMAC、自治文件后端；服务层大厅/房间/消息/R2 文件已有基础能力）
 - [ ] **阶段三** — 媒体层（语音/视频/屏幕共享/远控）
 - [ ] **阶段四** — 分发与产品化（Tauri/Flutter/React UI、安装器、更新、运营监控）

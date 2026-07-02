@@ -135,23 +135,35 @@ Recent validation:
   loss, then daemon direct-health detection switched the peer to
   `path_summary=degraded` over DERP and ping resumed. Control received
   `/api/peers/connectivity` rows with `transport=derp` and
-  `wg_reachable=true`. The smoke also exposed ICE retry churn after degraded
-  fallback; daemon now skips new ICE-ready events for peers with `LastError`
-  until an explicit retry policy is added.
+  `wg_reachable=true`. A later fully symmetric UDP-drop smoke replaced the
+  early retry-churn finding with sustained probe + exponential retry backoff.
+- 2026-06-29: the current binary re-ran the symmetric runtime impairment smoke
+  with real service/control/relay/daemon processes. Both peers first reached
+  ICE direct, symmetric UDP egress drop forced DERP fallback with VPN ping
+  staying at 0% loss, retry intervals backed off, and removing impairment
+  restored ICE direct.
+- 2026-06-29: three independent OrbStack VMs re-ran the A-B-C path without
+  manual `/api/peers/connectivity` shaping. A-C UDP underlay was impaired while
+  A-B/B-C stayed reachable; daemon reports drove control to emit
+  `next_hop_public_key=B`, A/C showed `path=next-hop`, and bidirectional A-C
+  VPN ICMP passed with TTL=63. The same run exposed and fixed stale direct-edge
+  refresh plus next-hop recovery retry: after removing the A-C impairment,
+  daemon kept probing direct ICE while still routed through B, cleared
+  `NextHop`, reported `ice_direct=1`, and A-C ping returned to TTL=64 direct.
 
 Known gaps:
 
 - Runtime DERP fallback has true external-network validation for a peer that
-  reached validated direct and was then impaired by an OS route blackhole. A
-  fully symmetric "both peers direct first, then both observe impairment" smoke
-  is still desirable, but the daemon fallback path is no longer only diagnostic.
+  reached validated direct and was then impaired by an OS route blackhole, plus
+  a fully symmetric "both peers direct first, then both observe impairment"
+  smoke using bidirectional UDP egress drop.
 - A-B-C mixed DERP data-plane forwarding has been validated. Startup DERP
-  reachable-edge reports are automatic; the remaining topology automation gap is
-  detecting/reporting direct pair unreachability under real constrained networks
-  without manually shaping `/api/peers/connectivity`.
-- Some legacy smoke documentation still describes mock-control endpoint
-  injection; those flows are useful for regression testing but are no longer
-  the primary direct-connect acceptance path.
+  reachable-edge reports are automatic; daemon automatic unreachable-edge
+  reports are unit-tested and have independent OrbStack VM smoke coverage.
+  The repeatable single-VM / three-netns script remains the faster regression
+  entrypoint.
+- Legacy mock-control endpoint injection remains documented only as a fast
+  regression path; it is no longer the primary direct-connect acceptance path.
 - Room/network identity is being split into an explicit contract:
   `rooms.id` remains the service-layer business key for messages/files/CRUD,
   while `rooms.vpn_namespace` is accepted by control/service/daemon as the
@@ -213,16 +225,30 @@ Implementation decisions to close:
   `ice gather timeout`) so successful direct paths do not look degraded in
   logs or UI diagnostics.
 
+Validated in the current Phase 1 smoke:
+
+- A fully symmetric runtime impairment smoke now starts with both peers on ICE
+  direct, applies a bidirectional UDP egress drop, falls back to DERP on both
+  peers, keeps VPN ping working through DERP, backs failed ICE retry attempts
+  off instead of retrying every tick, and returns to direct after impairment is
+  removed.
+- Daemon continues probing direct ICE for peers currently routed through
+  `NextHop`; when the sustained probe validates recovery, it clears `NextHop`,
+  restores direct `AllowedIPs`, switches WireGuard to `ice://`, and reports the
+  direct edge back to control.
+- Daemon status exposes per-peer path state (`direct`, `derp`, `next-hop`,
+  `degraded`) plus `last_error`; the next-hop status case is covered by daemon
+  unit tests.
+- Control preserves `unreachable` topology evidence against ordinary periodic
+  `derp-baseline` reports; daemon uses `derp-recovery` for an actual recovered
+  baseline path so a dead edge can become reachable again without flapping.
+
 Remaining exit criteria:
 
-- A fully symmetric runtime impairment smoke where both peers first reach direct
-  and then both fall back without ICE retry churn should be re-run after the
-  degraded-peer retry suppression fix is included in the live binary.
-- Daemon should automatically report constrained-network unreachable edges
-  needed for topology calculation, rather than relying on manual smoke shaping
-  for blocked direct pairs.
-- Daemon status exposes per-peer path state: direct, DERP, next-hop, degraded, and last error.
-- Phase 1 documentation no longer depends on mock endpoint injection for its primary acceptance path.
+- Run the smoke matrix from a clean checkout/VM after review. The automatic
+  A-B-C topology proof is currently `tests/e2e/smoke_abc_netns.sh`; the
+  independent-VM rerun has also passed and should be treated as environment
+  evidence, not a separate manual shaping requirement.
 
 ### Phase 2: Network Completeness
 
