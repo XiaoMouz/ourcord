@@ -233,10 +233,16 @@ start_workers() {
       --persist-to "$WORKDIR/control-persist" \
       --command "INSERT OR IGNORE INTO users (id, email, display_name, created_at) VALUES ('u1','u1@smoke.local','u1',0),('u2','u2@smoke.local','u2',0),('u3','u3@smoke.local','u3',0)" >/tmp/ocabc-control-seed.log 2>&1
   ) || { cat /tmp/ocabc-control-seed.log >&2; fail "control user seed failed"; }
+  (
+    # Canonical service schema path: versioned migrations, same as production.
+    # (init-db stays available as a dev convenience but is not exercised here.)
+    cd "$ROOT/service"
+    node22 node_modules/wrangler/bin/wrangler.js d1 migrations apply DB --local \
+      --persist-to "$WORKDIR/service-persist" >/tmp/ocabc-service-migrate.log 2>&1
+  ) || { cat /tmp/ocabc-service-migrate.log >&2; fail "service migrations failed"; }
 
   run_bg service sh -lc "cd '$ROOT/service' && npx -y node@22.12.0 node_modules/wrangler/bin/wrangler.js dev --ip 0.0.0.0 --port '$SERVICE_PORT' --local --persist-to '$WORKDIR/service-persist' --var JWT_SECRET:'$JWT_SECRET' --var SERVICE_INTERNAL_TOKEN:'$SERVICE_INTERNAL_TOKEN' --var ADMIN_TOKEN:'$ADMIN_TOKEN'"
   wait_http "$SERVICE_LOCAL/health" service
-  curl -fsS -X POST "$SERVICE_LOCAL/api/admin/init-db" >/dev/null
 
   run_bg control sh -lc "cd '$ROOT/control' && npx -y node@22.12.0 node_modules/wrangler/bin/wrangler.js dev --ip 0.0.0.0 --port '$CONTROL_PORT' --local --persist-to '$WORKDIR/control-persist' --var JWT_SECRET:'$JWT_SECRET' --var SERVICE_URL:'$SERVICE_LOCAL' --var SERVICE_INTERNAL_TOKEN:'$SERVICE_INTERNAL_TOKEN' --var ADMIN_TOKEN:'$ADMIN_TOKEN' --var ADMIN_USER_IDS:u1"
   wait_http "$CONTROL_LOCAL/health" control

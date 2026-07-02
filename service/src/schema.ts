@@ -1,3 +1,8 @@
+// Canonical schema versioning lives in ../migrations/ (wrangler d1 migrations
+// apply). SCHEMA_SQL exists only for the dev /api/admin/init-db convenience
+// and MUST equal the accumulated migrations — schema.test.ts enforces the
+// statement-level equivalence, so a schema change means: add/extend a
+// migration AND mirror it here.
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS lobbies (
   id TEXT PRIMARY KEY,
