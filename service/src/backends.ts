@@ -40,29 +40,42 @@ export function joinBackendURL(baseURL: string, storageKey: string): string {
   return `${baseURL.replace(/\/+$/, "")}/${storageKey}`;
 }
 
+const UNHEALTHY_SKIP_WINDOW_SEC = 3600;
+const BACKEND_HEALTH_PATH = "/.well-known/ourcord-file-backend/health";
+
+function liveBackendWhere(now: number): string {
+  const cutoff = now - UNHEALTHY_SKIP_WINDOW_SEC;
+  return `(health_status IS NULL OR health_status != 'unhealthy' OR last_health_at IS NULL OR last_health_at < ${cutoff})`;
+}
+
+export function backendHealthURL(baseURL: string): string {
+  return joinBackendURL(baseURL, BACKEND_HEALTH_PATH.replace(/^\/+/, ""));
+}
+
 // resolveFileBackend walks 自建 → 分享 → 大厅 → R2 and returns the first
-// usable tier. `preference` (from the upload request) reorders the walk but
-// never bypasses policy switches or conjures a backend that isn't registered:
-// a tier with no live backend simply falls through — that fall-through is the
-// autonomy: losing your own server degrades to a friend's, the lobby's, R2.
+// usable tier. The product contract is a fixed priority chain; the legacy
+// upload preference field is accepted by files.ts for wire compatibility but
+// must not reorder this chain.
 export async function resolveFileBackend(
   env: Env,
   uploaderId: string,
   lobbyId: string,
   policy: FilePolicy,
-  preference?: "user_server" | "lobby_server" | "r2",
+  _preference?: "user_server" | "lobby_server" | "r2",
 ): Promise<{ location: "user_server" | "lobby_server" | "r2"; backend: FileBackend | null } | null> {
   type Tier = "user_server" | "lobby_server" | "r2";
   const chain: Tier[] = ["user_server", "lobby_server", "r2"];
-  const ordered: Tier[] = preference ? [preference, ...chain.filter((t) => t !== preference)] : chain;
+  const now = Math.floor(Date.now() / 1000);
+  const healthy = liveBackendWhere(now);
 
-  for (const tier of ordered) {
+  for (const tier of chain) {
     if (tier === "user_server" && policy.user_server_enabled === 1) {
       // 自建: the uploader's own personal backend wins first…
       const own = await env.DB
         .prepare(
           `SELECT * FROM file_backends
            WHERE owner_id = ? AND lobby_id IS NULL AND active = 1
+             AND ${healthy}
            ORDER BY created_at DESC LIMIT 1`,
         )
         .bind(uploaderId)
@@ -74,6 +87,7 @@ export async function resolveFileBackend(
           `SELECT b.* FROM file_backends b
            JOIN file_backend_shares s ON s.backend_id = b.id
            WHERE s.grantee_id = ? AND b.lobby_id IS NULL AND b.active = 1
+             AND ${healthy.replaceAll("health_status", "b.health_status").replaceAll("last_health_at", "b.last_health_at")}
            ORDER BY s.created_at DESC LIMIT 1`,
         )
         .bind(uploaderId)
@@ -84,6 +98,7 @@ export async function resolveFileBackend(
         .prepare(
           `SELECT * FROM file_backends
            WHERE lobby_id = ? AND active = 1
+             AND ${healthy}
            ORDER BY created_at DESC LIMIT 1`,
         )
         .bind(lobbyId)
@@ -94,6 +109,86 @@ export async function resolveFileBackend(
     }
   }
   return null;
+}
+
+export async function probeBackendHealth(baseURL: string): Promise<{ status: "healthy" | "unhealthy"; error: string | null }> {
+  try {
+    const resp = await fetch(backendHealthURL(baseURL), { method: "GET" });
+    if (resp.ok) return { status: "healthy", error: null };
+    return { status: "unhealthy", error: `health returned ${resp.status}` };
+  } catch (e) {
+    return { status: "unhealthy", error: String(e).slice(0, 255) };
+  }
+}
+
+async function writeBackendHealth(
+  env: Env,
+  backendId: string,
+  status: "healthy" | "unhealthy",
+  errorMsg: string | null,
+  now = Math.floor(Date.now() / 1000),
+): Promise<void> {
+  await env.DB
+    .prepare("UPDATE file_backends SET health_status = ?, last_health_at = ?, last_health_error = ? WHERE id = ?")
+    .bind(status, now, errorMsg, backendId)
+    .run();
+}
+
+export async function checkBackendHealth(request: Request, env: Env, backendId: string): Promise<Response> {
+  const auth = await requireAuth(request, env);
+  if (auth instanceof Response) return auth;
+
+  const backend = await env.DB
+    .prepare("SELECT * FROM file_backends WHERE id = ? AND active = 1")
+    .bind(backendId)
+    .first<FileBackend>();
+  if (!backend) return err("backend not found", 404);
+
+  if (backend.lobby_id) {
+    const member = await env.DB
+      .prepare("SELECT role FROM lobby_members WHERE lobby_id = ? AND user_id = ?")
+      .bind(backend.lobby_id, auth.sub)
+      .first<{ role: string }>();
+    if (!member || (member.role !== "owner" && member.role !== "admin")) {
+      return err("only lobby owner/admin can check this backend", 403);
+    }
+  } else if (backend.owner_id !== auth.sub) {
+    return err("only the owner can check this backend", 403);
+  }
+
+  const result = await probeBackendHealth(backend.base_url);
+  const now = Math.floor(Date.now() / 1000);
+  await writeBackendHealth(env, backend.id, result.status, result.error, now);
+  return json({
+    backend_id: backend.id,
+    health_status: result.status,
+    checked_at: now,
+    error: result.error,
+  });
+}
+
+export async function runBackendHealthChecks(env: Env, batchSize = 50): Promise<{ checked: number; healthy: number; unhealthy: number }> {
+  const rows = await env.DB
+    .prepare(
+      `SELECT * FROM file_backends
+       WHERE active = 1
+       ORDER BY COALESCE(last_health_at, 0) ASC
+       LIMIT ?`,
+    )
+    .bind(batchSize)
+    .all<FileBackend>();
+
+  let checked = 0;
+  let healthy = 0;
+  let unhealthy = 0;
+  for (const backend of rows.results ?? []) {
+    const result = await probeBackendHealth(backend.base_url);
+    await writeBackendHealth(env, backend.id, result.status, result.error);
+    checked++;
+    if (result.status === "healthy") healthy++;
+    else unhealthy++;
+  }
+  return { checked, healthy, unhealthy };
 }
 
 // POST /api/backends — register a file backend. Without lobby_id it is a
@@ -138,7 +233,18 @@ export async function registerBackend(request: Request, env: Env): Promise<Respo
     .run();
 
   log({ event: "backends.registered", backend_id: id, user_id: auth.sub, lobby_id: lobbyId ?? "" });
-  return json({ id, owner_id: auth.sub, lobby_id: lobbyId, name, base_url: baseURL, active: 1, created_at: now }, 201);
+  return json({
+    id,
+    owner_id: auth.sub,
+    lobby_id: lobbyId,
+    name,
+    base_url: baseURL,
+    active: 1,
+    created_at: now,
+    health_status: "unknown",
+    last_health_at: null,
+    last_health_error: null,
+  }, 201);
 }
 
 // GET /api/backends — every backend visible to the caller, annotated with how

@@ -2,8 +2,8 @@ import { Env } from "./types";
 import { SCHEMA_SQL } from "./schema";
 import { createLobby, getLobby, joinLobby, listMembers, updateMemberRole, createInvite, revokeInvite, createRoom, updateRoom, deleteRoom } from "./lobby";
 import { getMessages, sendMessage, deleteMessage } from "./messages";
-import { initiateUpload, uploadToR2, listFiles, getDownloadUrl, getFilePolicy, updateFilePolicy, runR2Cleanup } from "./files";
-import { registerBackend, listBackends, deactivateBackend, shareBackend, unshareBackend } from "./backends";
+import { initiateUpload, uploadToR2, completeExternalUpload, listFiles, getDownloadUrl, getFilePolicy, updateFilePolicy, runR2Cleanup } from "./files";
+import { registerBackend, listBackends, deactivateBackend, shareBackend, unshareBackend, checkBackendHealth, runBackendHealthChecks } from "./backends";
 import { json, constantTimeEqual } from "./auth";
 import { verifyInternalRequest } from "./internalAuth";
 import { checkRateLimit } from "./ratelimit";
@@ -103,6 +103,9 @@ export default {
       if (method === "PUT" && parts[1] === "rooms" && parts[3] === "files" && parts[5] === "upload") {
         return uploadToR2(request, env, parts[2], parts[4]);
       }
+      if (method === "POST" && parts[1] === "rooms" && parts[3] === "files" && parts[5] === "complete") {
+        return completeExternalUpload(request, env, parts[2], parts[4]);
+      }
       if (method === "GET" && parts[1] === "rooms" && parts[3] === "files" && !parts[4]) {
         return listFiles(request, env, parts[2]);
       }
@@ -127,6 +130,9 @@ export default {
       }
       if (method === "DELETE" && parts[1] === "backends" && parts[3] === "shares" && parts[4]) {
         return unshareBackend(request, env, parts[2], parts[4]);
+      }
+      if (method === "POST" && parts[1] === "backends" && parts[3] === "check" && !parts[4]) {
+        return checkBackendHealth(request, env, parts[2]);
       }
 
       // ── Internal (control → service) ───────────────────────────────────────
@@ -208,8 +214,16 @@ export default {
   // Runs hourly to evict expired R2 files; the DB rows for non-R2 storage
   // backends are left alone because we don't own those bytes.
   async scheduled(_controller: ScheduledController, env: Env, _ctx: ExecutionContext): Promise<void> {
-    const result = await runR2Cleanup(env);
-    log({ event: "cron.r2_cleanup", deleted: result.deleted, failed: result.failed });
+    const r2 = await runR2Cleanup(env);
+    const backends = await runBackendHealthChecks(env);
+    log({
+      event: "cron.file_maintenance",
+      r2_deleted: r2.deleted,
+      r2_failed: r2.failed,
+      backend_checked: backends.checked,
+      backend_healthy: backends.healthy,
+      backend_unhealthy: backends.unhealthy,
+    });
   },
 } satisfies ExportedHandler<Env>;
 

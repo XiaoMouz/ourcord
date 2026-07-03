@@ -54,7 +54,13 @@ CREATE TABLE IF NOT EXISTS files (
   backend_id TEXT,
   expires_at INTEGER,
   created_at INTEGER NOT NULL
-);
+  ,
+  upload_status TEXT NOT NULL DEFAULT 'uploaded' CHECK(upload_status IN ('pending','uploaded','failed')),
+  upload_token_hash TEXT,
+  upload_expires_at INTEGER,
+  uploaded_at INTEGER,
+  actual_size_bytes INTEGER,
+  last_upload_error TEXT);
 
 -- Autonomous file backends (Phase 2): user-run HTTP file servers forming the
 -- storage priority chain 自建 → 分享 → 大厅 ahead of the R2 fallback.
@@ -68,7 +74,10 @@ CREATE TABLE IF NOT EXISTS file_backends (
   base_url TEXT NOT NULL,
   active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0,1)),
   created_at INTEGER NOT NULL
-);
+  ,
+  health_status TEXT NOT NULL DEFAULT 'unknown' CHECK(health_status IN ('unknown','healthy','unhealthy')),
+  last_health_at INTEGER,
+  last_health_error TEXT);
 CREATE INDEX IF NOT EXISTS idx_file_backends_owner ON file_backends(owner_id);
 CREATE INDEX IF NOT EXISTS idx_file_backends_lobby ON file_backends(lobby_id);
 
@@ -101,6 +110,8 @@ CREATE INDEX IF NOT EXISTS idx_files_room ON files(room_id, created_at);
 -- rows that can ever expire) and matches the cleanup query exactly.
 CREATE INDEX IF NOT EXISTS idx_files_expires
   ON files(storage_location, expires_at) WHERE expires_at IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_files_upload_status ON files(room_id, upload_status, created_at);
+CREATE INDEX IF NOT EXISTS idx_file_backends_health ON file_backends(active, health_status, last_health_at);
 CREATE INDEX IF NOT EXISTS idx_lobby_members_user ON lobby_members(user_id);
 
 -- Invite codes for joining a lobby. Created by owner/admin; consumed (or

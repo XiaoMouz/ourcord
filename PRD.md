@@ -263,9 +263,9 @@ Required:
 - Done: HMAC(ts+nonce) signing for control-to-service internal RPC.
 - Done: room-scoped peer refresh tied to lobby/room membership.
 - Done: minimal CLI/status surfaces for current network acceptance.
-- Partial: autonomous file backend registry, sharing, selection, and R2 fallback
-  exist; the reference backend protocol, health checks, upload completion
-  callbacks, and operator guide remain to be closed.
+- Done: autonomous file backend registry, sharing, fixed-chain selection,
+  direct upload, completion verification, health checks, reference backend, and
+  R2 fallback.
 - Open: Windows Wintun address assignment and route synchronization.
 - Full UI remains Phase 4; Phase 2 only needs enough CLI/status surface to
   validate network behavior.
@@ -312,10 +312,9 @@ Required:
   messages; video and file rooms do not store text history in MVP.
 - **Attachments/files** are service-layer metadata plus a storage backend chosen
   by policy. The intended priority chain is user-owned server → shared user
-  server → lobby server → R2 fallback. R2 data flows through the Worker today;
-  non-R2 backends can return direct upload/download URLs when registered, while
-  the reference backend protocol and health/upload-completion loop remain
-  unfinished.
+  server → lobby server → R2 fallback. R2 data flows through the Worker;
+  non-R2 backends use direct `PUT` plus service `complete` verification before
+  metadata is published.
 - **1:1 private calls** use a `pair:<pkA>.<pkB>` network id today. That maps to
   two exact daemon device public keys rather than a lobby room. Product-level
   private-call permissions and call records still need to be attached above
@@ -380,17 +379,18 @@ Acceptance:
 ### Share Files
 
 - Client initiates upload with filename, size, MIME type, and optional storage preference.
-- Service enforces file policy and picks the first available tier in the product priority order.
+- Service enforces file policy and picks the first available tier in the fixed product priority order.
 - R2 upload and download work through the Worker.
+- Non-R2 upload goes directly to the selected backend and is published only
+  after service verifies completion.
 - Expired R2 files are cleaned by cron.
 
 Acceptance:
 
 - Declared and actual upload sizes must match.
 - Non-members cannot list or download files.
-- Non-R2 download returns the selected backend URL when the backend is active;
-  missing/inactive backends fail clearly instead of silently falling back to an
-  unauthorized target.
+- Non-R2 pending uploads are not listed or downloadable; completed non-R2 files
+  return the selected backend URL when the backend is active.
 
 ## 6. Security And Trust Requirements
 

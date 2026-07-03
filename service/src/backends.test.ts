@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { registerBackend, shareBackend, deactivateBackend, validBackendURL, joinBackendURL } from "./backends";
+import { registerBackend, shareBackend, deactivateBackend, checkBackendHealth, validBackendURL, joinBackendURL, backendHealthURL } from "./backends";
 import { getDownloadUrl } from "./files";
 import type { Env } from "./types";
 
@@ -87,6 +87,7 @@ describe("validBackendURL / joinBackendURL", () => {
   it("joins without duplicate slashes", () => {
     expect(joinBackendURL("https://x.example/", "files/F1/a.txt")).toBe("https://x.example/files/F1/a.txt");
     expect(joinBackendURL("https://x.example/base", "files/F1/a.txt")).toBe("https://x.example/base/files/F1/a.txt");
+    expect(backendHealthURL("https://x.example/base/")).toBe("https://x.example/base/.well-known/ourcord-file-backend/health");
   });
 });
 
@@ -201,6 +202,47 @@ describe("deactivateBackend", () => {
   });
 });
 
+describe("checkBackendHealth", () => {
+  function checkReq(token: string): Request {
+    return new Request("https://service.example/api/backends/B1/check", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  }
+
+  it("owner probes a personal backend and stores healthy", async () => {
+    const token = await makeToken();
+    const db = makeDB([
+      { first: { id: "B1", owner_id: "u1", lobby_id: null, base_url: "https://files.me.example", active: 1 } },
+      { run: { meta: { changes: 1 } } },
+    ]);
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("ok", { status: 200 }));
+    try {
+      const resp = await checkBackendHealth(checkReq(token), envOf(db), "B1");
+      expect(resp.status).toBe(200);
+      expect(fetchSpy).toHaveBeenCalledWith(
+        "https://files.me.example/.well-known/ourcord-file-backend/health",
+        { method: "GET" },
+      );
+      const body = await resp.json<{ backend_id: string; health_status: string; error: string | null }>();
+      expect(body.backend_id).toBe("B1");
+      expect(body.health_status).toBe("healthy");
+      expect(body.error).toBeNull();
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it("rejects non-owner checks on personal backends", async () => {
+    const token = await makeToken("u9");
+    const db = makeDB([
+      { first: { id: "B1", owner_id: "u1", lobby_id: null, base_url: "https://files.me.example", active: 1 } },
+    ]);
+    const resp = await checkBackendHealth(checkReq(token), envOf(db), "B1");
+    expect(resp.status).toBe(403);
+  });
+});
+
 describe("getDownloadUrl for backend-hosted files", () => {
   const FILE_ROW = {
     id: "F1",
@@ -214,6 +256,7 @@ describe("getDownloadUrl for backend-hosted files", () => {
     backend_id: "B1",
     expires_at: null,
     created_at: 1,
+    upload_status: "uploaded" as const,
   };
 
   function dlReq(token: string): Request {

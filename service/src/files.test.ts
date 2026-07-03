@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { initiateUpload, uploadToR2, runR2Cleanup } from "./files";
+import { initiateUpload, uploadToR2, completeExternalUpload, runR2Cleanup } from "./files";
 import type { Env, FilePolicy } from "./types";
 
 // NOTE on scope: the spec for Y4 referenced a chunked upload protocol
@@ -24,6 +24,11 @@ async function hmacSign(secret: string, data: string): Promise<string> {
   let s = "";
   for (let i = 0; i < b.length; i++) s += String.fromCharCode(b[i]);
   return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+async function sha256Hex(data: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(data));
+  return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, "0")).join("");
 }
 
 function b64url(s: string): string {
@@ -158,10 +163,14 @@ describe("initiateUpload", () => {
       storage_location: string;
       storage_key: string;
       upload_url: string | null;
+      upload_token: string | null;
+      complete_url: string | null;
     }>();
     expect(body.storage_location).toBe("r2");
     expect(body.storage_key).toMatch(/^files\/L1\/R1\/.+\/hello\.txt$/);
     expect(body.upload_url).toBe(`/api/rooms/R1/files/${body.id}/upload`);
+    expect(body.upload_token).toBeNull();
+    expect(body.complete_url).toBeNull();
   });
 
   it("happy path (registered personal backend) returns a backend upload_url", async () => {
@@ -199,11 +208,51 @@ describe("initiateUpload", () => {
       storage_key: string;
       backend_id: string | null;
       upload_url: string | null;
+      upload_token: string | null;
+      complete_url: string | null;
+      upload_expires_at: number | null;
     }>();
     expect(body.storage_location).toBe("user_server");
     expect(body.backend_id).toBe("B1");
     expect(body.storage_key).toBe(`files/${body.id}/doc.bin`);
     expect(body.upload_url).toBe(`https://files.me.example/files/${body.id}/doc.bin`);
+    expect(body.upload_token).toMatch(/^ut_/);
+    expect(body.complete_url).toBe(`/api/rooms/R1/files/${body.id}/complete`);
+    expect(body.upload_expires_at).toBeGreaterThan(Math.floor(Date.now() / 1000));
+  });
+
+  it("keeps fixed storage priority even when storage_preference asks for R2", async () => {
+    const token = await makeToken();
+    const backend = {
+      id: "B1",
+      owner_id: "u1",
+      lobby_id: null,
+      name: "my-server",
+      base_url: "https://files.me.example",
+      active: 1,
+      created_at: 1,
+    };
+    const db = makeDB([
+      { first: { lobby_id: "L1" } },
+      { first: { 1: 1 } },
+      { first: { ...POLICY_ALL_ON } },
+      { first: backend },
+      { run: { meta: { changes: 1 } } },
+    ]);
+    const resp = await initiateUpload(
+      initReq(token, {
+        filename: "doc.bin",
+        size_bytes: 10,
+        mime_type: "application/octet-stream",
+        storage_preference: "r2",
+      }),
+      envOf(db),
+      "R1",
+    );
+    expect(resp.status).toBe(201);
+    const body = await resp.json<{ storage_location: string; backend_id: string | null }>();
+    expect(body.storage_location).toBe("user_server");
+    expect(body.backend_id).toBe("B1");
   });
 
   it("falls through 自建→分享→大厅 to R2 when no backend is registered", async () => {
@@ -406,7 +455,7 @@ describe("initiateUpload", () => {
     expect(resp.status).toBe(503);
   });
 
-  it("preference is honoured when enabled (falls back when not)", async () => {
+  it("falls through disabled tiers to R2", async () => {
     const token = await makeToken();
     const policy: FilePolicy = {
       ...POLICY_ALL_ON,
@@ -436,6 +485,22 @@ describe("initiateUpload", () => {
   });
 });
 
+function completeReq(token: string, uploadToken: string, fileId = "F1", roomId = "R1"): Request {
+  const body = JSON.stringify({ upload_token: uploadToken });
+  return new Request(
+    `https://service.example/api/rooms/${roomId}/files/${fileId}/complete`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+        "content-length": String(body.length),
+      },
+      body,
+    },
+  );
+}
+
 function uploadReq(token: string, body: string, fileId = "F1", roomId = "R1"): Request {
   return new Request(
     `https://service.example/api/rooms/${roomId}/files/${fileId}/upload`,
@@ -458,6 +523,15 @@ const FILE_ROW = {
   storage_key: "files/L1/R1/F1/f.txt",
   expires_at: null,
   created_at: 1,
+};
+
+const EXTERNAL_FILE_ROW = {
+  ...FILE_ROW,
+  storage_location: "user_server" as const,
+  storage_key: "files/F1/f.txt",
+  backend_id: "B1",
+  upload_status: "pending" as const,
+  upload_expires_at: 9999999999,
 };
 
 describe("uploadToR2", () => {
@@ -533,6 +607,60 @@ describe("uploadToR2", () => {
     );
     expect(resp.status).toBe(400);
     expect(r2.calls.delete).toEqual([FILE_ROW.storage_key]);
+  });
+});
+
+describe("completeExternalUpload", () => {
+  it("verifies backend HEAD and publishes an external upload", async () => {
+    const token = await makeToken();
+    const uploadToken = "upload-token";
+    const db = makeDB([
+      { first: { ...EXTERNAL_FILE_ROW, upload_token_hash: await sha256Hex(uploadToken) } },
+      { first: { id: "B1", base_url: "https://files.me.example", active: 1 } },
+      { run: { meta: { changes: 1 } } },
+    ]);
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(null, { status: 200, headers: { "content-length": "5" } }),
+    );
+    try {
+      const resp = await completeExternalUpload(completeReq(token, uploadToken), envOf(db), "R1", "F1");
+      expect(resp.status).toBe(200);
+      expect(fetchSpy).toHaveBeenCalledWith("https://files.me.example/files/F1/f.txt", { method: "HEAD" });
+      const body = await resp.json<{ uploaded: boolean; bytes: number; backend_id: string }>();
+      expect(body).toEqual({ uploaded: true, bytes: 5, storage_location: "user_server", backend_id: "B1" });
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it("rejects invalid upload tokens", async () => {
+    const token = await makeToken();
+    const db = makeDB([
+      { first: { ...EXTERNAL_FILE_ROW, upload_token_hash: await sha256Hex("correct-token") } },
+    ]);
+    const resp = await completeExternalUpload(completeReq(token, "wrong-token"), envOf(db), "R1", "F1");
+    expect(resp.status).toBe(403);
+  });
+
+  it("fails and records an error when backend size does not match", async () => {
+    const token = await makeToken();
+    const uploadToken = "upload-token";
+    const db = makeDB([
+      { first: { ...EXTERNAL_FILE_ROW, upload_token_hash: await sha256Hex(uploadToken) } },
+      { first: { id: "B1", base_url: "https://files.me.example", active: 1 } },
+      { run: { meta: { changes: 1 } } },
+    ]);
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(null, { status: 200, headers: { "content-length": "4" } }),
+    );
+    try {
+      const resp = await completeExternalUpload(completeReq(token, uploadToken), envOf(db), "R1", "F1");
+      expect(resp.status).toBe(409);
+      const body = await resp.json<{ error: string }>();
+      expect(body.error).toMatch(/size mismatch/);
+    } finally {
+      fetchSpy.mockRestore();
+    }
   });
 });
 

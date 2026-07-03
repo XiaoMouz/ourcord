@@ -58,6 +58,12 @@ export interface FileRecord {
   backend_id?: string | null; // registered file backend (NULL for R2)
   expires_at?: number;
   created_at: number;
+  upload_status?: "pending" | "uploaded" | "failed";
+  upload_token_hash?: string | null;
+  upload_expires_at?: number | null;
+  uploaded_at?: number | null;
+  actual_size_bytes?: number | null;
+  last_upload_error?: string | null;
 }
 
 // A user-run HTTP file server in the autonomous storage chain (AGENTS 3.5).
@@ -69,6 +75,9 @@ export interface FileBackend {
   base_url: string;
   active: number; // 1 = live, 0 = deactivated
   created_at: number;
+  health_status?: "unknown" | "healthy" | "unhealthy";
+  last_health_at?: number | null;
+  last_health_error?: string | null;
 }
 
 export interface FilePolicy {

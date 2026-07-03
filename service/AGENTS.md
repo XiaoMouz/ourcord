@@ -9,8 +9,8 @@
 - 大厅（lobby，类 Discord server）/ 房间（room/channel）
 - 权限系统（厅主、管理员、成员、被禁言等）
 - 消息历史（D1）
-- 文件元数据（D1）+ R2 兜底存储
-- 文件存储策略路由：用户自建 → 分享 → 大厅 → R2
+- 文件元数据（D1）+ 自治文件后端直传/complete/health + R2 兜底存储
+- 文件存储策略路由：用户自建 → 分享 → 大厅 → R2（固定优先级，`storage_preference` 不可重排）
 
 **不**做：身份认证、网络拓扑、打洞——那是控制层的事。
 
@@ -47,7 +47,7 @@ pnpm exec wrangler deploy
 
 - **房间消息只允许 type ∈ {text, voice}**：`messages.sendMessage` 拒绝 file/video 房间发文字。这是 by design——文件/视频房间不存聊天历史，附带说明走对应类型房间。
 - **lobby 加入需邀请码**：`POST /api/lobbies/:id/join?code=...`，code 在 `lobby_invites` 表（owner 通过 `POST /api/lobbies/:id/invites` 生成）。
-- **文件存储优先链 fallback**：`storage_preference` 不可用时按 user_server → lobby_server → r2 顺序自动降级，不直接 503。
+- **文件存储优先链 fallback**：固定按 user_server（自建/分享）→ lobby_server → r2 顺序自动降级，不直接 503；`storage_preference` 只作兼容输入，不能重排优先链。
 - **/api/internal/* 仅供控制层调用**：用 `SERVICE_INTERNAL_TOKEN` HMAC 短签名校验（`X-Internal-Ts` / `X-Internal-Nonce` / `X-Internal-Sig`）；不要给客户端暴露，不要恢复旧静态 token 头。
 
 ## 已知技术债

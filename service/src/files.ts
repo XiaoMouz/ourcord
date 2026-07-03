@@ -1,7 +1,44 @@
 import { Env, FileRecord, FilePolicy, FileBackend } from "./types";
-import { requireAuth, generateId, json, err, checkBodySize } from "./auth";
+import { requireAuth, generateId, json, err, checkBodySize, constantTimeEqual } from "./auth";
 import { resolveFileBackend, joinBackendURL } from "./backends";
 import { log } from "./log";
+
+const UPLOAD_TOKEN_TTL_SEC = 30 * 60;
+
+function b64url(bytes: Uint8Array): string {
+  let s = "";
+  for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
+  return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function generateUploadToken(): string {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  return `ut_${b64url(bytes)}`;
+}
+
+async function hashUploadToken(token: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(token));
+  return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+async function markUploadFailed(env: Env, fileId: string, msg: string): Promise<void> {
+  await env.DB
+    .prepare("UPDATE files SET upload_status = 'failed', last_upload_error = ? WHERE id = ?")
+    .bind(msg.slice(0, 255), fileId)
+    .run();
+}
+
+function newFixedLengthStream(length: number): { readable: ReadableStream<Uint8Array>; writable: WritableStream<Uint8Array> } {
+  const ctor = (globalThis as unknown as {
+    FixedLengthStream?: new (length: number) => { readable: ReadableStream<Uint8Array>; writable: WritableStream<Uint8Array> };
+  }).FixedLengthStream;
+  if (ctor) return new ctor(length);
+  // Unit tests run in plain Node, where Cloudflare's FixedLengthStream is not
+  // available. The production Worker path above still uses the fixed-length
+  // primitive so R2 accepts the stream.
+  return new TransformStream<Uint8Array, Uint8Array>();
+}
 
 // POST /api/rooms/:roomId/files — initiate file upload
 // Client sends metadata; server returns a pre-signed URL or storage target
@@ -112,10 +149,9 @@ export async function initiateUpload(request: Request, env: Env, roomId: string)
     }
   }
 
-  // Storage selection: walk the autonomous chain 自建 → 分享 → 大厅 → R2 for
-  // a concretely registered backend (backends.ts). A preference reorders the
-  // walk; a tier without a live backend falls through — losing your own
-  // server degrades to a friend's, the lobby's, then R2.
+  // Storage selection: walk the fixed autonomous chain 自建 → 分享 → 大厅 → R2
+  // for a concretely registered backend. storage_preference is accepted for
+  // wire compatibility but does not reorder the product priority chain.
   const resolved = await resolveFileBackend(env, auth.sub, room.lobby_id, policy, body.storage_preference);
   if (!resolved) return err("No storage tier available for this lobby", 503);
   const { location: storageLocation, backend } = resolved;
@@ -126,6 +162,9 @@ export async function initiateUpload(request: Request, env: Env, roomId: string)
 
   let storageKey: string;
   let uploadUrl: string | null = null;
+  let uploadToken: string | null = null;
+  let uploadTokenHash: string | null = null;
+  let uploadExpiresAt: number | null = null;
 
   if (storageLocation === "r2") {
     storageKey = `files/${room.lobby_id}/${roomId}/${id}/${body.filename}`;
@@ -135,18 +174,27 @@ export async function initiateUpload(request: Request, env: Env, roomId: string)
     uploadUrl = `/api/rooms/${roomId}/files/${id}/upload`;
   } else {
     // External backend: the client PUTs directly to the backend server at
-    // {base_url}/{storage_key}; only the metadata lives here.
+    // {base_url}/{storage_key}; the client must then call complete_url with the
+    // one-time token so service can verify size and publish the metadata.
     storageKey = `files/${id}/${body.filename}`;
     uploadUrl = joinBackendURL(backend!.base_url, storageKey);
+    uploadToken = generateUploadToken();
+    uploadTokenHash = await hashUploadToken(uploadToken);
+    uploadExpiresAt = now + UPLOAD_TOKEN_TTL_SEC;
   }
 
   await env.DB
     .prepare(
-      `INSERT INTO files (id, room_id, uploader_id, filename, size_bytes, mime_type, storage_location, storage_key, backend_id, expires_at, created_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?)`
+      `INSERT INTO files (
+         id, room_id, uploader_id, filename, size_bytes, mime_type,
+         storage_location, storage_key, backend_id, expires_at, created_at,
+         upload_status, upload_token_hash, upload_expires_at
+       )
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
     )
     .bind(id, roomId, auth.sub, body.filename, body.size_bytes, mimeType,
-      storageLocation, storageKey, backend?.id ?? null, expiresAt, now)
+      storageLocation, storageKey, backend?.id ?? null, expiresAt, now,
+      "pending", uploadTokenHash, uploadExpiresAt)
     .run();
 
   return json({
@@ -155,6 +203,10 @@ export async function initiateUpload(request: Request, env: Env, roomId: string)
     storage_key: storageKey,
     backend_id: backend?.id ?? null,
     upload_url: uploadUrl,
+    upload_method: "PUT",
+    complete_url: storageLocation === "r2" ? null : `/api/rooms/${roomId}/files/${id}/complete`,
+    upload_token: uploadToken,
+    upload_expires_at: uploadExpiresAt,
   }, 201);
 }
 
@@ -171,6 +223,7 @@ export async function uploadToR2(
     .first<FileRecord>();
   if (!file) return err("File record not found or access denied", 404);
   if (file.storage_location !== "r2") return err("File not stored in R2", 400);
+  if (file.upload_status && file.upload_status !== "pending") return err("File upload is not pending", 409);
 
   const body = request.body;
   if (!body) return err("No body", 400);
@@ -183,40 +236,157 @@ export async function uploadToR2(
   // (partially written) R2 object so we don't keep paying for it.
   const declared = file.size_bytes;
   let received = 0;
-  let overflowed = false;
-  const counter = new TransformStream<Uint8Array, Uint8Array>({
-    transform(chunk, controller) {
-      received += chunk.byteLength;
-      if (received > declared) {
-        overflowed = true;
-        controller.error(new Error("declared size exceeded"));
-        return;
+  let uploadErr: "overflow" | "underflow" | null = null;
+  const fixed = newFixedLengthStream(declared);
+  const pump = (async () => {
+    const reader = body.getReader();
+    const writer = fixed.writable.getWriter();
+    try {
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        if (!value) continue;
+        received += value.byteLength;
+        if (received > declared) {
+          uploadErr = "overflow";
+          throw new Error("declared size exceeded");
+        }
+        await writer.write(value);
       }
-      controller.enqueue(chunk);
-    },
-  });
+      if (received !== declared) {
+        uploadErr = "underflow";
+        throw new Error(`Upload short: expected ${declared}, got ${received}`);
+      }
+      await writer.close();
+    } catch (e) {
+      try { await writer.abort(e); } catch { /* noop */ }
+      throw e;
+    } finally {
+      reader.releaseLock();
+    }
+  })();
 
   try {
-    await env.FILES.put(file.storage_key, body.pipeThrough(counter), {
-      httpMetadata: { contentType: file.mime_type },
-    });
+    await Promise.all([
+      env.FILES.put(file.storage_key, fixed.readable, {
+        httpMetadata: { contentType: file.mime_type },
+      }),
+      pump,
+    ]);
   } catch (e) {
-    if (overflowed) {
+    if (uploadErr === "overflow") {
       // Best-effort cleanup; ignore secondary errors.
       try { await env.FILES.delete(file.storage_key); } catch { /* noop */ }
+      await markUploadFailed(env, file.id, `Upload exceeded declared size ${declared}`);
       return err(`Upload exceeded declared size ${declared}`, 413);
+    }
+    if (uploadErr === "underflow") {
+      try { await env.FILES.delete(file.storage_key); } catch { /* noop */ }
+      await markUploadFailed(env, file.id, `Upload short: expected ${declared}, got ${received}`);
+      return err(`Upload short: expected ${declared}, got ${received}`, 400);
     }
     throw e;
   }
 
-  if (received !== declared) {
-    // Underflow: client said size N but only sent M<N. Reject — the metadata
-    // and quota math are otherwise wrong. Wipe R2 to avoid orphans.
-    try { await env.FILES.delete(file.storage_key); } catch { /* noop */ }
-    return err(`Upload short: expected ${declared}, got ${received}`, 400);
-  }
+  const now = Math.floor(Date.now() / 1000);
+  await env.DB
+    .prepare(
+      `UPDATE files
+       SET upload_status = 'uploaded', uploaded_at = ?, actual_size_bytes = ?, last_upload_error = NULL
+       WHERE id = ?`,
+    )
+    .bind(now, received, file.id)
+    .run();
 
   return json({ uploaded: true, key: file.storage_key, bytes: received });
+}
+
+// POST /api/rooms/:roomId/files/:fileId/complete — publish an external upload
+// after verifying that the backend has the expected object and byte length.
+export async function completeExternalUpload(
+  request: Request,
+  env: Env,
+  roomId: string,
+  fileId: string,
+): Promise<Response> {
+  const tooBig = checkBodySize(request, 1024);
+  if (tooBig) return tooBig;
+  const auth = await requireAuth(request, env);
+  if (auth instanceof Response) return auth;
+
+  let body: { upload_token?: unknown };
+  try {
+    body = await request.json();
+  } catch {
+    return err("invalid JSON body");
+  }
+  const uploadToken = typeof body.upload_token === "string" ? body.upload_token : "";
+  if (!uploadToken) return err("upload_token required");
+
+  const file = await env.DB
+    .prepare("SELECT * FROM files WHERE id = ? AND room_id = ? AND uploader_id = ?")
+    .bind(fileId, roomId, auth.sub)
+    .first<FileRecord>();
+  if (!file) return err("File record not found or access denied", 404);
+  if (file.storage_location === "r2") return err("R2 uploads complete through the upload endpoint", 400);
+  if (file.upload_status !== "pending") return err("File upload is not pending", 409);
+  if (!file.upload_token_hash || !file.upload_expires_at) return err("File upload token is missing", 409);
+  const now = Math.floor(Date.now() / 1000);
+  if (file.upload_expires_at < now) {
+    await markUploadFailed(env, file.id, "upload token expired");
+    return err("upload token expired", 403);
+  }
+  const gotHash = await hashUploadToken(uploadToken);
+  if (!constantTimeEqual(gotHash, file.upload_token_hash)) return err("invalid upload token", 403);
+  if (!file.backend_id) return err("file has no registered backend", 503);
+
+  const backend = await env.DB
+    .prepare("SELECT * FROM file_backends WHERE id = ? AND active = 1")
+    .bind(file.backend_id)
+    .first<FileBackend>();
+  if (!backend) return err("file backend is unavailable", 503);
+
+  const url = joinBackendURL(backend.base_url, file.storage_key);
+  let resp: Response;
+  try {
+    resp = await fetch(url, { method: "HEAD" });
+  } catch (e) {
+    const msg = `backend HEAD failed: ${String(e).slice(0, 160)}`;
+    await env.DB.prepare("UPDATE files SET last_upload_error = ? WHERE id = ?").bind(msg, file.id).run();
+    return err(msg, 502);
+  }
+  if (!resp.ok) {
+    const msg = `backend HEAD returned ${resp.status}`;
+    await env.DB.prepare("UPDATE files SET last_upload_error = ? WHERE id = ?").bind(msg, file.id).run();
+    return err(msg, 409);
+  }
+  const contentLength = resp.headers.get("content-length");
+  const actual = contentLength === null ? NaN : Number(contentLength);
+  if (!Number.isInteger(actual) || actual !== file.size_bytes) {
+    const msg = `backend size mismatch: expected ${file.size_bytes}, got ${contentLength ?? "missing"}`;
+    await markUploadFailed(env, file.id, msg);
+    return err(msg, 409);
+  }
+
+  await env.DB
+    .prepare(
+      `UPDATE files
+       SET upload_status = 'uploaded',
+           upload_token_hash = NULL,
+           upload_expires_at = NULL,
+           uploaded_at = ?,
+           actual_size_bytes = ?,
+           last_upload_error = NULL
+       WHERE id = ?`,
+    )
+    .bind(now, actual, file.id)
+    .run();
+  return json({
+    uploaded: true,
+    bytes: actual,
+    storage_location: file.storage_location,
+    backend_id: backend.id,
+  });
 }
 
 // GET /api/rooms/:roomId/files — list files in room
@@ -235,7 +405,11 @@ export async function listFiles(request: Request, env: Env, roomId: string): Pro
   if (!isMember) return err("Not a member", 403);
 
   const files = await env.DB
-    .prepare("SELECT * FROM files WHERE room_id = ? ORDER BY created_at DESC LIMIT 100")
+    .prepare(
+      `SELECT * FROM files
+       WHERE room_id = ? AND COALESCE(upload_status, 'uploaded') = 'uploaded'
+       ORDER BY created_at DESC LIMIT 100`,
+    )
     .bind(roomId)
     .all<FileRecord>();
 
@@ -254,6 +428,7 @@ export async function getDownloadUrl(
     .bind(fileId, roomId)
     .first<FileRecord>();
   if (!file) return err("File not found", 404);
+  if ((file.upload_status ?? "uploaded") !== "uploaded") return err("File upload is not complete", 409);
 
   // I2: enforce membership. listFiles already does this; getDownloadUrl was
   // missing it, so any authenticated user with a (room_id, file_id) pair could
