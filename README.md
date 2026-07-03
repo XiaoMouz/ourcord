@@ -13,7 +13,7 @@ DERP 中继节点 (Go)            ←→  UI (Tauri / Flutter / React)
 ```
 
 - **控制层** (`control/`) — 打洞协调、节点注册、STUN 指派、中继注册、封禁管理
-- **服务层** (`service/`) — 大厅/房间、权限、消息历史、文件存储 (R2)
+- **服务层** (`service/`) — 大厅/房间、权限、消息历史、自治文件后端注册/选择与 R2 fallback
 - **中继节点** (`relay/`) — DERP 协议中继，基于 Tailscale derper，添加控制面集成与限速
 - **客户端 Daemon** (`daemon/`) — wireguard-go + ICE 打洞 + DERP 客户端 + IPC
 
@@ -38,7 +38,7 @@ DERP 中继节点 (Go)            ←→  UI (Tauri / Flutter / React)
 
 ```bash
 cd control
-npm install
+pnpm install
 # 配置 wrangler.toml 中的 D1/KV 资源 ID
 npx wrangler deploy
 # 应用数据库迁移（schema 由 control/migrations/ 管理）
@@ -50,10 +50,10 @@ npx wrangler d1 migrations apply DB --remote   # 远程生产
 
 ```bash
 cd service
-npm install
+pnpm install
+# 本地/测试环境首次使用请应用 service migrations
+npx wrangler d1 migrations apply DB --local
 npx wrangler deploy
-# 本地/测试环境首次使用可初始化当前 service schema
-curl -X POST http://localhost:8788/api/admin/init-db
 ```
 
 ### 环境变量 / Environment Variables
@@ -69,7 +69,7 @@ curl -X POST http://localhost:8788/api/admin/init-db
 | `EMAIL_FROM` | control | prod | sender address for OTP emails (e.g. `noreply@yourdomain.com`). |
 | `EMAIL_RATE_LIMIT_PER_DAY` | control | optional | per-recipient daily OTP cap (default 10). |
 | `SERVICE_URL` | control | prod (room-scoped peers) | service Worker base URL, e.g. `https://service.example.com`; required for room-scoped peer lookup. |
-| `SERVICE_INTERNAL_TOKEN` | control + service | prod (room-scoped peers) | shared bearer (header `X-Internal-Token`) for control→service internal RPC. Both Workers must hold the same value. HMAC upgrade is phase-2 (see `SECURITY.md`). |
+| `SERVICE_INTERNAL_TOKEN` | control + service | prod (room-scoped peers) | shared HMAC key for control→service internal RPC. Control sends `X-Internal-Ts` / `X-Internal-Nonce` / `X-Internal-Sig`; service rejects the old static `X-Internal-Token` bearer shape. |
 
 `wrangler secret put` 示例:
 
@@ -90,7 +90,7 @@ echo "your-admin-token" | npx wrangler secret put ADMIN_TOKEN
 rm /tmp/internal-token
 ```
 
-> `SERVICE_INTERNAL_TOKEN` 必须在 control 与 service 两侧设置同一值；任一侧缺失会让 room-scoped peer lookup 降级（控制层日志会标 `scopeWarning`）。
+> `SERVICE_INTERNAL_TOKEN` 必须在 control 与 service 两侧设置同一值；任一侧缺失会让 room-scoped peer lookup 降级（控制层日志会标 `scopeWarning`）。该值只作为 HMAC key 使用，不会作为 bearer 原样发送。
 
 #### D1 schema bootstrap
 
@@ -143,8 +143,8 @@ go build -o ourcord-cli ./cmd/ourcord-cli
 
 ## 开发路线图
 
-- [ ] **阶段一** — VPN 核心 + 控制层 + DERP 节点 + daemon 连接管线（per-peer ICE 自动直连、startup DERP fallback、runtime DERP 诊断切换、runtime 对称阻断 DERP fallback、指数退避重试、1:1 pair network、service `vpn_namespace`、A-B-C next-hop 数据面与 next-hop 后直达恢复已用真实 control/service/relay + OrbStack 验证；`tests/e2e/smoke_abc_netns.sh` 保留为自动 A-B-C 回归入口）
-- [ ] **阶段二** — 网络完整性优先（A-B-C 拓扑闭环、Windows Wintun、设备级凭证、control↔service HMAC、自治文件后端；服务层大厅/房间/消息/R2 文件已有基础能力）
+- [x] **阶段一** — VPN 核心 + 控制层 + DERP 节点 + daemon 连接管线已闭环（per-peer ICE 自动直连、startup/runtime DERP fallback、指数退避重试、1:1 pair network、service `vpn_namespace`、A-B-C next-hop 数据面与 next-hop 后直达恢复均已用真实 control/service/relay/daemon + OrbStack 验证；`tests/e2e/smoke_abc_netns.sh` 保留为自动 A-B-C 回归入口）
+- [ ] **阶段二** — 网络完整性与自治主线大部分完成（已落地 A-B-C 拓扑闭环、设备级凭证、control↔service HMAC、room-scoped peer refresh、CLI/status、自治文件后端注册/选择；待收口 Windows Wintun、自治文件参考后端协议/健康/上传完成闭环、连通性上报 sequence 仲裁）
 - [ ] **阶段三** — 媒体层（语音/视频/屏幕共享/远控）
 - [ ] **阶段四** — 分发与产品化（Tauri/Flutter/React UI、安装器、更新、运营监控）
 

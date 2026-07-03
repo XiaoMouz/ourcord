@@ -10,7 +10,7 @@
 1. 创建 TUN 设备（`golang.zx2c4.com/wireguard/tun.CreateTUN`，`MTU=1280`，见 `daemon/pkg/tun/tun.go`）。
 2. 给 TUN 配 OS 级 IPv4/IPv6 地址（`daemon/pkg/tun/addr_*.go`，shell out 到 `ip` / `ifconfig` / `route`）。
 3. 安装 v6 lobby ULA `/48` 路由 + 按 peer 增量同步 v4 `/32` 路由。
-4. 持有 WireGuard 私钥（`<state-dir>/wg.key`，mode `0600`），与控制面通过 JWT 鉴权（详见 `SECURITY.md` §3 / Y7）。
+4. 持有 WireGuard 私钥（`<state-dir>/wg.key`，mode `0600`），优先通过设备 token 换取控制面 auth，旧 JWT 路径仍保留兼容（详见 `SECURITY.md` §3 / Y7）。
 
 这些动作 **在所有 OS 上都需要提升权限**——内核 TUN ioctl、地址分配、路由表写入都不是普通用户能做的事。本文给出每个 OS 的最小权限路径与运维样板。
 
@@ -25,7 +25,10 @@
 | `--wg-listen-port` | `0` | 固定 WG UDP 监听端口（0=临时端口）；smoke / 手动 mesh 时需要固定 |
 | `--wg-endpoint` | `""` | 注册时上报给 control 的 `host:port` 公网端点提示 |
 
-环境变量 `OURCORD_DAEMON_JWT`（覆盖 `<state-dir>/token`，见 `loadAuthToken`）。
+认证环境变量：
+
+- `OURCORD_DEVICE_TOKEN`：优先使用，覆盖 `<state-dir>/device.token`，用于 per-device enroll/exchange/revoke 流程。
+- `OURCORD_DAEMON_JWT`：旧兼容路径，覆盖 `<state-dir>/token`。新部署应优先使用设备 token。
 
 ---
 
@@ -76,7 +79,9 @@ CapabilityBoundingSet=CAP_NET_ADMIN
 NoNewPrivileges=true
 StateDirectory=ourcord
 Environment=XDG_STATE_HOME=/var/lib
-# 或用文件：放到 /var/lib/ourcord/token (mode 0600, owner ourcord)
+# 或用文件：放到 /var/lib/ourcord/device.token (mode 0600, owner ourcord)
+# Environment=OURCORD_DEVICE_TOKEN=dt_...
+# 旧兼容路径仍可用：
 # Environment=OURCORD_DAEMON_JWT=eyJhbGciOi...
 ExecStart=/usr/local/bin/ourcordd \
   --control-url https://control.example.com \
@@ -270,17 +275,16 @@ netsh advfirewall firewall add rule name="OurCord daemon" dir=in action=allow pr
 | 一直走中继（DERP），不打洞 | STUN 不可达或对端是对称 NAT。`ourcord-cli status` 看 `PeerCount` 与连接路径；daemon 日志（X9 结构化 JSON）含 ICE 候选信息。 |
 | 启动时 `WARN: VPN pool 198.18.0.0/15 may conflict ...` | 已有路由覆盖了 198.18 段（常见于同机跑 Tailscale/lab 网）。daemon 仍会装 per-peer `/32`（优先级高），通常不影响——参见 `daemon/AGENTS.md`「TUN 路由」节。 |
 | 子网冲突历史背景 | U 系列已把 v4 池迁到 `198.18.0.0/15` + 随机 ULA `/48`，避开 `100.64/10` 与 `fd7a:115c:a1e0::/48`。详见 `daemon/AGENTS.md`。 |
-| `read /var/lib/ourcord/token: ...` | CLI 未登录或 `OURCORD_DAEMON_JWT` 未设置。先 `ourcord-cli login`，或手动写入 token（mode `0600`）。Token 安全语义见 `SECURITY.md` §3 / Y7。 |
+| `read /var/lib/ourcord/device.token: ...` 或 `read /var/lib/ourcord/token: ...` | 设备未 enroll/exchange，且旧 JWT 兼容 token 也不存在。优先配置 `OURCORD_DEVICE_TOKEN` 或写入 `<state-dir>/device.token`（mode `0600`）；旧路径可用 `OURCORD_DAEMON_JWT` / `<state-dir>/token`。Token 安全语义见 `SECURITY.md` §3 / Y7。 |
 
 ---
 
-## 7. Known gaps / phase-2
+## 7. Known gaps
 
-- **macOS launchd helper 一键安装**：当前需手动 `sudo` 启动或自行写 plist；`SMJobBless` 集成是 phase-2。
-- **Windows wintun 集成**：`addr_other.go` 占位返回 not-implemented；W1 / Phase-2 落地后本文 §4 即可正式启用。
-- **Windows MSI 安装包 + 服务包装**：phase-2，先用 `sc.exe` / `nssm` 手动方案。
-- **自动更新**：phase-2，无内置 updater。
-- **每设备独立 token**：当前 daemon token 为 per-user 而非 per-device，吊销粒度较粗（见 `SECURITY.md` §3）。
+- **macOS launchd helper 一键安装**：当前需手动 `sudo` 启动或自行写 plist；`SMJobBless` 集成仍待做。
+- **Windows Wintun 集成**：`addr_other.go` 占位返回 not-implemented；Wintun 地址/路由同步落地后本文 §4 即可正式启用。
+- **Windows MSI 安装包 + 服务包装**：仍待做，先用 `sc.exe` / `nssm` 手动方案。
+- **自动更新**：无内置 updater。
 
 ---
 

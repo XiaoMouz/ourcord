@@ -1,8 +1,8 @@
 # OurCord smoke 测试
 
-> Phase 1 的主验收路径是下面的 OrbStack real control/service/relay/daemon
-> smoke。单机脚本和 mock-control 流程只作为 daemon connect 管线的快速回归，
-> 不是 Phase 1 关闭验收。
+> Phase 1 已按当前验收口径闭环。下面的 OrbStack real
+> control/service/relay/daemon smoke 是阶段一回归证据与复验入口；单机脚本和
+> mock-control 流程只作为 daemon connect 管线的快速回归。
 > 离线版（mock-control + fake TUN）见 `daemon/cmd/ourcordd/connect_test.go`。
 
 ## 前置
@@ -59,8 +59,8 @@ bash tests/e2e/smoke_two_node.sh
 - 最终 status 显示 `path_summary=direct`，peer `path=direct`，endpoint 为 `ice`，DERP 计数为 0。
 - `198.18.0.2` ↔ `198.18.0.3` 双向 ping 成功，并完成 TCP payload 传输。
 
-这条链路是当前 Phase 1 direct-connect 的主验收路径：真实 control
-认证、room-scoped peer config、SignalDO、ICE probe 和 WireGuard 数据面均参与。
+这条链路是 Phase 1 direct-connect 的关键回归路径：真实 control 认证、
+room-scoped peer config、SignalDO、ICE probe 和 WireGuard 数据面均参与。
 
 同日追加验证：
 

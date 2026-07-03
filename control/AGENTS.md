@@ -41,7 +41,7 @@
 - `JWT_SECRET` env var 必须与 `service/` 完全一致。
 - `requireAuth` 已处理 401 返回；handler 拿到的若是 `Response` 直接返回即可。
 - `requireAdmin` 基于 `Env.ADMIN_USER_IDS`（逗号分隔白名单）；用于 `/api/ban` 等运营级端点。未来引入 `users.role` 列时迁移。
-- 控制层 → 服务层调用走 `SERVICE_INTERNAL_TOKEN` + `X-Internal-Token` 头（如 `getPeerConfig?room_id=` 时拉成员列表）。
+- 控制层 → 服务层调用走 `SERVICE_INTERNAL_TOKEN` HMAC 短签名（`X-Internal-Ts` / `X-Internal-Nonce` / `X-Internal-Sig`），如 `getPeerConfig?room_id=` 时拉成员列表；不要恢复旧 `X-Internal-Token` bearer。
 
 ## 构建/检查
 
@@ -76,6 +76,6 @@ pnpm exec wrangler deploy  # 部署
 ## 已知技术债
 
 - `peers.ts` IP 分配在并发场景下用 UNIQUE + retry，已原子化但仍有 race 时 500 重试；无回退池。
-- 中继链拓扑计算逻辑尚未上线（daemon 端先实现，再决定控制层是否需要做拓扑计算 service）。
+- 中继链拓扑计算已上线：`peer_connectivity` 上报驱动 `peers/config` 输出 `next_hop_public_key`。已知短板是多路 daemon 上报缺少全局 sequence 仲裁，可能短暂被旧 baseline 覆盖后自愈。
 - `invalidateRelayCache` 用硬编码 region 列表清 KV；region 数量上去后改为索引 key。
 - 缺 `users.role` 列；admin 用环境变量白名单临时方案。

@@ -1,3 +1,3 @@
-# OurCord Protobuf Definitions (Phase-2 placeholder)
+# OurCord Protobuf Definitions (future source of truth)
 
-The current implementation uses ad-hoc JSON over HTTP for control, service, daemon, and signaling flows. Phase 2 will define proto3 messages in this directory for daemon ↔ UI IPC and any shared control/service wire shapes that need versioned, codegen-friendly schemas. See the top-level PRD for scope and sequencing.
+The current implementation uses ad-hoc JSON over HTTP for control, service, daemon, and signaling flows. Proto is still empty and should become the versioned source of truth for daemon ↔ UI IPC and any shared control/service wire shapes once those contracts are frozen. Existing inline shapes should be marked `TODO(proto)` when they are expected to move here.

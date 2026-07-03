@@ -27,5 +27,5 @@ for seed data only and currently returns
 ## Tests
 
 ```bash
-npm test
+pnpm test
 ```

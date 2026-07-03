@@ -19,10 +19,11 @@ assumed to be in place.
   only decrypted inside the isolate. We trust Cloudflare's tenant isolation,
   TLS termination, and KV/D1/R2 access control.
 - **Daemon owners on their own machine.** The daemon (`daemon/`) runs locally
-  on a user's device. It holds a long-lived auth token in
-  `<state-dir>/token` (mode `0600`) or via `OURCORD_DAEMON_JWT`. We trust
-  that the local user controls their own machine; we do not defend against
-  an attacker with root on the user's host.
+  on a user's device. It holds a long-lived per-device token in
+  `<state-dir>/device.token` (mode `0600`) or via `OURCORD_DEVICE_TOKEN`;
+  the legacy `<state-dir>/token` / `OURCORD_DAEMON_JWT` path remains for
+  compatibility. We trust that the local user controls their own machine;
+  we do not defend against an attacker with root on the user's host.
 - **Operators of relay nodes (`relay/`)** with respect to traffic visibility:
   relays see ciphertext only (WireGuard / DERP frames) and metadata
   (peer pairs, packet sizes, timing). Relay operators are trusted not to
@@ -48,11 +49,12 @@ assumed to be in place.
 |---|---|---|---|
 | `JWT_SECRET` | Worker secret on **control** + **service** (must match) | `wrangler secret put` on both workers | HMAC-SHA256 key used to sign and verify user JWTs. Must be ≥16 bytes (production enforces ≥16; ≥32 recommended via `openssl rand -base64 48`). |
 | `ADMIN_TOKEN` | Worker secret on **service** | `wrangler secret put` | Shared bearer for one-shot service-side admin endpoints (e.g. R2 cleanup). Constant-time compared (see `service/src/index.ts` J4 note). |
-| `SERVICE_INTERNAL_TOKEN` | Worker secret on **control** + **service** (must match) | `wrangler secret put` on both workers | Shared bearer that authenticates control→service internal RPC. Sent as the `X-Internal-Token` request header. Used by routes such as control's peer-config builder when fetching room membership from service. |
+| `SERVICE_INTERNAL_TOKEN` | Worker secret on **control** + **service** (must match) | `wrangler secret put` on both workers | Shared HMAC key for control→service internal RPC. Control sends `X-Internal-Ts`, `X-Internal-Nonce`, and `X-Internal-Sig`; the secret is not sent as a bearer. Used by routes such as control's peer-config builder when fetching room membership from service. |
 | `EMAIL_API_KEY` | Worker secret on **control** | `wrangler secret put` | Resend API key used to deliver OTP email. Absent in dev; production fails closed (503) rather than logging the OTP. |
 | `ADMIN_USER_IDS` | Worker secret on **control** | `wrangler secret put` | Comma-separated user-id allowlist consulted by `requireAdmin` (e.g. ban management). Not a credential per se, but treated as a secret to avoid leaking the admin set. |
 | OAuth client secret(s) | Worker secret on **control** | `wrangler secret put` (per provider) | Used when `oauthRedirect`/`oauthCallback` is enabled. Not exposed to clients. |
-| Daemon auth token | Local file `<state-dir>/token` (mode `0600`) **or** `OURCORD_DAEMON_JWT` env | Re-issued via `ourcord-cli login` (control flow) | Long-lived bearer the daemon presents to control as `Authorization: Bearer …` (and as `?token=` for the WebSocket upgrade in `daemon/pkg/control/client.go`). Currently per-user, not per-device. |
+| Daemon device token | Local file `<state-dir>/device.token` (mode `0600`) **or** `OURCORD_DEVICE_TOKEN` env | Enroll/exchange/revoke through control device APIs | Long-lived per-device secret (`dt_...`) stored client-side and hashed in control D1. The daemon exchanges it for short-lived control auth, allowing single-device revocation. |
+| Legacy daemon JWT | Local file `<state-dir>/token` (mode `0600`) **or** `OURCORD_DAEMON_JWT` env | Re-issued via the legacy login/control flow | Compatibility fallback. The daemon presents it as `Authorization: Bearer …` and as `?token=` for the WebSocket signal upgrade. Prefer device tokens for new flows. |
 | Relay auth token | CLI flag `--auth-token` (or operator-supplied env wrapping it) | Re-issued by control operator | Bearer the relay presents to control as `Authorization: Bearer …` when registering itself and reporting health. |
 
 ---
@@ -79,34 +81,32 @@ assumed to be in place.
 
 ### 3.3 Control ↔ Service (internal RPC)
 
-- **Auth**: bearer `SERVICE_INTERNAL_TOKEN` carried in the
-  `X-Internal-Token` request header. Constant-time compared on the
-  service side.
+- **Auth**: HMAC-SHA256 short signature using `SERVICE_INTERNAL_TOKEN`
+  as the shared key. Control sends `X-Internal-Ts`,
+  `X-Internal-Nonce`, and `X-Internal-Sig`, where the signature covers
+  `ts\nnonce\nMETHOD\npathname+search`.
+- **Verification**: service checks a ±90s timestamp window, rejects nonce
+  reuse within the current isolate, and uses constant-time signature
+  comparison. The old static `X-Internal-Token` bearer shape is rejected.
 - **Transport**: HTTPS, Cloudflare → Cloudflare.
-- **Risk profile**: this is a shared symmetric secret, not an HMAC over
-  the request. We accept this for phase-1 because:
-  - both endpoints are Cloudflare Workers with secrets encrypted at rest;
-  - the secret never leaves Cloudflare's runtime (it is not handed to
-    clients, daemons, or relays);
-  - there is no replay window we care about — internal RPCs are
-    idempotent reads (e.g. room membership lookup) and revocation is
-    achieved by rotating the secret.
-- **What this does not protect against**: a Cloudflare account compromise
-  or a malicious deploy that exfiltrates the secret. Both are out of
-  scope for this layer; the planned HMAC scheme in §6 narrows the blast
-  radius but does not change the trust model.
+- **Residual risk**: nonce replay protection is per isolate memory. A
+  replay across isolates inside the 90s window is theoretically possible
+  until nonce state is moved to D1/KV or another shared store. A
+  Cloudflare account compromise or malicious deploy remains out of scope
+  for this layer.
 
 ### 3.4 Daemon ↔ Control
 
-- **Auth**: the per-user JWT issued by control, loaded from
-  `OURCORD_DAEMON_JWT` env or `<state-dir>/token` file. Sent as
-  `Authorization: Bearer …` for HTTP and as `?token=…` query parameter
-  for the WebSocket signal upgrade (browsers cannot set headers on
-  upgrade, so the daemon mirrors that path; see
-  `daemon/pkg/control/client.go`).
+- **Auth**: preferred path is a per-device token loaded from
+  `OURCORD_DEVICE_TOKEN` or `<state-dir>/device.token`, exchanged with
+  control for short-lived control auth. The legacy raw JWT path via
+  `OURCORD_DAEMON_JWT` or `<state-dir>/token` remains for compatibility.
+- **Signal upgrade**: HTTP uses `Authorization: Bearer …`; WebSocket
+  signaling still uses `?token=…` because browsers cannot set headers on
+  upgrade and the daemon mirrors that path.
 - **Transport**: HTTPS / WSS.
-- **Scope**: the daemon currently presents the user's JWT, not a
-  device-bound credential (see §6).
+- **Scope**: device tokens can be revoked independently without rotating
+  all of a user's sessions.
 
 ### 3.5 Daemon ↔ Relay
 
@@ -142,11 +142,11 @@ echo "$NEW_SECRET" | npx wrangler secret put JWT_SECRET   # in service/
 - Do not rotate one side without the other — users will see
   intermittent 401s as requests fan out across isolates.
 
-### 4.2 `SERVICE_INTERNAL_TOKEN` (dual-token rolling rotation — **future**)
+### 4.2 `SERVICE_INTERNAL_TOKEN` HMAC key
 
-Phase-1 rotation today is a hard cutover (rotate both Workers as fast
-as possible; expect a small window of 401s on internal RPC). The
-intended phase-2 procedure is a dual-token rolling rotation:
+Rotation today is a hard cutover (rotate both Workers as fast as
+possible; expect a small window of 401s on internal RPC). The intended
+follow-up is a dual-token rolling rotation:
 
 1. Both control and service accept **either** `SERVICE_INTERNAL_TOKEN`
    or `SERVICE_INTERNAL_TOKEN_OLD` on the verifying side, and prefer
@@ -158,8 +158,8 @@ intended phase-2 procedure is a dual-token rolling rotation:
 3. After at least 7 days of clean logs (no observed use of the old
    value), unset `SERVICE_INTERNAL_TOKEN_OLD` on both Workers.
 
-> **Status**: not yet implemented. The current code accepts only one
-> value. Tracking this alongside the HMAC migration in §6.
+> **Status**: HMAC signing is implemented. Dual-token overlap is not yet
+> implemented; the current code accepts only one key.
 
 ### 4.3 `ADMIN_TOKEN`
 
@@ -182,8 +182,10 @@ rotation window will fail; users retry the login.
 
 ### 4.6 Daemon and relay tokens
 
-- Daemon: `ourcord-cli login` re-issues; the daemon picks up the new
-  token on next start (or via `OURCORD_DAEMON_JWT`).
+- Daemon: prefer device-token enroll/exchange/revoke. The daemon picks
+  up a new device token on next start (or via `OURCORD_DEVICE_TOKEN`).
+  Legacy raw JWT rotation still uses `OURCORD_DAEMON_JWT` or
+  `<state-dir>/token`.
 - Relay: operator restarts the relay process with a new `--auth-token`.
   The control side considers the relay re-registered.
 
@@ -216,23 +218,18 @@ rotation window will fail; users retry the login.
 
 ## 6. Known gaps and future work
 
-- **HMAC for control ↔ service.** Phase-2 will replace the bearer
-  `SERVICE_INTERNAL_TOKEN` with an HMAC scheme so that a leaked secret
-  cannot be replayed against arbitrary requests. Planned wire format:
+- **Shared nonce store for control ↔ service.** HMAC signing is live, but
+  nonce replay detection is isolate-local. D1/KV-backed nonce storage
+  would close the cross-isolate 90s replay window if the deployment
+  needs that guarantee.
 
-  ```
-  Authorization: HMAC-SHA256 <kid>:<nonce>:<sig>
-  ```
+- **Dual-key rotation for `SERVICE_INTERNAL_TOKEN`.** HMAC currently uses
+  one active key. Add `SERVICE_INTERNAL_TOKEN_OLD`/key-id overlap before
+  relying on zero-downtime internal-key rotation.
 
-  where `<kid>` selects the key (enabling overlap with the dual-token
-  rotation in §4.2), `<nonce>` is a per-request value bound into the
-  signature, and `<sig>` covers method, path, body hash, and timestamp.
-  **Not implemented now.** Do not build clients against this format yet.
-
-- **Per-device JWT.** The daemon currently presents the user's JWT.
-  Phase-2 will introduce per-device credentials so that revoking a
-  single device does not require rotating the user's web session, and
-  so that device-level audit logging becomes possible.
+- **Device credential polish.** Per-device enroll/exchange/revoke exists;
+  remaining work is operator-facing audit/rotation UX and removal of the
+  legacy raw JWT daemon path once clients have migrated.
 
 - **End-to-end encryption.**
   - **Room media (audio/video/screen-share)** is end-to-end at the

@@ -156,8 +156,8 @@ go work sync
 
 ## 8. 当前阶段
 
-- 🚧 **阶段一**：VPN 核心 + 控制层 + DERP 节点 + daemon 连接管线 + IPC + 路由（含 A-B-C 链配置能力）+ 限速 + 封禁双 key 体系 + IPAM 198.18/15+ULA 已基本成形；**尚未关闭**，关闭标准是 per-peer ICE 自动直连与 daemon DERP fallback 无需手工 endpoint 注入。
-- 📋 **阶段二**：网络完整性优先（A-B-C 拓扑闭环、Windows Wintun、设备级凭证、control↔service HMAC、自治文件后端）；服务层大厅/房间/权限/消息/R2 文件已有基础能力但不是阶段二优先主线。
+- ✅ **阶段一**：VPN 核心 + 控制层 + DERP 节点 + daemon 连接管线 + IPC + 路由（含 A-B-C 链配置能力）+ 限速 + 封禁双 key 体系 + IPAM 198.18/15+ULA 已闭环。per-peer ICE 自动直连、startup/runtime DERP fallback、1:1 pair network、service `vpn_namespace`、A-B-C next-hop 与 next-hop 后直达恢复，均已通过真实 control/service/relay/daemon + OrbStack 验证。
+- 🚧 **阶段二**：网络完整性与自治主线大部分已落地：A-B-C 拓扑计算/路由下发/daemon 连通性反馈、设备级凭证、control↔service HMAC 短签名、房间作用域 peer refresh、CLI/status、自治文件后端注册/选择均已有实现。仍未收口：Windows Wintun 地址/路由同步、自治文件参考后端协议与健康/上传完成闭环、连通性上报的全局 sequence 仲裁、文档/验收脚本标准化。
 - 📋 **阶段三**：媒体层（Opus/H.264/H.265、远控）
 - 📋 **阶段四**：UI 层（Tauri/Flutter/React）
 - 📋 **阶段二可选附加**：Minecraft LAN 联机；是否作为阶段二差异化能力仍需在网络完整性主线之后确认。

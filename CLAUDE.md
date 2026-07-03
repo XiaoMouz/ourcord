@@ -46,4 +46,4 @@
 
 ## 当前阶段
 
-阶段一尚未关闭：per-peer ICE 自动直连已通过真实 control + OrbStack 双 VM smoke 验证，但自动 DERP fallback 的受限网络验收与状态面收口仍待完成。改动前判断归属哪个阶段，不要提前实现阶段三/四（媒体、UI）的内容。Minecraft LAN（M 系列）属阶段二可选附加。
+阶段一已按当前验收口径闭环：per-peer ICE、startup/runtime DERP fallback、1:1 pair network、service `vpn_namespace`、A-B-C next-hop 与恢复都已通过真实 control/service/relay/daemon + OrbStack 验证。阶段二主线已大部分落地，剩余重点是 Windows Wintun、自治文件参考后端协议/健康/上传完成闭环、连通性上报 sequence 仲裁，以及文档/验收脚本标准化。改动前判断归属哪个阶段，不要提前实现阶段三/四（媒体、UI）的内容。Minecraft LAN（M 系列）属阶段二可选附加。

@@ -59,16 +59,12 @@ Minimum network acceptance:
 
 ### Phase 1: Network Core
 
-Status: close to Phase-1 closure, but not closed. Room-scoped ICE direct
-connectivity has been validated with two OrbStack VMs and the real
-control-layer flow (`register` → room-scoped `peers/config` → SignalDO → ICE
-probe → WireGuard data plane) without manual WireGuard endpoint injection.
-Startup constrained-network fallback has also been validated with real
-control/service/relay/daemon processes by disabling SignalDO/ICE and proving
-WireGuard data-plane traffic over DERP. Runtime fallback has been validated
-through the daemon diagnostic `force-derp` path after one side reached direct,
-but a true OS/network-level impairment smoke is still required before declaring
-all network-condition acceptance complete.
+Status: closed under the current Phase-1 acceptance bar. Room-scoped ICE direct
+connectivity, startup DERP fallback, runtime DERP fallback under real network
+impairment, 1:1 pair networks, service `vpn_namespace`, A-B-C next-hop routing,
+and next-hop-to-direct recovery have all been validated with real
+control/service/relay/daemon processes and OrbStack VMs, without manual
+WireGuard endpoint injection as the primary acceptance path.
 
 Included:
 
@@ -153,10 +149,6 @@ Recent validation:
 
 Known gaps:
 
-- Runtime DERP fallback has true external-network validation for a peer that
-  reached validated direct and was then impaired by an OS route blackhole, plus
-  a fully symmetric "both peers direct first, then both observe impairment"
-  smoke using bidirectional UDP egress drop.
 - Connectivity reporting has three async writers per edge (30s baseline
   refresh, 10s reachability monitor, ICE upgrade/degrade callbacks) with no
   ordering guarantee; the control-side upsert only special-cases the
@@ -166,9 +158,9 @@ Known gaps:
   reported_at/sequence arbitration on the upsert covering all transitions,
   or a single per-peer reporting authority in the daemon.
 - A-B-C mixed DERP data-plane forwarding has been validated. Startup DERP
-  reachable-edge reports are automatic; daemon automatic unreachable-edge
-  reports are unit-tested and have independent OrbStack VM smoke coverage.
-  The repeatable single-VM / three-netns script remains the faster regression
+  reachable-edge reports are automatic; daemon unreachable/direct recovery
+  reports have code coverage and independent OrbStack VM smoke coverage. The
+  repeatable single-VM / three-netns script remains the faster regression
   entrypoint.
 - Legacy mock-control endpoint injection remains documented only as a fast
   regression path; it is no longer the primary direct-connect acceptance path.
@@ -264,13 +256,19 @@ Goal: complete the network and autonomy contracts before investing in a full pro
 
 Required:
 
-- A-B-C topology calculation and route distribution, with daemon feedback when links degrade.
-- Windows Wintun address assignment and route synchronization.
-- Device-level credentials so one device can be revoked without invalidating all user sessions.
-- HMAC(ts+nonce) signing for control-to-service internal RPC.
-- Autonomous file backend protocol for user-owned, shared, and lobby servers; R2 remains the last fallback.
-- Room-scoped peer refresh tied to lobby/room membership.
-- Minimal CLI/status surfaces are enough for Phase 2 network acceptance; full UI moves after network completeness.
+- Done: A-B-C topology calculation, route distribution, and daemon feedback
+  when links degrade or recover.
+- Done: device-level credentials so one device can be revoked without
+  invalidating all user sessions.
+- Done: HMAC(ts+nonce) signing for control-to-service internal RPC.
+- Done: room-scoped peer refresh tied to lobby/room membership.
+- Done: minimal CLI/status surfaces for current network acceptance.
+- Partial: autonomous file backend registry, sharing, selection, and R2 fallback
+  exist; the reference backend protocol, health checks, upload completion
+  callbacks, and operator guide remain to be closed.
+- Open: Windows Wintun address assignment and route synchronization.
+- Full UI remains Phase 4; Phase 2 only needs enough CLI/status surface to
+  validate network behavior.
 
 ### Phase 3: Media Layer
 
@@ -313,10 +311,11 @@ Required:
 - **Text messages** are service-layer records. Text and voice rooms accept text
   messages; video and file rooms do not store text history in MVP.
 - **Attachments/files** are service-layer metadata plus a storage backend chosen
-  by policy. The priority chain is user-owned server → shared user server →
-  lobby server → R2 fallback. R2 data flows through the Worker today; non-R2
-  storage returns metadata/intent until the federated upload/download protocol
-  is implemented.
+  by policy. The intended priority chain is user-owned server → shared user
+  server → lobby server → R2 fallback. R2 data flows through the Worker today;
+  non-R2 backends can return direct upload/download URLs when registered, while
+  the reference backend protocol and health/upload-completion loop remain
+  unfinished.
 - **1:1 private calls** use a `pair:<pkA>.<pkB>` network id today. That maps to
   two exact daemon device public keys rather than a lobby room. Product-level
   private-call permissions and call records still need to be attached above
@@ -338,7 +337,10 @@ Acceptance:
 
 ### Register A Device And Join The Overlay
 
-- Daemon loads a token from `OURCORD_DAEMON_JWT` or `<state-dir>/token`.
+- Daemon prefers a device token from `OURCORD_DEVICE_TOKEN` or
+  `<state-dir>/device.token`, exchanges it for short-lived auth, and still
+  supports the legacy raw JWT path via `OURCORD_DAEMON_JWT` or
+  `<state-dir>/token`.
 - Daemon registers its WireGuard public key and DERP node key.
 - Control allocates `198.18.0.0/15` IPv4 and deployment-random ULA IPv6.
 - Daemon creates TUN, applies addresses/routes, starts WireGuard, and polls config.
@@ -352,7 +354,8 @@ Acceptance:
 ### Enter A Voice-Capable Room
 
 - UI asks daemon/control for room-scoped peer config.
-- Control asks service for room member IDs through `SERVICE_INTERNAL_TOKEN`.
+- Control asks service for room member IDs through HMAC-signed internal RPC
+  using `SERVICE_INTERNAL_TOKEN` as the shared key.
 - SignalDO accepts only authenticated users whose peer key belongs to them and whose user is authorized for the room.
 - Daemon establishes direct connectivity or falls back to DERP.
 
@@ -385,7 +388,9 @@ Acceptance:
 
 - Declared and actual upload sizes must match.
 - Non-members cannot list or download files.
-- Non-R2 download returns a clear not-implemented response until the federated file protocol exists.
+- Non-R2 download returns the selected backend URL when the backend is active;
+  missing/inactive backends fail clearly instead of silently falling back to an
+  unauthorized target.
 
 ## 6. Security And Trust Requirements
 
@@ -393,8 +398,11 @@ Acceptance:
 - User bans must invalidate outstanding JWTs on every authenticated control path.
 - SignalDO must trust upstream authentication and must not duplicate room auth inside the Durable Object.
 - Relay DERP admission uses DERP node keys, not WireGuard public keys.
-- Control-to-service internal RPC currently uses `SERVICE_INTERNAL_TOKEN`; Phase 2 should replace it with HMAC timestamp/nonce signing.
-- Daemon credentials are currently per-user; Phase 2 should introduce per-device credentials.
+- Control-to-service internal RPC uses HMAC timestamp/nonce signing with
+  `SERVICE_INTERNAL_TOKEN` as the shared key; the old static
+  `X-Internal-Token` bearer shape must not be reintroduced.
+- Daemon credentials are device-scoped through enroll/exchange/revoke flows;
+  legacy raw JWT loading remains only as a compatibility path.
 - Relay operators see metadata and encrypted traffic only; they must not see media or message contents carried over WireGuard.
 
 ## 7. Open Product Questions
@@ -409,6 +417,7 @@ Documentation must stay aligned with current implementation:
 
 - `README.md` is the user entry point.
 - `AGENTS.md` files are implementation contracts for AI and contributors.
-- `SECURITY.md` describes current trust boundaries and must not claim future HMAC/device credentials exist.
+- `SECURITY.md` describes current trust boundaries and must not describe
+  implemented HMAC/device credentials as future work.
 - `docs/ops/smoke-test.md` must match the current `198.18.0.0/15` and random ULA IPAM model.
 - `proto/` and `ui/` placeholders should state what is missing without implying the feature already exists.

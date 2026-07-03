@@ -48,10 +48,10 @@ pnpm exec wrangler deploy
 - **房间消息只允许 type ∈ {text, voice}**：`messages.sendMessage` 拒绝 file/video 房间发文字。这是 by design——文件/视频房间不存聊天历史，附带说明走对应类型房间。
 - **lobby 加入需邀请码**：`POST /api/lobbies/:id/join?code=...`，code 在 `lobby_invites` 表（owner 通过 `POST /api/lobbies/:id/invites` 生成）。
 - **文件存储优先链 fallback**：`storage_preference` 不可用时按 user_server → lobby_server → r2 顺序自动降级，不直接 503。
-- **/api/internal/* 仅供控制层调用**：用 `SERVICE_INTERNAL_TOKEN` 头校验；不要给客户端暴露。
+- **/api/internal/* 仅供控制层调用**：用 `SERVICE_INTERNAL_TOKEN` HMAC 短签名校验（`X-Internal-Ts` / `X-Internal-Nonce` / `X-Internal-Sig`）；不要给客户端暴露，不要恢复旧静态 token 头。
 
 ## 已知技术债
 
 - R2 过期文件清理已上线，但删失败仅记日志。
 - 权限系统目前粗粒度（owner/admin/member/guest）；细粒度位掩码权限（D3）阶段二补。
-- D1 schema 仍靠 `src/schema.ts` + `CREATE IF NOT EXISTS` / dev `init-db`，无版本化迁移；新增列要配套迁移脚本或先补 service 迁移机制（D5）。
+- D1 schema 已走版本化 migrations；`src/schema.ts` / dev `init-db` 只能作为开发辅助。新增列必须配套迁移脚本并保持两者同步。
