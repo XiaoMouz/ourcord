@@ -749,6 +749,7 @@ describe("reportPeerConnectivity", () => {
     expect(cap.binds[3].slice(0, 6)).toEqual(["lobby-L-room-R-voice", OTHER_WG_KEY, VALID_WG_KEY, 1, 1, 1]);
     expect(cap.binds[2][6]).toBe("ice");
     expect(cap.binds[3][6]).toBe("ice");
+    expect(cap.binds[2].slice(8, 15)).toEqual(["", "ice", 400, VALID_WG_KEY, "", 0, null]);
   });
 
   it("keeps WG-reachable edges when ICE direct degrades to DERP", async () => {
@@ -787,6 +788,7 @@ describe("reportPeerConnectivity", () => {
     expect(cap.binds[3].slice(0, 6)).toEqual(["lobby-L-room-R-voice", OTHER_WG_KEY, VALID_WG_KEY, 0, 0, 1]);
     expect(cap.binds[2][6]).toBe("derp");
     expect(cap.binds[3][6]).toBe("derp");
+    expect(cap.binds[2].slice(8, 15)).toEqual(["derp-fallback:direct-health-degraded", "", 180, VALID_WG_KEY, "", 0, null]);
   });
 
   it("does not let periodic DERP baseline overwrite an unreachable edge", async () => {
@@ -819,11 +821,12 @@ describe("reportPeerConnectivity", () => {
     );
 
     expect(resp.status).toBe(200);
-    expect(cap.sqls[2]).toMatch(/WHERE NOT \(/);
+    expect(cap.sqls[2]).toMatch(/AND NOT \(/);
     expect(cap.sqls[2]).toMatch(/peer_connectivity\.reason = 'unreachable'/);
     expect(cap.sqls[2]).toMatch(/excluded\.reason = 'derp-baseline'/);
     expect(cap.binds[2].slice(0, 8)).toEqual(["lobby-L-room-R-voice", VALID_WG_KEY, OTHER_WG_KEY, 0, 0, 1, "derp", null]);
     expect(cap.binds[2][8]).toBe("derp-baseline");
+    expect(cap.binds[2].slice(9, 15)).toEqual(["derp_baseline", 100, VALID_WG_KEY, "", 0, null]);
   });
 
   it("allows reachability recovery reports to restore a previously unreachable DERP edge", async () => {
@@ -858,6 +861,79 @@ describe("reportPeerConnectivity", () => {
     expect(resp.status).toBe(200);
     expect(cap.binds[2].slice(0, 8)).toEqual(["lobby-L-room-R-voice", VALID_WG_KEY, OTHER_WG_KEY, 0, 0, 1, "derp", null]);
     expect(cap.binds[2][8]).toBe("derp-recovery");
+    expect(cap.binds[2].slice(9, 15)).toEqual(["reachability", 220, VALID_WG_KEY, "", 0, null]);
+  });
+
+  it("records sequence arbitration metadata for daemon reports", async () => {
+    const token = await makeToken();
+    const cap = makeCapturingDB([
+      { first: null },
+      { first: { 1: 1 } },
+      {},
+      {},
+    ]);
+    const body = JSON.stringify({
+      network_id: "lobby-L-room-R-voice",
+      peer_public_key: OTHER_WG_KEY,
+      ice_direct: true,
+      wg_reachable: true,
+      source: "ice",
+      reporter_epoch: "epoch_123456",
+      seq: 42,
+      observed_at: 1_700_000_000,
+    });
+    const resp = await reportPeerConnectivity(
+      new Request("https://control.example/api/peers/connectivity", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "X-Peer-Public-Key": VALID_WG_KEY,
+          "Content-Type": "application/json",
+          "Content-Length": String(body.length),
+        },
+        body,
+      }),
+      makeEnv(cap.db),
+    );
+
+    expect(resp.status).toBe(200);
+    expect(cap.sqls[2]).toMatch(/excluded\.seq > peer_connectivity\.seq/);
+    expect(cap.sqls[2]).toMatch(/excluded\.quality >= peer_connectivity\.quality/);
+    expect(cap.sqls[2]).toMatch(/excluded\.reporter_public_key = peer_connectivity\.src_public_key/);
+    expect(cap.binds[2].slice(9, 15)).toEqual(["ice", 400, VALID_WG_KEY, "epoch_123456", 42, 1_700_000_000]);
+    expect(cap.binds[3].slice(9, 15)).toEqual(["ice", 400, VALID_WG_KEY, "epoch_123456", 42, 1_700_000_000]);
+  });
+
+  it("rejects malformed sequence metadata", async () => {
+    const token = await makeToken();
+    const cap = makeCapturingDB([
+      { first: null },
+      { first: { 1: 1 } },
+    ]);
+    const body = JSON.stringify({
+      network_id: "lobby-L-room-R-voice",
+      peer_public_key: OTHER_WG_KEY,
+      wg_reachable: true,
+      reporter_epoch: "epoch_123456",
+      seq: 0,
+    });
+    const resp = await reportPeerConnectivity(
+      new Request("https://control.example/api/peers/connectivity", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "X-Peer-Public-Key": VALID_WG_KEY,
+          "Content-Type": "application/json",
+          "Content-Length": String(body.length),
+        },
+        body,
+      }),
+      makeEnv(cap.db),
+    );
+
+    expect(resp.status).toBe(400);
+    expect(await resp.json()).toEqual({ error: "invalid seq" });
+    expect(cap.sqls.some((s) => /INSERT INTO peer_connectivity/.test(s))).toBe(false);
   });
 
   it("records a pair-network edge when both peers are pair members", async () => {

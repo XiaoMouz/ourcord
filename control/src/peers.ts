@@ -325,6 +325,10 @@ export async function reportPeerConnectivity(request: Request, env: Env): Promis
     transport?: unknown;
     rtt_ms?: unknown;
     reason?: unknown;
+    source?: unknown;
+    reporter_epoch?: unknown;
+    seq?: unknown;
+    observed_at?: unknown;
   };
   try {
     body = await request.json();
@@ -359,47 +363,47 @@ export async function reportPeerConnectivity(request: Request, env: Env): Promis
     : null;
   const reason = typeof body.reason === "string" ? body.reason.slice(0, 128) : "";
   const transport = normalizeConnectivityTransport(requestedTransport, iceDirect, wgReachable, reason);
+  const sourceResult = normalizeConnectivitySource(body.source, iceDirect, wgReachable, reason);
+  if (sourceResult instanceof Response) return sourceResult;
+  const source = sourceResult;
+  const reporterEpochResult = parseReporterEpoch(body.reporter_epoch);
+  if (reporterEpochResult instanceof Response) return reporterEpochResult;
+  const reporterEpoch = reporterEpochResult;
+  const seqResult = parseConnectivitySeq(body.seq);
+  if (seqResult instanceof Response) return seqResult;
+  const seq = seqResult;
+  const observedAtResult = parseObservedAt(body.observed_at);
+  if (observedAtResult instanceof Response) return observedAtResult;
+  const observedAt = observedAtResult;
+  if (reporterEpoch === "" && seq !== 0) return json({ error: "reporter_epoch required with seq" }, 400);
+  if (reporterEpoch !== "" && seq === 0) return json({ error: "seq required with reporter_epoch" }, 400);
+  const quality = connectivityQuality(iceDirect, wgReachable, transport, reason, source);
   const now = Math.floor(Date.now() / 1000);
 
   // TODO(topology): both directed edges are written with identical values, so
   // asymmetric reachability (A reaches C but not vice-versa) isn't representable.
   // Acceptable for the symmetric "dead edge" case the daemon reports today; if
   // per-direction reachability is ever needed, split the two upserts' values.
+  // Both directed edges share one statement shape; only (src, dst) swap.
+  const edgeUpsert = (src: string, dst: string) =>
+    env.DB.prepare(
+      `INSERT INTO peer_connectivity
+         (network_id, src_public_key, dst_public_key, direct, ice_direct, wg_reachable, transport, rtt_ms, reason,
+          source, quality, reporter_public_key, reporter_epoch, seq, observed_at, reported_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+       ON CONFLICT(network_id, src_public_key, dst_public_key)
+       DO UPDATE SET direct = excluded.direct, ice_direct = excluded.ice_direct,
+                     wg_reachable = excluded.wg_reachable, transport = excluded.transport, rtt_ms = excluded.rtt_ms,
+                     reason = excluded.reason, source = excluded.source, quality = excluded.quality,
+                     reporter_public_key = excluded.reporter_public_key, reporter_epoch = excluded.reporter_epoch,
+                     seq = excluded.seq, observed_at = excluded.observed_at, reported_at = excluded.reported_at
+       ${CONNECTIVITY_ACCEPT_WHERE}`,
+    ).bind(
+      networkID, src, dst, iceDirect ? 1 : 0, iceDirect ? 1 : 0, wgReachable ? 1 : 0,
+      transport, rttMs, reason, source, quality, selfKey, reporterEpoch, seq, observedAt, now,
+    );
   try {
-    await env.DB.batch([
-      env.DB.prepare(
-        `INSERT INTO peer_connectivity
-           (network_id, src_public_key, dst_public_key, direct, ice_direct, wg_reachable, transport, rtt_ms, reason, reported_at)
-         VALUES (?,?,?,?,?,?,?,?,?,?)
-         ON CONFLICT(network_id, src_public_key, dst_public_key)
-         DO UPDATE SET direct = excluded.direct, ice_direct = excluded.ice_direct,
-                       wg_reachable = excluded.wg_reachable, transport = excluded.transport, rtt_ms = excluded.rtt_ms,
-                       reason = excluded.reason, reported_at = excluded.reported_at
-         WHERE NOT (
-           peer_connectivity.wg_reachable = 0
-           AND peer_connectivity.reason = 'unreachable'
-           AND excluded.wg_reachable = 1
-           AND excluded.ice_direct = 0
-           AND excluded.reason = 'derp-baseline'
-         )`,
-      ).bind(networkID, selfKey, peerKey, iceDirect ? 1 : 0, iceDirect ? 1 : 0, wgReachable ? 1 : 0, transport, rttMs, reason, now),
-      env.DB.prepare(
-        `INSERT INTO peer_connectivity
-           (network_id, src_public_key, dst_public_key, direct, ice_direct, wg_reachable, transport, rtt_ms, reason, reported_at)
-         VALUES (?,?,?,?,?,?,?,?,?,?)
-         ON CONFLICT(network_id, src_public_key, dst_public_key)
-         DO UPDATE SET direct = excluded.direct, ice_direct = excluded.ice_direct,
-                       wg_reachable = excluded.wg_reachable, transport = excluded.transport, rtt_ms = excluded.rtt_ms,
-                       reason = excluded.reason, reported_at = excluded.reported_at
-         WHERE NOT (
-           peer_connectivity.wg_reachable = 0
-           AND peer_connectivity.reason = 'unreachable'
-           AND excluded.wg_reachable = 1
-           AND excluded.ice_direct = 0
-           AND excluded.reason = 'derp-baseline'
-         )`,
-      ).bind(networkID, peerKey, selfKey, iceDirect ? 1 : 0, iceDirect ? 1 : 0, wgReachable ? 1 : 0, transport, rttMs, reason, now),
-    ]);
+    await env.DB.batch([edgeUpsert(selfKey, peerKey), edgeUpsert(peerKey, selfKey)]);
   } catch (e) {
     log({ event: "peers.connectivity_write_failed", level: "error", network_id: networkID, error: String(e) });
     return json({ error: "connectivity table unavailable" }, 503);
@@ -407,6 +411,83 @@ export async function reportPeerConnectivity(request: Request, env: Env): Promis
 
   return json({ ok: true });
 }
+
+// Arbitration for the connectivity upsert. Three regimes:
+//
+//  1. Sequenced report over a sequenced row, SAME epoch: strictly ordered —
+//     a higher seq from the same reporting session always wins (equal seq is
+//     defensive: prefer better quality, but never suppress an unreachable
+//     verdict).
+//  2. Sequenced report over a row from a DIFFERENT epoch (reporter restarted,
+//     re-entered the network, or the row was written by the other end of the
+//     edge): seq values are incomparable, so arbitrate by evidence. Accept
+//     unless it is a quality downgrade of the src's own fresh observation by
+//     someone else's mirror write. Spelled positively (De Morgan of the
+//     rejection rule), a cross-epoch report is accepted when ANY of:
+//       - it does not lower quality,
+//       - it is an unreachable verdict (reachability monitor; loss of
+//         connectivity must always land),
+//       - it comes from the edge's own src (self-observation is authoritative
+//         for the outgoing edge),
+//       - the stored row was itself a mirror write (not from the src),
+//       - it is meaningfully newer (≥30s) than the stored observation.
+//  3. Legacy (unsequenced) report: may only update other legacy rows, by
+//     quality — once a sequenced daemon owns the edge, unsequenced writers
+//     can't regress it.
+//
+// The trailing guard keeps the original rule: a periodic derp-baseline
+// refresh never clobbers a standing unreachable verdict.
+const CONNECTIVITY_ACCEPT_WHERE = `WHERE (
+           (
+             excluded.reporter_epoch <> ''
+             AND (
+               peer_connectivity.reporter_epoch = ''
+               OR (
+                 peer_connectivity.reporter_epoch = excluded.reporter_epoch
+                 AND (
+                   excluded.seq > peer_connectivity.seq
+                   OR (
+                     excluded.seq = peer_connectivity.seq
+                     AND (
+                       excluded.quality >= peer_connectivity.quality
+                       OR (excluded.source = 'reachability' AND excluded.wg_reachable = 0)
+                     )
+                   )
+                 )
+               )
+               OR (
+                 peer_connectivity.reporter_epoch <> excluded.reporter_epoch
+                 AND (
+                   excluded.quality >= peer_connectivity.quality
+                   OR (excluded.source = 'reachability' AND excluded.wg_reachable = 0)
+                   OR excluded.reporter_public_key = peer_connectivity.src_public_key
+                   OR peer_connectivity.reporter_public_key <> peer_connectivity.src_public_key
+                   OR (
+                     excluded.observed_at IS NOT NULL
+                     AND peer_connectivity.observed_at IS NOT NULL
+                     AND excluded.observed_at >= peer_connectivity.observed_at + 30
+                   )
+                 )
+               )
+             )
+           )
+           OR (
+             excluded.reporter_epoch = ''
+             AND peer_connectivity.reporter_epoch = ''
+             AND (
+               excluded.quality >= peer_connectivity.quality
+               OR (excluded.source = 'reachability' AND excluded.wg_reachable = 0)
+               OR peer_connectivity.source = ''
+             )
+           )
+         )
+         AND NOT (
+           peer_connectivity.wg_reachable = 0
+           AND peer_connectivity.reason = 'unreachable'
+           AND excluded.wg_reachable = 1
+           AND excluded.ice_direct = 0
+           AND excluded.reason = 'derp-baseline'
+         )`;
 
 async function annotateNextHops(env: Env, networkID: string, selfKey: string, peers: Peer[]): Promise<void> {
   if (peers.length < 2) return;
@@ -495,6 +576,61 @@ function normalizeConnectivityTransport(requested: string, iceDirect: boolean, w
   if (requested === "ice") return "ice";
   if (reason.startsWith("derp")) return "derp";
   return "";
+}
+
+function normalizeConnectivitySource(
+  requested: unknown,
+  iceDirect: boolean,
+  wgReachable: boolean,
+  reason: string,
+): "" | "derp_baseline" | "ice" | "reachability" | Response {
+  if (typeof requested === "string" && requested !== "") {
+    if (requested === "derp_baseline" || requested === "ice" || requested === "reachability") return requested;
+    return json({ error: "invalid source" }, 400);
+  }
+  if (iceDirect) return "ice";
+  if (!wgReachable || reason === "derp-recovery" || reason === "unreachable") return "reachability";
+  if (reason === "derp-baseline") return "derp_baseline";
+  return "";
+}
+
+function parseReporterEpoch(value: unknown): string | Response {
+  if (value === undefined || value === null || value === "") return "";
+  if (typeof value !== "string" || !/^[A-Za-z0-9_-]{8,64}$/.test(value)) {
+    return json({ error: "invalid reporter_epoch" }, 400);
+  }
+  return value;
+}
+
+function parseConnectivitySeq(value: unknown): number | Response {
+  if (value === undefined || value === null) return 0;
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1) {
+    return json({ error: "invalid seq" }, 400);
+  }
+  return value;
+}
+
+function parseObservedAt(value: unknown): number | null | Response {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
+    return json({ error: "invalid observed_at" }, 400);
+  }
+  return value;
+}
+
+function connectivityQuality(
+  iceDirect: boolean,
+  wgReachable: boolean,
+  transport: "" | "ice" | "derp" | "wg_relay",
+  reason: string,
+  source: "" | "derp_baseline" | "ice" | "reachability",
+): number {
+  if (iceDirect && wgReachable) return 400;
+  if (transport === "wg_relay" && wgReachable) return 300;
+  if (source === "reachability" && reason === "derp-recovery" && wgReachable) return 220;
+  if (transport === "derp" && wgReachable) return reason === "derp-baseline" ? 100 : 180;
+  if (!wgReachable) return source === "reachability" ? 50 : 10;
+  return 0;
 }
 
 function parsePairRoom(roomId: string): [string, string] | null {

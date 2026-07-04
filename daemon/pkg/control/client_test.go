@@ -332,3 +332,44 @@ func TestFetchConfig_ContextCancelled(t *testing.T) {
 		t.Fatal("expected error from cancelled context, got nil")
 	}
 }
+
+func TestReportConnectivity_SendsSequenceMetadata(t *testing.T) {
+	t.Parallel()
+
+	var gotAuth, gotPeer, gotCT string
+	var gotBody ConnectivityReport
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		gotPeer = r.Header.Get("X-Peer-Public-Key")
+		gotCT = r.Header.Get("Content-Type")
+		if r.URL.Path != "/api/peers/connectivity" {
+			t.Errorf("path = %q, want /api/peers/connectivity", r.URL.Path)
+		}
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	c := newTestClient(t, srv)
+	err := c.ReportConnectivity(context.Background(), ConnectivityReport{
+		NetworkID:     "lobby-l1-r1-voice",
+		PeerPublicKey: "peer-key",
+		ICEDirect:     true,
+		Direct:        true,
+		WGReachable:   true,
+		Transport:     "ice",
+		Source:        "ice",
+		ReporterEpoch: "epoch_123456",
+		Seq:           7,
+		ObservedAt:    1_700_000_000,
+	})
+	if err != nil {
+		t.Fatalf("ReportConnectivity: %v", err)
+	}
+	if gotAuth != "Bearer test-token" || gotPeer != "pk-abc" || gotCT != "application/json" {
+		t.Fatalf("unexpected headers auth=%q peer=%q content-type=%q", gotAuth, gotPeer, gotCT)
+	}
+	if gotBody.Source != "ice" || gotBody.ReporterEpoch != "epoch_123456" || gotBody.Seq != 7 || gotBody.ObservedAt != 1_700_000_000 {
+		t.Fatalf("sequence metadata not preserved: %+v", gotBody)
+	}
+}

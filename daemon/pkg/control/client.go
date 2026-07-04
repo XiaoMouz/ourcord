@@ -330,6 +330,10 @@ type ConnectivityReport struct {
 	Transport     string  `json:"transport,omitempty"`
 	RTTMs         float64 `json:"rtt_ms,omitempty"`
 	Reason        string  `json:"reason,omitempty"`
+	Source        string  `json:"source,omitempty"`
+	ReporterEpoch string  `json:"reporter_epoch,omitempty"`
+	Seq           uint64  `json:"seq,omitempty"`
+	ObservedAt    int64   `json:"observed_at,omitempty"`
 }
 
 type RelayEntry struct {

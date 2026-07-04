@@ -103,6 +103,9 @@ func TestCheckReachabilityReportsUnreachableEdge(t *testing.T) {
 	if got := reports[0]; got.PeerPublicKey != pk.String() || got.ICEDirect || got.WGReachable || got.Transport != "" || got.Reason != "unreachable" {
 		t.Fatalf("unexpected unreachable report: %+v", got)
 	}
+	if got := reports[0]; got.Source != connectivitySourceReachability || got.ReporterEpoch == "" || got.Seq != 1 || got.ObservedAt == 0 {
+		t.Fatalf("missing sequence metadata on unreachable report: %+v", got)
+	}
 	if st := d.reach[pk]; st == nil || !st.reportedUnreachable {
 		t.Fatalf("peer reach state should remain marked unreachable: %+v", st)
 	}
@@ -145,6 +148,9 @@ func TestCheckReachabilityReportsDERPRecovery(t *testing.T) {
 	}
 	if got := reports[0]; got.PeerPublicKey != pk.String() || got.ICEDirect || !got.WGReachable || got.Transport != "derp" || got.Reason != "derp-recovery" {
 		t.Fatalf("unexpected recovery report: %+v", got)
+	}
+	if got := reports[0]; got.Source != connectivitySourceReachability || got.ReporterEpoch == "" || got.Seq != 1 || got.ObservedAt == 0 {
+		t.Fatalf("missing sequence metadata on recovery report: %+v", got)
 	}
 	if st := d.reach[pk]; st == nil || st.reportedUnreachable {
 		t.Fatalf("peer reach state should clear unreachable marker: %+v", st)
@@ -198,5 +204,82 @@ func TestICEDirectReachabilityReportRefreshesTopologyEdge(t *testing.T) {
 	}
 	if got := reports[0]; got.PeerPublicKey != pk.String() || !got.ICEDirect || !got.WGReachable || got.Transport != "ice" || got.Reason != "" {
 		t.Fatalf("unexpected ICE refresh report: %+v", got)
+	}
+	if got := reports[0]; got.Source != connectivitySourceICE || got.ReporterEpoch == "" || got.Seq != 1 || got.ObservedAt == 0 {
+		t.Fatalf("missing sequence metadata on ICE refresh report: %+v", got)
+	}
+}
+
+func TestConnectivityReportsCarryMonotonicSequencePerEdge(t *testing.T) {
+	pkA := mustTestKey(0x65)
+	pkB := mustTestKey(0x66)
+	fc := &fakeClient{}
+	d := &daemon{
+		cli:               fc,
+		activeRoom:        "lobby-l1-r1-voice",
+		connCtx:           context.Background(),
+		connectivityEpoch: "epoch_test_123",
+	}
+	routeA := &routing.PeerRoute{
+		PublicKey:   pkA,
+		VPN4:        netip.MustParseAddr("198.18.0.92"),
+		DERPURL:     "https://relay.example.com/derp",
+		DERPNodeKey: "nodekey:aaaaaaaaaaaaaaaa",
+	}
+	routeB := &routing.PeerRoute{
+		PublicKey:   pkB,
+		VPN4:        netip.MustParseAddr("198.18.0.93"),
+		DERPURL:     "https://relay.example.com/derp",
+		DERPNodeKey: "nodekey:bbbbbbbbbbbbbbbb",
+	}
+
+	d.reportDERPReachabilityLocked([]*routing.PeerRoute{routeA}, "derp-baseline")
+	d.reportDERPReachabilityLocked([]*routing.PeerRoute{routeA}, "derp-baseline")
+	d.reportDERPReachabilityLocked([]*routing.PeerRoute{routeB}, "derp-baseline")
+
+	reports := waitConnectivityReports(t, fc, 3)
+	if len(reports) != 3 {
+		t.Fatalf("connectivity reports = %+v, want three reports", reports)
+	}
+	seenA := map[uint64]bool{}
+	seenB := map[uint64]bool{}
+	for _, r := range reports {
+		if r.ReporterEpoch != "epoch_test_123" || r.Source != connectivitySourceDERPBaseline || r.Transport != "derp" || r.ObservedAt == 0 {
+			t.Fatalf("DERP baseline metadata missing: %+v", r)
+		}
+		switch r.PeerPublicKey {
+		case pkA.String():
+			seenA[r.Seq] = true
+		case pkB.String():
+			seenB[r.Seq] = true
+		default:
+			t.Fatalf("unexpected peer report: %+v", r)
+		}
+	}
+	if !seenA[1] || !seenA[2] || len(seenA) != 2 {
+		t.Fatalf("peer A seqs = %+v, want 1 and 2", seenA)
+	}
+	if !seenB[1] || len(seenB) != 1 {
+		t.Fatalf("peer B seqs = %+v, want independent seq 1", seenB)
+	}
+}
+
+func TestResetConnectivitySeqRotatesEpoch(t *testing.T) {
+	// Re-entering a network must start a fresh reporting session. Keeping the
+	// old epoch would replay seq=1.. under a high-water mark control has
+	// already seen, and the same-epoch rule would silently reject every report
+	// until the counter caught up.
+	d := &daemon{
+		connectivityEpoch: "epoch-before",
+		connectivitySeq:   map[string]uint64{"net\npeer": 40},
+	}
+
+	d.resetConnectivitySeqLocked()
+
+	if d.connectivityEpoch == "" || d.connectivityEpoch == "epoch-before" {
+		t.Fatalf("epoch must rotate on reset, got %q", d.connectivityEpoch)
+	}
+	if len(d.connectivitySeq) != 0 {
+		t.Fatalf("seq counters must clear on reset, got %+v", d.connectivitySeq)
 	}
 }
