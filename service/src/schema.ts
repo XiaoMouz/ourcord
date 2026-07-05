@@ -77,7 +77,8 @@ CREATE TABLE IF NOT EXISTS file_backends (
   ,
   health_status TEXT NOT NULL DEFAULT 'unknown' CHECK(health_status IN ('unknown','healthy','unhealthy')),
   last_health_at INTEGER,
-  last_health_error TEXT);
+  last_health_error TEXT,
+  upload_secret TEXT NOT NULL DEFAULT '');
 CREATE INDEX IF NOT EXISTS idx_file_backends_owner ON file_backends(owner_id);
 CREATE INDEX IF NOT EXISTS idx_file_backends_lobby ON file_backends(lobby_id);
 

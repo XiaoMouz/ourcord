@@ -1,6 +1,6 @@
 import { Env, FileRecord, FilePolicy, FileBackend } from "./types";
 import { requireAuth, generateId, json, err, checkBodySize, constantTimeEqual } from "./auth";
-import { resolveFileBackend, joinBackendURL } from "./backends";
+import { resolveFileBackend, backendFileURL } from "./backends";
 import { log } from "./log";
 
 const UPLOAD_TOKEN_TTL_SEC = 30 * 60;
@@ -177,7 +177,8 @@ export async function initiateUpload(request: Request, env: Env, roomId: string)
     // {base_url}/{storage_key}; the client must then call complete_url with the
     // one-time token so service can verify size and publish the metadata.
     storageKey = `files/${id}/${body.filename}`;
-    uploadUrl = joinBackendURL(backend!.base_url, storageKey);
+    // put-cap: one hour to actually stream the bytes.
+    uploadUrl = await backendFileURL(backend!, storageKey, "put", 3600);
     uploadToken = generateUploadToken();
     uploadTokenHash = await hashUploadToken(uploadToken);
     uploadExpiresAt = now + UPLOAD_TOKEN_TTL_SEC;
@@ -346,7 +347,8 @@ export async function completeExternalUpload(
     .first<FileBackend>();
   if (!backend) return err("file backend is unavailable", 503);
 
-  const url = joinBackendURL(backend.base_url, file.storage_key);
+  // get-cap for our own verification HEAD; short-lived on purpose.
+  const url = await backendFileURL(backend, file.storage_key, "get", 60);
   let resp: Response;
   try {
     resp = await fetch(url, { method: "HEAD" });
@@ -478,7 +480,8 @@ export async function getDownloadUrl(
     return json({ error: "file backend is unavailable" }, 503);
   }
   return json({
-    url: joinBackendURL(backend.base_url, file.storage_key),
+    // get-cap: enough time for a client to start the download, not to share.
+    url: await backendFileURL(backend, file.storage_key, "get", 600),
     storage_location: file.storage_location,
     backend_id: backend.id,
     filename: file.filename,

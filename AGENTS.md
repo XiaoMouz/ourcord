@@ -65,6 +65,16 @@ OurCord 是一个面向 5–10 人小群体的通讯平台，**底层是自建�
 固定顺序：用户自建服务器 → 别人分享给用户的服务器 → 大厅服务器 → R2 fallback。
 R2 配额由后端控制（大小、永久/临时数量、保存天数）。元数据始终保存在 D1。
 
+**后端能力令牌（capability）**：自建/大厅后端由 per-backend 共享密钥门禁——
+运营者在 `ourcord-filebackend --upload-secret`（或 `OURCORD_FILE_BACKEND_SECRET`）
+与注册时的 `upload_secret` 设同一个值（16..128 字符）。service 把短时能力签进
+上传/下载 URL：`?cap=<exp>.base64url(HMAC-SHA256(secret, storage_key\nop\nexp))`，
+`op` ∈ {put, get}；签名对象是**原始** storage_key（URL 路径段做百分号编码，
+后端从已解码的 `r.URL.Path` 还原）。实现见 `service/src/backends.ts`
+`signBackendCapability`/`backendFileURL` ↔ `filebackend` `verifyCap`。
+`upload_secret` 只进 D1、**永不出现在任何 API 响应**；空密钥 = 开放后端
+（仅限 dev，服务端启动会打 WARN）。
+
 ### 3.6 信令鉴权
 - `SignalDO` WebSocket 必须带 `?token=<jwt>&pk=<public_key>`。
 - 控制层入口校验：JWT 合法 + `pk` 在该用户的 `peers` 表中存在。**不要在 DO 内重做校验**（DO 假设上游已认证）。

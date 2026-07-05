@@ -221,6 +221,37 @@ describe("initiateUpload", () => {
     expect(body.upload_expires_at).toBeGreaterThan(Math.floor(Date.now() / 1000));
   });
 
+  it("secret-bearing backend gets a put-capability on the upload_url", async () => {
+    const token = await makeToken();
+    const backend = {
+      id: "B2",
+      owner_id: "u1",
+      lobby_id: null,
+      name: "secured",
+      base_url: "https://files.me.example",
+      upload_secret: "cap-secret-0123456789abcdef",
+      active: 1,
+      created_at: 1,
+    };
+    const db = makeDB([
+      { first: { lobby_id: "L1" } },
+      { first: { 1: 1 } },
+      { first: { ...POLICY_ALL_ON } },
+      { first: backend },
+      { run: { meta: { changes: 1 } } },
+    ]);
+    const resp = await initiateUpload(
+      initReq(token, { filename: "doc.bin", size_bytes: 10, mime_type: "application/octet-stream", storage_preference: "user_server" }),
+      envOf(db),
+      "R1",
+    );
+    expect(resp.status).toBe(201);
+    const body = await resp.json<{ id: string; upload_url: string }>();
+    expect(body.upload_url).toMatch(
+      new RegExp(`^https://files\\.me\\.example/files/${body.id}/doc\\.bin\\?cap=\\d+\\.[A-Za-z0-9_-]+$`),
+    );
+  });
+
   it("keeps fixed storage priority even when storage_preference asks for R2", async () => {
     const token = await makeToken();
     const backend = {

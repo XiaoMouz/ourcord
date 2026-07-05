@@ -78,6 +78,9 @@ export interface FileBackend {
   health_status?: "unknown" | "healthy" | "unhealthy";
   last_health_at?: number | null;
   last_health_error?: string | null;
+  // Per-backend capability secret (matches the operator's --upload-secret).
+  // Empty = open backend. NEVER return this field in API responses.
+  upload_secret?: string;
 }
 
 export interface FilePolicy {

@@ -15,7 +15,7 @@
 // server implementation is a Phase-2 follow-up.
 
 import { Env, FileBackend, FilePolicy } from "./types";
-import { requireAuth, generateId, json, err, checkBodySize } from "./auth";
+import { requireAuth, generateId, json, err, checkBodySize, hmacSign } from "./auth";
 import { log } from "./log";
 
 // Validate a user-supplied backend base URL before storing or ever returning
@@ -35,9 +35,46 @@ export function validBackendURL(raw: string): boolean {
 }
 
 // joinBackendURL builds the concrete file URL under a backend without double
-// slashes; storage_key never starts with "/" (see files.ts).
+// slashes; storage_key never starts with "/" (see files.ts). Each path segment
+// is percent-encoded so filenames with spaces/#/? survive as a URL; the
+// capability signature is over the RAW storage_key, which the backend
+// recovers from its already-decoded request path.
 export function joinBackendURL(baseURL: string, storageKey: string): string {
-  return `${baseURL.replace(/\/+$/, "")}/${storageKey}`;
+  const encoded = storageKey.split("/").map(encodeURIComponent).join("/");
+  return `${baseURL.replace(/\/+$/, "")}/${encoded}`;
+}
+
+// Capability contract with the reference backend (see AGENTS.md 3.5 and
+// filebackend/cmd/ourcord-filebackend):
+//
+//   cap = <exp> "." base64url(HMAC-SHA256(upload_secret, storage_key "\n" op "\n" <exp>))
+//
+// op is "put" (upload) or "get" (GET/HEAD download + verification). A backend
+// registered without a secret is an open backend: no cap is appended and the
+// server enforces nothing (dev mode).
+export async function signBackendCapability(
+  secret: string,
+  storageKey: string,
+  op: "put" | "get",
+  ttlSec: number,
+): Promise<string> {
+  if (secret === "") return "";
+  const exp = Math.floor(Date.now() / 1000) + ttlSec;
+  const sig = await hmacSign(secret, `${storageKey}\n${op}\n${exp}`);
+  return `${exp}.${sig}`;
+}
+
+// backendFileURL is the one place upload/download/verification URLs are built:
+// {base_url}/{storage_key}, plus ?cap= when the backend has a secret.
+export async function backendFileURL(
+  backend: Pick<FileBackend, "base_url" | "upload_secret">,
+  storageKey: string,
+  op: "put" | "get",
+  ttlSec: number,
+): Promise<string> {
+  const url = joinBackendURL(backend.base_url, storageKey);
+  const cap = await signBackendCapability(backend.upload_secret ?? "", storageKey, op, ttlSec);
+  return cap === "" ? url : `${url}?cap=${encodeURIComponent(cap)}`;
 }
 
 const UNHEALTHY_SKIP_WINDOW_SEC = 3600;
@@ -200,7 +237,7 @@ export async function registerBackend(request: Request, env: Env): Promise<Respo
   const auth = await requireAuth(request, env);
   if (auth instanceof Response) return auth;
 
-  let body: { base_url?: unknown; name?: unknown; lobby_id?: unknown };
+  let body: { base_url?: unknown; name?: unknown; lobby_id?: unknown; upload_secret?: unknown };
   try {
     body = await request.json();
   } catch {
@@ -212,6 +249,13 @@ export async function registerBackend(request: Request, env: Env): Promise<Respo
   }
   const name = typeof body.name === "string" ? body.name.slice(0, 64) : "";
   const lobbyId = typeof body.lobby_id === "string" && body.lobby_id !== "" ? body.lobby_id : null;
+  // Capability secret: same value the operator passes to the backend's
+  // --upload-secret. Optional (empty = open backend); enforce a minimum so a
+  // configured secret is not trivially guessable, and cap the length.
+  const uploadSecret = typeof body.upload_secret === "string" ? body.upload_secret : "";
+  if (uploadSecret !== "" && (uploadSecret.length < 16 || uploadSecret.length > 128)) {
+    return err("upload_secret must be 16..128 characters when set");
+  }
 
   if (lobbyId) {
     const member = await env.DB
@@ -227,9 +271,9 @@ export async function registerBackend(request: Request, env: Env): Promise<Respo
   const now = Math.floor(Date.now() / 1000);
   await env.DB
     .prepare(
-      "INSERT INTO file_backends (id, owner_id, lobby_id, name, base_url, active, created_at) VALUES (?,?,?,?,?,1,?)",
+      "INSERT INTO file_backends (id, owner_id, lobby_id, name, base_url, upload_secret, active, created_at) VALUES (?,?,?,?,?,?,1,?)",
     )
-    .bind(id, auth.sub, lobbyId, name, baseURL, now)
+    .bind(id, auth.sub, lobbyId, name, baseURL, uploadSecret, now)
     .run();
 
   log({ event: "backends.registered", backend_id: id, user_id: auth.sub, lobby_id: lobbyId ?? "" });
@@ -253,16 +297,21 @@ export async function listBackends(request: Request, env: Env): Promise<Response
   const auth = await requireAuth(request, env);
   if (auth instanceof Response) return auth;
 
+  // Explicit column list — upload_secret must never leave the DB via list
+  // responses (it is the backend's write/read credential).
+  const cols =
+    "b.id, b.owner_id, b.lobby_id, b.name, b.base_url, b.active, b.created_at, " +
+    "b.health_status, b.last_health_at, b.last_health_error";
   const rows = await env.DB
     .prepare(
-      `SELECT b.*, 'own' AS via FROM file_backends b
+      `SELECT ${cols}, 'own' AS via FROM file_backends b
          WHERE b.owner_id = ? AND b.lobby_id IS NULL AND b.active = 1
        UNION ALL
-       SELECT b.*, 'shared' AS via FROM file_backends b
+       SELECT ${cols}, 'shared' AS via FROM file_backends b
          JOIN file_backend_shares s ON s.backend_id = b.id
          WHERE s.grantee_id = ? AND b.lobby_id IS NULL AND b.active = 1
        UNION ALL
-       SELECT b.*, 'lobby' AS via FROM file_backends b
+       SELECT ${cols}, 'lobby' AS via FROM file_backends b
          JOIN lobby_members m ON m.lobby_id = b.lobby_id
          WHERE m.user_id = ? AND b.active = 1
        ORDER BY created_at DESC`,
