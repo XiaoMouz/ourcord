@@ -8,6 +8,7 @@ dist/
 relay/ourcord-relay
 daemon/ourcordd
 daemon/ourcord-cli
+filebackend/ourcord-filebackend
 daemon/bin/
 
 # Keys / secrets
