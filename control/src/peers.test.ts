@@ -356,7 +356,7 @@ describe("registerPeer / getPeerConfig endpoint hints", () => {
     expect(resp.status).toBe(403);
   });
 
-  it("annotates one-hop next_hop_public_key from DERP-backed bottom edges when the direct edge is missing", async () => {
+  it("annotates one-hop next_hop_public_key from only the required forward directed edges", async () => {
     const token = await makeToken();
     const cap = makeCapturingDB([
       { first: null }, // ban check
@@ -395,9 +395,7 @@ describe("registerPeer / getPeerConfig endpoint hints", () => {
         all: {
           results: [
             { src_public_key: VALID_WG_KEY, dst_public_key: OTHER_WG_KEY, ice_direct: 0, wg_reachable: 1, reason: "derp-baseline" },
-            { src_public_key: OTHER_WG_KEY, dst_public_key: VALID_WG_KEY, ice_direct: 0, wg_reachable: 1, reason: "derp-baseline" },
             { src_public_key: OTHER_WG_KEY, dst_public_key: THIRD_WG_KEY, ice_direct: 0, wg_reachable: 1, reason: "derp-baseline" },
-            { src_public_key: THIRD_WG_KEY, dst_public_key: OTHER_WG_KEY, ice_direct: 0, wg_reachable: 1, reason: "derp-baseline" },
           ],
         },
       },
@@ -713,13 +711,12 @@ describe("registerPeer / getPeerConfig endpoint hints", () => {
 });
 
 describe("reportPeerConnectivity", () => {
-  it("mirrors direct connectivity observations", async () => {
+  it("records only the reporting endpoint's directed connectivity observation", async () => {
     const token = await makeToken();
     const cap = makeCapturingDB([
       { first: null }, // ban check
       { first: { 1: 1 } }, // owned peer
-      {}, // forward upsert
-      {}, // reverse upsert
+      {}, // self -> peer upsert
     ]);
     const body = JSON.stringify({
       network_id: "lobby-L-room-R-voice",
@@ -744,12 +741,10 @@ describe("reportPeerConnectivity", () => {
 
     expect(resp.status).toBe(200);
     expect(cap.sqls[2]).toMatch(/INSERT INTO peer_connectivity/);
-    expect(cap.sqls[3]).toMatch(/INSERT INTO peer_connectivity/);
     expect(cap.binds[2].slice(0, 6)).toEqual(["lobby-L-room-R-voice", VALID_WG_KEY, OTHER_WG_KEY, 1, 1, 1]);
-    expect(cap.binds[3].slice(0, 6)).toEqual(["lobby-L-room-R-voice", OTHER_WG_KEY, VALID_WG_KEY, 1, 1, 1]);
     expect(cap.binds[2][6]).toBe("ice");
-    expect(cap.binds[3][6]).toBe("ice");
     expect(cap.binds[2].slice(8, 15)).toEqual(["", "ice", 400, VALID_WG_KEY, "", 0, null]);
+    expect(cap.sqls).toHaveLength(3);
   });
 
   it("keeps WG-reachable edges when ICE direct degrades to DERP", async () => {
@@ -757,8 +752,7 @@ describe("reportPeerConnectivity", () => {
     const cap = makeCapturingDB([
       { first: null }, // ban check
       { first: { 1: 1 } }, // owned peer
-      {}, // forward delete
-      {}, // reverse delete
+      {}, // self -> peer upsert
     ]);
     const body = JSON.stringify({
       network_id: "lobby-L-room-R-voice",
@@ -783,11 +777,8 @@ describe("reportPeerConnectivity", () => {
 
     expect(resp.status).toBe(200);
     expect(cap.sqls[2]).toMatch(/INSERT INTO peer_connectivity/);
-    expect(cap.sqls[3]).toMatch(/INSERT INTO peer_connectivity/);
     expect(cap.binds[2].slice(0, 6)).toEqual(["lobby-L-room-R-voice", VALID_WG_KEY, OTHER_WG_KEY, 0, 0, 1]);
-    expect(cap.binds[3].slice(0, 6)).toEqual(["lobby-L-room-R-voice", OTHER_WG_KEY, VALID_WG_KEY, 0, 0, 1]);
     expect(cap.binds[2][6]).toBe("derp");
-    expect(cap.binds[3][6]).toBe("derp");
     expect(cap.binds[2].slice(8, 15)).toEqual(["derp-fallback:direct-health-degraded", "", 180, VALID_WG_KEY, "", 0, null]);
   });
 
@@ -796,8 +787,7 @@ describe("reportPeerConnectivity", () => {
     const cap = makeCapturingDB([
       { first: null }, // ban check
       { first: { 1: 1 } }, // owned peer
-      {}, // forward upsert
-      {}, // reverse upsert
+      {}, // self -> peer upsert
     ]);
     const body = JSON.stringify({
       network_id: "lobby-L-room-R-voice",
@@ -834,8 +824,7 @@ describe("reportPeerConnectivity", () => {
     const cap = makeCapturingDB([
       { first: null }, // ban check
       { first: { 1: 1 } }, // owned peer
-      {}, // forward upsert
-      {}, // reverse upsert
+      {}, // self -> peer upsert
     ]);
     const body = JSON.stringify({
       network_id: "lobby-L-room-R-voice",
@@ -870,7 +859,6 @@ describe("reportPeerConnectivity", () => {
       { first: null },
       { first: { 1: 1 } },
       {},
-      {},
     ]);
     const body = JSON.stringify({
       network_id: "lobby-L-room-R-voice",
@@ -899,9 +887,7 @@ describe("reportPeerConnectivity", () => {
     expect(resp.status).toBe(200);
     expect(cap.sqls[2]).toMatch(/excluded\.seq > peer_connectivity\.seq/);
     expect(cap.sqls[2]).toMatch(/excluded\.quality >= peer_connectivity\.quality/);
-    expect(cap.sqls[2]).toMatch(/excluded\.reporter_public_key = peer_connectivity\.src_public_key/);
     expect(cap.binds[2].slice(9, 15)).toEqual(["ice", 400, VALID_WG_KEY, "epoch_123456", 42, 1_700_000_000]);
-    expect(cap.binds[3].slice(9, 15)).toEqual(["ice", 400, VALID_WG_KEY, "epoch_123456", 42, 1_700_000_000]);
   });
 
   it("rejects malformed sequence metadata", async () => {
@@ -941,8 +927,7 @@ describe("reportPeerConnectivity", () => {
     const cap = makeCapturingDB([
       { first: null }, // ban check
       { first: { 1: 1 } }, // owned peer
-      {}, // forward upsert
-      {}, // reverse upsert
+      {}, // self -> peer upsert
     ]);
     const body = JSON.stringify({
       network_id: PAIR_ROOM,
@@ -967,7 +952,6 @@ describe("reportPeerConnectivity", () => {
     expect(resp.status).toBe(200);
     expect(cap.sqls[2]).toMatch(/INSERT INTO peer_connectivity/);
     expect(cap.binds[2].slice(0, 3)).toEqual([PAIR_ROOM, VALID_WG_KEY, OTHER_WG_KEY]);
-    expect(cap.binds[3].slice(0, 3)).toEqual([PAIR_ROOM, OTHER_WG_KEY, VALID_WG_KEY]);
   });
 
   it("rejects a pair report when the caller is not a pair member (403)", async () => {

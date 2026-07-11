@@ -151,29 +151,29 @@ describe("connectivity sequence arbitration (real SQL)", () => {
     expect(row.seq).toBe(1);
   });
 
-  it("cross-epoch: a mirror write cannot downgrade the src's own fresh ice edge, but the src's edge accepts the mirror", async () => {
-    // A owns both directed rows: A→B (self-observed) and B→A (mirror).
+  it("keeps opposite directed observations independent", async () => {
+    // A and B observe their own outgoing directions independently.
     await report(tokenA, A_KEY, {
       peer_public_key: B_KEY, ice_direct: true, wg_reachable: true,
       source: "ice", reporter_epoch: "epochA_000001", seq: 5, observed_at: 1000,
     }, env);
-    // B reports mere derp-baseline moments later (different epoch, reporter B).
+    // B reports mere derp-baseline moments later for B→A.
     await report(tokenB, B_KEY, {
       peer_public_key: A_KEY, ice_direct: false, wg_reachable: true, reason: "derp-baseline",
       source: "derp_baseline", reporter_epoch: "epochB_000001", seq: 1, observed_at: 1005,
     }, env);
 
-    // A→B: stored by src A itself; B's mirror downgrade must be rejected.
+    // A→B remains A's direct observation.
     const ab = edge(db, A_KEY, B_KEY);
     expect(ab.transport).toBe("ice");
     expect(ab.reporter_public_key).toBe(A_KEY);
-    // B→A: stored row was A's mirror write; B is that edge's src → accepted.
+    // B→A is B's independent DERP observation, not a mirrored A report.
     const ba = edge(db, B_KEY, A_KEY);
     expect(ba.transport).toBe("derp");
     expect(ba.reporter_public_key).toBe(B_KEY);
   });
 
-  it("cross-epoch: an unreachable verdict always lands, even over a high-quality ice edge", async () => {
+  it("records an unreachable verdict only for the reporting direction", async () => {
     await report(tokenA, A_KEY, {
       peer_public_key: B_KEY, ice_direct: true, wg_reachable: true,
       source: "ice", reporter_epoch: "epochA_000001", seq: 5, observed_at: 1000,
@@ -183,7 +183,7 @@ describe("connectivity sequence arbitration (real SQL)", () => {
       source: "reachability", reporter_epoch: "epochB_000001", seq: 1, observed_at: 1001,
     }, env);
 
-    expect(edge(db, A_KEY, B_KEY).wg_reachable).toBe(0);
+    expect(edge(db, A_KEY, B_KEY).wg_reachable).toBe(1);
     expect(edge(db, B_KEY, A_KEY).wg_reachable).toBe(0);
   });
 

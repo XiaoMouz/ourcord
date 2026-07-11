@@ -380,13 +380,13 @@ export async function reportPeerConnectivity(request: Request, env: Env): Promis
   const quality = connectivityQuality(iceDirect, wgReachable, transport, reason, source);
   const now = Math.floor(Date.now() / 1000);
 
-  // TODO(topology): both directed edges are written with identical values, so
-  // asymmetric reachability (A reaches C but not vice-versa) isn't representable.
-  // Acceptable for the symmetric "dead edge" case the daemon reports today; if
-  // per-direction reachability is ever needed, split the two upserts' values.
-  // Both directed edges share one statement shape; only (src, dst) swap.
-  const edgeUpsert = (src: string, dst: string) =>
-    env.DB.prepare(
+  // A connectivity observation belongs only to its reporting endpoint:
+  // self → peer. Do not synthesize peer → self from it. UDP NAT, host firewall,
+  // and relay reachability can be asymmetric, and a mirrored write turns a
+  // truthful B→A failure into a false A→B failure. annotateNextHops already
+  // evaluates directed edges (self→hop and hop→target), so it can safely use
+  // the independent reports as they arrive.
+  const edgeUpsert = env.DB.prepare(
       `INSERT INTO peer_connectivity
          (network_id, src_public_key, dst_public_key, direct, ice_direct, wg_reachable, transport, rtt_ms, reason,
           source, quality, reporter_public_key, reporter_epoch, seq, observed_at, reported_at)
@@ -399,11 +399,11 @@ export async function reportPeerConnectivity(request: Request, env: Env): Promis
                      seq = excluded.seq, observed_at = excluded.observed_at, reported_at = excluded.reported_at
        ${CONNECTIVITY_ACCEPT_WHERE}`,
     ).bind(
-      networkID, src, dst, iceDirect ? 1 : 0, iceDirect ? 1 : 0, wgReachable ? 1 : 0,
+      networkID, selfKey, peerKey, iceDirect ? 1 : 0, iceDirect ? 1 : 0, wgReachable ? 1 : 0,
       transport, rttMs, reason, source, quality, selfKey, reporterEpoch, seq, observedAt, now,
     );
   try {
-    await env.DB.batch([edgeUpsert(selfKey, peerKey), edgeUpsert(peerKey, selfKey)]);
+    await edgeUpsert.run();
   } catch (e) {
     log({ event: "peers.connectivity_write_failed", level: "error", network_id: networkID, error: String(e) });
     return json({ error: "connectivity table unavailable" }, 503);
@@ -418,19 +418,11 @@ export async function reportPeerConnectivity(request: Request, env: Env): Promis
 //     a higher seq from the same reporting session always wins (equal seq is
 //     defensive: prefer better quality, but never suppress an unreachable
 //     verdict).
-//  2. Sequenced report over a row from a DIFFERENT epoch (reporter restarted,
-//     re-entered the network, or the row was written by the other end of the
-//     edge): seq values are incomparable, so arbitrate by evidence. Accept
-//     unless it is a quality downgrade of the src's own fresh observation by
-//     someone else's mirror write. Spelled positively (De Morgan of the
-//     rejection rule), a cross-epoch report is accepted when ANY of:
-//       - it does not lower quality,
-//       - it is an unreachable verdict (reachability monitor; loss of
-//         connectivity must always land),
-//       - it comes from the edge's own src (self-observation is authoritative
-//         for the outgoing edge),
-//       - the stored row was itself a mirror write (not from the src),
-//       - it is meaningfully newer (≥30s) than the stored observation.
+//  2. Sequenced report over a row from a DIFFERENT epoch (the reporting daemon
+//     restarted or re-entered the network): seq values are incomparable, so
+//     accept fresh evidence from the same directed-edge authority. A daemon is
+//     the only writer of its own source edge; unlike the old mirrored model,
+//     another endpoint cannot overwrite it.
 //  3. Legacy (unsequenced) report: may only update other legacy rows, by
 //     quality — once a sequenced daemon owns the edge, unsequenced writers
 //     can't regress it.
@@ -455,20 +447,7 @@ const CONNECTIVITY_ACCEPT_WHERE = `WHERE (
                    )
                  )
                )
-               OR (
-                 peer_connectivity.reporter_epoch <> excluded.reporter_epoch
-                 AND (
-                   excluded.quality >= peer_connectivity.quality
-                   OR (excluded.source = 'reachability' AND excluded.wg_reachable = 0)
-                   OR excluded.reporter_public_key = peer_connectivity.src_public_key
-                   OR peer_connectivity.reporter_public_key <> peer_connectivity.src_public_key
-                   OR (
-                     excluded.observed_at IS NOT NULL
-                     AND peer_connectivity.observed_at IS NOT NULL
-                     AND excluded.observed_at >= peer_connectivity.observed_at + 30
-                   )
-                 )
-               )
+               OR peer_connectivity.reporter_epoch <> excluded.reporter_epoch
              )
            )
            OR (
