@@ -35,6 +35,14 @@ gRPC. Its JSON names map to this contract as follows:
 | `last_seen_secs` | `last_seen_seconds` |
 | `path_transitions`, `path_dwell_secs`, `flapping` | `ConnectedPeer.path_transitions` / `path_dwell_seconds` / `flapping` |
 | `path_flaps_total` | `DaemonStatus.path_flaps_total` |
+| `room_id` | *(none — intentionally omitted)* |
+
+The JSON `DaemonStatus.room_id` is a legacy field kept only for older callers
+and is deliberately **not** represented in the proto: the stable identifier is
+`network_id` (`DaemonStatus.network_id`), which carries the room's
+`vpn_namespace` or a `pair:` id. New clients must read `network_id`; `room_id`
+will be dropped from the JSON adapter once no caller depends on it. The adapter
+being a superset of the frozen schema here is expected, not schema drift.
 
 `enter_room`, `leave_room`, `force_derp`, and `ping` are legacy CLI or
 diagnostic commands. They are intentionally absent from the stable UI API.
