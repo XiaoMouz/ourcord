@@ -1,4 +1,4 @@
-package main
+package client
 
 import (
 	"archive/zip"
@@ -18,7 +18,7 @@ func TestWriteDiagnosticsArchiveRedactsLogCredentials(t *testing.T) {
 		t.Fatal(err)
 	}
 	archivePath := filepath.Join(dir, "diagnostics.zip")
-	if err := writeDiagnosticsArchive(archivePath, "/tmp/ourcordd.sock", logPath, ipc.IPCResponse{OK: true, Data: map[string]string{"path": "derp"}}, ipc.IPCResponse{OK: true, Data: []string{"peer"}}); err != nil {
+	if err := writeDiagnosticsArchive(archivePath, "/tmp/ourcordd.sock", logPath, ipc.DaemonStatus{PathSummary: "derp"}, []ipc.ConnectedPeer{{PublicKey: "peer"}}); err != nil {
 		t.Fatal(err)
 	}
 	zr, err := zip.OpenReader(archivePath)

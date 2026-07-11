@@ -32,18 +32,21 @@ error. The stable field contract is `proto/ourcord/v1/daemon.proto`.
 | C1 | `ourcord-cli/main.go` mixed arg-parsing, raw `ipc.Call`, response decoding, stdout/stderr, and `os.Exit` in one place — no reusable core. A TUI would have had to re-derive command names, params, and `Data interface{}` decoding. | High | **Fixed** — extracted `daemon/pkg/client`; `main.go` is now a thin presenter. |
 | C2 | IPC responses are `IPCResponse{Data interface{}}`; every consumer had to re-marshal to get typed data. | Med | **Fixed** — `client` exposes typed `Status()`/`ListPeers()` etc. via a generic `decode`. |
 | C3 | `diagnostics.go` dialed IPC directly with its own key-loading helper. | Med | **Fixed** — now uses `client.Dial`/`Status`/`ListPeers`. |
-| C4 | Device + diagnostics **core** logic (`enrollDevice`, `listDevices`, `revokeDevice`, `collectDiagnostics`) is UI-free but lives in `package main` under `cmd/ourcord-cli`, so a TUI/GUI cannot import it. | Med | **Open** — relocate device/control-plane ops into `daemon/pkg/client` (or a sibling `pkg/clientcore`) so all presenters share them. |
-| C5 | No TUI yet; no presenter-agnostic "view model" (e.g. a periodic status/peers poller a TUI can subscribe to). | — | **Open** — build `cmd/ourcord-tui` (bubbletea) once C4 lands. |
+| C4 | Device + diagnostics **core** logic (`enrollDevice`, `listDevices`, `revokeDevice`, `collectDiagnostics`) was UI-free but lived in `package main` under `cmd/ourcord-cli`, so a TUI/GUI could not import it. | Med | **Fixed** — moved to `daemon/pkg/client` (`devices.go`, `diagnostics.go`) as exported `EnrollDevice`/`ListDevices`/`RevokeDevice`/`CollectDiagnostics`; the CLI keeps only the flag-parsing presenters. |
+| C5 | No TUI yet; no presenter-agnostic "view model" (e.g. a periodic status/peers poller a TUI can subscribe to). | — | **Open** — build `cmd/ourcord-tui` (bubbletea) + a shared poll helper. |
+
+`daemon/pkg/client` is now the complete UI-agnostic surface: daemon IPC ops
+(`client.go`), device/control-plane ops (`devices.go`), and diagnostics
+collection (`diagnostics.go`). `cmd/ourcord-cli` contains only presenters and has
+no core logic left.
 
 ## Next steps
 
-1. **C4** — move `enroll/devices/revoke-device` and diagnostics collection into
-   the client-core package as typed methods (they already return `(T, error)`;
-   just change their home and drop the `run*` presenter wrappers into the CLI).
+1. **C5** — add a core `Watch` helper (poll `Status`/`ListPeers` on an interval,
+   emit snapshots) usable by both a CLI `--watch`/`status --watch` and the TUI.
 2. **C5** — add `cmd/ourcord-tui` (Bubble Tea) that renders status/peers and
-   drives connect/enter-network through `daemon/pkg/client`, proving the core is
-   presenter-agnostic. Add a core `Watch`/poll helper both CLI (`--watch`) and TUI
-   can reuse.
+   drives connect/enter-network/leave through `daemon/pkg/client`, proving the
+   core is presenter-agnostic.
 3. Keep the proto contract (`proto/ourcord/v1/daemon.proto`) as the single field
    source; when the gRPC transport replaces the JSON IPC adapter, only
    `daemon/pkg/ipc` + `daemon/pkg/client` internals change, not the presenters.

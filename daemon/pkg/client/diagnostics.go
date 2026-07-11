@@ -1,0 +1,115 @@
+package client
+
+import (
+	"archive/zip"
+	"encoding/json"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"runtime"
+	"time"
+
+	"github.com/ourcord/ourcord/daemon/pkg/logging"
+	"github.com/ourcord/ourcord/daemon/pkg/wg"
+)
+
+const diagnosticsLogLimit = 512 * 1024
+
+// CollectDiagnostics dials the daemon, gathers status and peers, and writes a
+// redacted zip bundle to outputPath (mode 0600). Any optional daemon log file is
+// tailed and credential-scrubbed before inclusion. UI-agnostic: no printing.
+func CollectDiagnostics(socketPath, logFile, outputPath string) error {
+	c, err := Dial(socketPath)
+	if err != nil {
+		return fmt.Errorf("connect daemon IPC: %w", err)
+	}
+	defer c.Close()
+	status, err := c.Status()
+	if err != nil {
+		return fmt.Errorf("read daemon status: %w", err)
+	}
+	peers, err := c.ListPeers()
+	if err != nil {
+		return fmt.Errorf("read daemon peers: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(outputPath), 0o700); err != nil {
+		return err
+	}
+	return writeDiagnosticsArchive(outputPath, socketPath, logFile, status, peers)
+}
+
+func writeDiagnosticsArchive(outputPath, socketPath, logFile string, status, peers any) error {
+	f, err := os.OpenFile(outputPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	if err := f.Chmod(0o600); err != nil {
+		return err
+	}
+	zw := zip.NewWriter(f)
+	defer zw.Close()
+
+	manifest := map[string]any{
+		"created_at":        time.Now().UTC().Format(time.RFC3339Nano),
+		"goos":              runtime.GOOS,
+		"goarch":            runtime.GOARCH,
+		"socket":            socketPath,
+		"log_included":      logFile != "",
+		"state_dir_default": wg.DefaultStateDir(),
+	}
+	if err := addJSON(zw, "manifest.json", manifest); err != nil {
+		return err
+	}
+	if err := addJSON(zw, "daemon-status.json", status); err != nil {
+		return err
+	}
+	if err := addJSON(zw, "peers.json", peers); err != nil {
+		return err
+	}
+	if logFile != "" {
+		data, err := tailFile(logFile, diagnosticsLogLimit)
+		if err != nil {
+			return fmt.Errorf("read log file: %w", err)
+		}
+		entry, err := zw.Create("daemon.log")
+		if err != nil {
+			return err
+		}
+		if _, err := io.WriteString(entry, logging.Redact(string(data))); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func addJSON(zw *zip.Writer, name string, value any) error {
+	entry, err := zw.Create(name)
+	if err != nil {
+		return err
+	}
+	enc := json.NewEncoder(entry)
+	enc.SetIndent("", "  ")
+	return enc.Encode(value)
+}
+
+func tailFile(path string, limit int64) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	start := info.Size() - limit
+	if start < 0 {
+		start = 0
+	}
+	if _, err := f.Seek(start, io.SeekStart); err != nil {
+		return nil, err
+	}
+	return io.ReadAll(io.LimitReader(f, limit))
+}

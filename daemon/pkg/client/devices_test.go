@@ -1,4 +1,4 @@
-package main
+package client
 
 import (
 	"context"
@@ -22,12 +22,12 @@ func TestEnrollDevicePersistsCredentialWithoutReturningIt(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			t.Fatal(err)
 		}
-		_ = json.NewEncoder(w).Encode(enrollResponse{deviceRecord: deviceRecord{ID: "dev-1", PublicKey: request.PublicKey, Name: request.Name}, DeviceToken: "dt_abcdefghijklmnopqrstuvwxyz0123456789"})
+		_ = json.NewEncoder(w).Encode(EnrollResult{DeviceRecord: DeviceRecord{ID: "dev-1", PublicKey: request.PublicKey, Name: request.Name}, DeviceToken: "dt_abcdefghijklmnopqrstuvwxyz0123456789"})
 	}))
 	defer server.Close()
 
 	stateDir := t.TempDir()
-	result, err := enrollDevice(context.Background(), server.Client(), server.URL, stateDir, "user-jwt", "laptop")
+	result, err := EnrollDevice(context.Background(), server.Client(), server.URL, stateDir, "user-jwt", "laptop")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,7 +53,7 @@ func TestListAndRevokeDevices(t *testing.T) {
 		}
 		switch r.Method + " " + r.URL.Path {
 		case "GET /api/devices":
-			_ = json.NewEncoder(w).Encode(map[string]any{"devices": []deviceRecord{{ID: "dev-1", Name: "laptop"}}})
+			_ = json.NewEncoder(w).Encode(map[string]any{"devices": []DeviceRecord{{ID: "dev-1", Name: "laptop"}}})
 		case "DELETE /api/devices/dev-1":
 			deleted = "dev-1"
 			_ = json.NewEncoder(w).Encode(map[string]bool{"ok": true})
@@ -63,11 +63,11 @@ func TestListAndRevokeDevices(t *testing.T) {
 	}))
 	defer server.Close()
 
-	devices, err := listDevices(context.Background(), server.Client(), server.URL, "user-jwt")
+	devices, err := ListDevices(context.Background(), server.Client(), server.URL, "user-jwt")
 	if err != nil || len(devices) != 1 || devices[0].ID != "dev-1" {
 		t.Fatalf("devices=%+v err=%v", devices, err)
 	}
-	if err := revokeDevice(context.Background(), server.Client(), server.URL, "user-jwt", "dev-1"); err != nil || deleted != "dev-1" {
+	if err := RevokeDevice(context.Background(), server.Client(), server.URL, "user-jwt", "dev-1"); err != nil || deleted != "dev-1" {
 		t.Fatalf("revoke err=%v deleted=%q", err, deleted)
 	}
 }
