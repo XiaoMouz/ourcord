@@ -7,9 +7,18 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"time"
 
 	"golang.org/x/sys/windows"
 	"golang.zx2c4.com/wireguard/windows/tunnel/winipcfg"
+)
+
+const (
+	// A freshly created Wintun adapter can briefly be absent from the OS
+	// interface table before net.InterfaceByName sees it, so ifaceLUID retries
+	// the resolution for a bounded window (mirrors wireguard-windows).
+	luidRetryAttempts = 10
+	luidRetryDelay    = 200 * time.Millisecond
 )
 
 // Windows address/route configuration via the native IP Helper API (winipcfg),
@@ -20,17 +29,28 @@ import (
 
 // ifaceLUID resolves a Wintun adapter's LUID from its interface name. Go's net
 // package exposes the adapter's friendly name (the name wireguard-go assigned),
-// and winipcfg converts the interface index to the LUID its API expects.
+// and winipcfg converts the interface index to the LUID its API expects. The
+// lookup is retried briefly because the adapter may not be listed the instant
+// after CreateTUN returns.
 func ifaceLUID(ifname string) (winipcfg.LUID, error) {
-	iface, err := net.InterfaceByName(ifname)
-	if err != nil {
-		return 0, fmt.Errorf("lookup interface %q: %w", ifname, err)
+	var lastErr error
+	for attempt := 0; attempt < luidRetryAttempts; attempt++ {
+		if attempt > 0 {
+			time.Sleep(luidRetryDelay)
+		}
+		iface, err := net.InterfaceByName(ifname)
+		if err != nil {
+			lastErr = fmt.Errorf("lookup interface %q: %w", ifname, err)
+			continue
+		}
+		luid, err := winipcfg.LUIDFromIndex(uint32(iface.Index))
+		if err != nil {
+			lastErr = fmt.Errorf("luid for %q (index %d): %w", ifname, iface.Index, err)
+			continue
+		}
+		return luid, nil
 	}
-	luid, err := winipcfg.LUIDFromIndex(uint32(iface.Index))
-	if err != nil {
-		return 0, fmt.Errorf("luid for %q (index %d): %w", ifname, iface.Index, err)
-	}
-	return luid, nil
+	return 0, lastErr
 }
 
 // assignAddrs sets the interface's own v4/v6 VPN addresses and installs the

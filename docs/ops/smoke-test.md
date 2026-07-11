@@ -7,7 +7,9 @@
 
 ## 前置
 
-- Linux **或** macOS（Windows 暂不支持，TUN 地址装配在 `addr_other.go` 直接报错）
+- Linux **或** macOS（本地 smoke 脚本用）。Windows 地址/路由装配已由
+  `daemon/pkg/tun/addr_windows.go`（winipcfg）支持，真机行为由 CI 的
+  `windows-native` job 用真 Wintun 适配器验收——本地脚本仍只跑 Linux/macOS。
 - `sudo` 权限（创 TUN 必须）
 - Go ≥ 1.22（需能 `go build`）
 - Python 3（mock control plane 用，无外部依赖）
@@ -79,7 +81,8 @@ room-scoped peer config、SignalDO、ICE probe 和 WireGuard 数据面均参与�
   smoke（当前新 binary）”覆盖。
 - 真实受限网络下的 A-C 自动拓扑已由后续“三 netns A-B-C smoke”覆盖；
   三独立 VM 仍可作为环境复核，但不再是唯一可重复验收入口。
-- Windows Wintun。
+- Windows Wintun 由 CI `windows-native` job 单独验收（真 Wintun 适配器
+  地址装配 + `/32` 路由往返），不在本 Linux/macOS smoke 覆盖内。
 
 ---
 
