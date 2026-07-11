@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Three-node Phase-1 smoke inside one OrbStack Linux VM, using network
-# namespaces as real hosts. This is the repeatable replacement for the manual
-# A-B-C smoke notes in docs/ops/smoke-test.md.
+# Three-node network acceptance smoke inside one Linux VM, using network
+# namespaces as real hosts. It proves direct ICE, runtime DERP fallback,
+# automatic A-B-C next-hop routing, and direct recovery in one repeatable run.
 #
 # It exercises real control + service Workers, real relay, real ourcordd
 # instances, real Linux TUN devices, and kernel forwarding. The only shortcut is
@@ -23,6 +23,7 @@ BRIDGE_IP="${BRIDGE_IP:-10.222.0.1}"
 NET_PREFIX="${NET_PREFIX:-10.222.0}"
 ROOM_NAME="${ROOM_NAME:-abc-voice}"
 KEEP_SMOKE="${KEEP_SMOKE:-0}"
+GO_BIN="${GO_BIN:-$(command -v go || true)}"
 
 CONTROL_URL="http://$BRIDGE_IP:$CONTROL_PORT"
 CONTROL_LOCAL="http://127.0.0.1:$CONTROL_PORT"
@@ -48,8 +49,11 @@ cleanup() {
     kill -- "-$pid" 2>/dev/null
     kill "$pid" 2>/dev/null
   done
-  # Backstop: reap anything still pinned to this run's workdir.
-  pkill -9 -f "$WORKDIR" 2>/dev/null
+  # run_bg starts every long-lived host process in its own session, so PIDS is
+  # sufficient for cleanup. Do not use a broad `pkill -f "$WORKDIR"` here:
+  # release-acceptance supervisors legitimately contain WORKDIR in their own
+  # command line and would be killed before they can record this script's exit
+  # status or upload the retained logs.
   for name in "${NAMES[@]}"; do
     sudo ip netns del "ocabc-$name" 2>/dev/null || true
   done
@@ -211,11 +215,18 @@ block_ac_udp() {
   sudo ip netns exec ocabc-c tc filter replace dev eth0 egress protocol ip pref 10 flower dst_ip "${IPS[0]}" ip_proto udp action drop
 }
 
+unblock_ac_udp() {
+  log "Restoring A<->C UDP direct underlay"
+  sudo ip netns exec ocabc-a tc qdisc del dev eth0 clsact 2>/dev/null || true
+  sudo ip netns exec ocabc-c tc qdisc del dev eth0 clsact 2>/dev/null || true
+}
+
 build_bins() {
   log "Building daemon, CLI, and relay"
-  (cd "$ROOT/daemon" && /usr/local/go/bin/go build -o "$WORKDIR/ourcordd" ./cmd/ourcordd)
-  (cd "$ROOT/daemon" && /usr/local/go/bin/go build -o "$WORKDIR/ourcord-cli" ./cmd/ourcord-cli)
-  (cd "$ROOT/relay" && /usr/local/go/bin/go build -o "$WORKDIR/ourcord-relay" ./cmd/ourcord-relay)
+  [[ -n "$GO_BIN" ]] || fail "go is required"
+  (cd "$ROOT/daemon" && "$GO_BIN" build -o "$WORKDIR/ourcordd" ./cmd/ourcordd)
+  (cd "$ROOT/daemon" && "$GO_BIN" build -o "$WORKDIR/ourcord-cli" ./cmd/ourcord-cli)
+  (cd "$ROOT/relay" && "$GO_BIN" build -o "$WORKDIR/ourcord-relay" ./cmd/ourcord-relay)
 }
 
 start_workers() {
@@ -340,6 +351,45 @@ wait_next_hop() {
   done
 }
 
+wait_all_peer_paths() {
+  local name=$1 expected=$2 deadline=$((SECONDS + 180))
+  until cli "$name" peers | python3 -c '
+import json, sys
+expected = sys.argv[1]
+peers = json.load(sys.stdin)
+sys.exit(0 if len(peers) >= 2 and all(p.get("path") == expected for p in peers) else 1)
+' "$expected" >/dev/null; do
+    if (( SECONDS > deadline )); then
+      cli "$name" peers >&2 || true
+      fail "$name did not reach all-$expected peer paths"
+    fi
+    sleep 2
+  done
+}
+
+wait_peer_path() {
+  local name=$1 ip=$2 expected=$3 deadline=$((SECONDS + 120))
+  until cli "$name" peers | python3 -c '
+import json, sys
+ip, expected = sys.argv[1:]
+for peer in json.load(sys.stdin):
+    if peer.get("ip4") == ip:
+        sys.exit(0 if peer.get("path") == expected else 1)
+sys.exit(1)
+' "$ip" "$expected" >/dev/null; do
+    if (( SECONDS > deadline )); then
+      cli "$name" peers >&2 || true
+      fail "$name did not report $ip as $expected"
+    fi
+    sleep 2
+  done
+}
+
+vpn_ip() {
+  local name=$1
+  cli "$name" status | python3 -c 'import json,sys; print(json.load(sys.stdin)["ip4"])'
+}
+
 next_hop_peer_ip() {
   local name=$1
   cli "$name" peers | python3 -c 'import json,sys; peers=json.load(sys.stdin); print(next(p["ip4"] for p in peers if p.get("path")=="next-hop"))'
@@ -353,6 +403,7 @@ main() {
   need tc
   need npx
   need node22
+  [[ -n "$GO_BIN" ]] || fail "go is required"
   [[ -c /dev/net/tun ]] || fail "/dev/net/tun is missing"
 
   check_node_modules
@@ -362,7 +413,6 @@ main() {
   start_workers
   start_relay
   create_product_room
-  block_ac_udp
   start_daemons
   connect_all
 
@@ -370,6 +420,26 @@ main() {
   wait_peer_count a
   wait_peer_count b
   wait_peer_count c
+
+  log "Waiting for initial three-way ICE direct mesh"
+  wait_all_peer_paths a direct
+  wait_all_peer_paths b direct
+  wait_all_peer_paths c direct
+
+  local a_ip c_ip
+  a_ip="$(vpn_ip a)"
+  c_ip="$(vpn_ip c)"
+  log "Verifying direct A<->C VPN data path"
+  sudo ip netns exec ocabc-a ping -c 4 -W 3 "$c_ip"
+
+  block_ac_udp
+  log "Waiting for runtime DERP fallback after A<->C UDP impairment"
+  wait_file_text "$WORKDIR/daemon-a.log" "fallback state applied" daemon-a
+  wait_file_text "$WORKDIR/daemon-c.log" "fallback state applied" daemon-c
+  wait_peer_path a "$c_ip" degraded
+  wait_peer_path c "$a_ip" degraded
+  log "Verifying DERP fallback VPN data path"
+  sudo ip netns exec ocabc-a ping -c 4 -W 3 "$c_ip"
 
   log "Waiting for control to select A-B-C next-hop automatically"
   wait_next_hop a
@@ -382,12 +452,18 @@ main() {
   cli a peers
   cli c peers
 
-  local c_ip
   c_ip="$(next_hop_peer_ip a)"
   log "Pinging A next-hop peer VPN IP from A: $c_ip"
   sudo ip netns exec ocabc-a ping -c 4 -W 3 "$c_ip"
 
-  log "ABC NETNS SMOKE PASSED"
+  unblock_ac_udp
+  log "Waiting for A<->C ICE direct recovery from next-hop"
+  wait_peer_path a "$c_ip" direct
+  wait_peer_path c "$a_ip" direct
+  log "Verifying recovered direct VPN data path"
+  sudo ip netns exec ocabc-a ping -c 4 -W 3 "$c_ip"
+
+  log "NETWORK ACCEPTANCE PASSED: direct, DERP, A-B-C next-hop, recovery"
 }
 
 main "$@"

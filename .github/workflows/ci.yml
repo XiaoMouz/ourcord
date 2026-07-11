@@ -24,17 +24,11 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-          cache: npm
-          cache-dependency-path: ${{ matrix.pkg }}/package-lock.json
-      - run: npm ci || npm install
-      - run: npx tsc --noEmit
-      - name: vitest (if configured)
-        run: |
-          if [ -f vitest.config.ts ] || [ -f vitest.config.js ] || [ -f vitest.config.mjs ]; then
-            npx vitest run
-          else
-            echo "no vitest config in $(pwd); skipping"
-          fi
+      - run: corepack enable
+      - run: corepack prepare pnpm@9.15.9 --activate
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec tsc --noEmit
+      - run: pnpm test
 
   go:
     name: Go (build + vet + race tests)
@@ -42,7 +36,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        mod: [daemon, relay]
+        mod: [daemon, relay, filebackend]
     defaults:
       run:
         working-directory: ${{ matrix.mod }}
@@ -55,6 +49,20 @@ jobs:
       - run: go build ./...
       - run: go vet ./...
       - run: go test -race ./...
+
+  proto:
+    name: Proto contract
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: bufbuild/buf-setup-action@v1
+        with:
+          version: 1.71.0
+      - working-directory: proto
+        run: |
+          buf lint
+          buf format --diff
+          buf generate
 
   cross-compile:
     name: Cross-compile daemon

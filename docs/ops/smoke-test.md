@@ -241,6 +241,9 @@ vitest 68 过；relay `go test ./...`、daemon/relay `go vet ./...` 全过。
   并按成本选路：ICE direct 成本最低，未知/user WG relay 居中，DERP baseline
   最高。只有经 B 的 A-B-C 成本低于 A-C 直达边，或 A-C 无 reachable edge 时，
   才在 C 的 peer record 上返回 `next_hop_public_key=B`。
+- `peer_connectivity` 是有向图：一次 daemon 上报只写入 `self → peer`，绝不镜像
+  成 `peer → self`。因此 NAT、防火墙或 relay 导致的单向不可达会被原样保留；
+  A 经 B 到 C 的选择只要求 `A→B` 与 `B→C` 两条必需方向都可达。
 - daemon 已能消费 `next_hop_public_key` 并生成 WireGuard `AllowedIPs`：
   next-hop peer 获得被转发 peer 的 `/32`/`/128`，间接 peer 自身不写 endpoint。
 - daemon 的 reachability monitor 已有单测覆盖：DERP-baseline peer 长时间无
@@ -250,6 +253,26 @@ vitest 68 过；relay `go test ./...`、daemon/relay `go vet ./...` 全过。
 - control 已补防抖：当前 edge 为 `reason='unreachable'` 时，普通周期性
   `derp-baseline` 不会覆盖回 true；只有 ICE direct 或 daemon 明确上报
   `derp-recovery` 才能恢复该 edge。
+
+## 可重复发布验收（direct / DERP / A-B-C / recovery）
+
+`tests/e2e/smoke_abc_netns.sh` 是当前的完整网络发布验收。它在一个 Linux
+VM 内创建三个 network namespace，使用真实 control/service Workers、DERP、
+TUN、WireGuard 与 ICE，按顺序断言：
+
+1. 三方初始 ICE direct 与 A→C 数据面；
+2. 仅阻断 A↔C 的 underlay UDP 后，A/C 进入 runtime DERP fallback 且数据面仍通；
+3. control 自动下发经 B 的 A-B-C 路由，A→C TTL 变为 63；
+4. 解除阻断后 A/C 自动恢复 ICE direct，TTL 回到 64。
+
+GitHub Actions 的 **Network release acceptance** workflow 可通过
+`workflow_dispatch` 手动运行；它在干净 Linux runner 里安装 Worker 的 Linux
+依赖、执行同一脚本，并保留 `.smoke-tmp/abc-netns` 日志与本地状态 14 天。
+发布前必须成功运行该 workflow。
+
+2026-07-11 本地 `ourcord-test` OrbStack VM 复验：exit code 0，四阶段 ping
+均为 0% packet loss；DERP 阶段与恢复 direct 分别有 daemon fallback/ICE upgrade
+日志，A-B-C 与恢复 ping 的 TTL 分别为 63 与 64。
 
 2026-06-29 OrbStack 单 VM 三 netns smoke 通过：
 
