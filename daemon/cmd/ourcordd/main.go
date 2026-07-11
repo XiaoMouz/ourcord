@@ -186,6 +186,10 @@ type daemon struct {
 	// connMu. Reset to the base interval when a new peer joins the network.
 	iceRetry map[wgtypes.Key]*iceRetryState
 
+	// pathState tracks per-peer effective-path history for flap telemetry and
+	// backoff damping. Guarded by connMu. Sampled by pathFlapLoop.
+	pathState map[wgtypes.Key]*peerPathState
+
 	// reach tracks per-peer DERP-baseline reachability. The daemon reports
 	// wg_reachable=false when a peer is dead on every transport (no ICE and no
 	// live DERP data plane) so control can pick an A-B-C next hop without manual
@@ -272,22 +276,24 @@ func (d *daemon) HandleIPC(ctx context.Context, req ipc.IPCRequest) ipc.IPCRespo
 		if d.table != nil {
 			routes = d.table.All()
 		}
+		_, flapsTotal := d.pathTelemetrySnapshotLocked(time.Now())
 		d.connMu.Unlock()
 		relayUsed, relayURL, pathSummary := summarizeRoutes(d.vpnActive.Load(), routes)
 		return ipc.IPCResponse{
 			OK: true,
 			Data: ipc.DaemonStatus{
-				Running:     true,
-				VPNActive:   d.vpnActive.Load(),
-				IP4:         ip4,
-				IP6:         ip6,
-				NetworkID:   roomID,
-				RoomID:      roomID,
-				PeerCount:   len(routes),
-				RelayUsed:   relayUsed,
-				RelayURL:    relayURL,
-				PathSummary: pathSummary,
-				Transport:   transport,
+				Running:        true,
+				VPNActive:      d.vpnActive.Load(),
+				IP4:            ip4,
+				IP6:            ip6,
+				NetworkID:      roomID,
+				RoomID:         roomID,
+				PeerCount:      len(routes),
+				RelayUsed:      relayUsed,
+				RelayURL:       relayURL,
+				PathSummary:    pathSummary,
+				PathFlapsTotal: flapsTotal,
+				Transport:      transport,
 			},
 		}
 	case ipc.CmdListPeers:
@@ -296,8 +302,11 @@ func (d *daemon) HandleIPC(ctx context.Context, req ipc.IPCRequest) ipc.IPCRespo
 		if d.table != nil {
 			routes = d.table.All()
 		}
+		telem, _ := d.pathTelemetrySnapshotLocked(time.Now())
 		d.connMu.Unlock()
-		return ipc.IPCResponse{OK: true, Data: connectedPeers(routes)}
+		peers := connectedPeers(routes)
+		enrichPeerTelemetry(peers, telem)
+		return ipc.IPCResponse{OK: true, Data: peers}
 	case ipc.CmdConnect:
 		if err := d.connect(ctx); err != nil {
 			return ipc.IPCResponse{OK: false, Error: err.Error()}
@@ -655,6 +664,7 @@ func (d *daemon) connect(ctx context.Context) error {
 	d.assignedIP6 = reg.Peer.IP6
 	d.connectivityEpoch = newConnectivityEpoch()
 	d.connectivitySeq = make(map[string]uint64)
+	d.pathState = make(map[wgtypes.Key]*peerPathState)
 	d.vpnActive.Store(true)
 
 	if d.activeRoom != "" {
@@ -665,6 +675,7 @@ func (d *daemon) connect(ctx context.Context) error {
 	go d.meshLoop(connCtx)
 	go d.iceRetryLoop(connCtx)
 	go d.reachabilityLoop(connCtx)
+	go d.pathFlapLoop(connCtx)
 	if deviceToken != "" {
 		go d.tokenRefreshLoop(connCtx, cli, deviceToken, tokenExpiresAt)
 	}
@@ -703,6 +714,7 @@ func (d *daemon) disconnect() {
 	d.activeRoom = ""
 	d.connectivityEpoch = ""
 	d.connectivitySeq = nil
+	d.pathState = nil
 	d.sigCxl = nil
 	d.vpnActive.Store(false)
 }
@@ -860,15 +872,37 @@ func (d *daemon) scheduleICERetryLocked(pk wgtypes.Key) {
 	if d.iceRetry == nil {
 		d.iceRetry = make(map[wgtypes.Key]*iceRetryState)
 	}
+	now := time.Now()
 	st := d.iceRetry[pk]
 	if st == nil {
 		st = &iceRetryState{interval: iceRetryBase}
 		d.iceRetry[pk] = st
-		st.nextAttempt = time.Now().Add(st.interval)
+		st.nextAttempt = now.Add(d.dampInterval(pk, st.interval))
 		return
 	}
 	// Same doubling+cap curve as every other retry site — one implementation.
-	st.backoffAfterAttempt(time.Now())
+	st.backoffAfterAttempt(now)
+	d.applyFlapDampLocked(pk, st, now)
+}
+
+// dampInterval raises a retry interval to the flap floor while the peer is
+// flapping, so a chronically-unstable peer stops being re-upgraded every tick.
+func (d *daemon) dampInterval(pk wgtypes.Key, interval time.Duration) time.Duration {
+	if d.peerFlappingLocked(pk) {
+		return max(interval, flapDampInterval)
+	}
+	return interval
+}
+
+// applyFlapDampLocked pushes nextAttempt out to honor the flap floor when a peer
+// is flapping. Caller holds connMu.
+func (d *daemon) applyFlapDampLocked(pk wgtypes.Key, st *iceRetryState, now time.Time) {
+	if !d.peerFlappingLocked(pk) {
+		return
+	}
+	if damped := now.Add(flapDampInterval); damped.After(st.nextAttempt) {
+		st.nextAttempt = damped
+	}
 }
 
 // resetICEBackoffLocked pulls every degraded peer's retry back to the base
@@ -939,13 +973,14 @@ func (d *daemon) collectICERetryLocked(now time.Time) []string {
 		}
 		st := d.iceRetry[r.PublicKey]
 		if st == nil && r.NextHop != nil {
-			st = &iceRetryState{interval: iceRetryBase, nextAttempt: now}
+			st = &iceRetryState{interval: iceRetryBase, nextAttempt: now.Add(d.dampInterval(r.PublicKey, 0))}
 			d.iceRetry[r.PublicKey] = st
 		}
 		if st == nil || now.Before(st.nextAttempt) {
 			continue
 		}
 		st.backoffAfterAttempt(now)
+		d.applyFlapDampLocked(r.PublicKey, st, now)
 		retry = append(retry, r.PublicKey.String())
 	}
 	return retry

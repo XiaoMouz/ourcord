@@ -142,3 +142,50 @@ func TestCollectICERetrySkipsHealthyDirectPeer(t *testing.T) {
 		t.Fatalf("healthy direct peer must not retry, got %v", got)
 	}
 }
+
+func TestScheduleICERetryDampsFlappingPeer(t *testing.T) {
+	pk := mustTestKey(0x5a)
+	d := &daemon{pathState: map[wgtypes.Key]*peerPathState{pk: {flapping: true}}}
+
+	before := time.Now()
+	d.scheduleICERetryLocked(pk)
+	st := d.iceRetry[pk]
+	if st == nil {
+		t.Fatal("schedule should create retry state")
+	}
+	// A flapping peer's first attempt is pushed out to the damp floor, well past
+	// the base interval a stable peer would get.
+	if got := st.nextAttempt.Sub(before); got < flapDampInterval {
+		t.Fatalf("flapping first attempt delay = %v, want >= %v", got, flapDampInterval)
+	}
+
+	// A non-flapping peer gets the ordinary base interval — far shorter.
+	stable := mustTestKey(0x5b)
+	d2 := &daemon{}
+	beforeStable := time.Now()
+	d2.scheduleICERetryLocked(stable)
+	if got := d2.iceRetry[stable].nextAttempt.Sub(beforeStable); got >= flapDampInterval {
+		t.Fatalf("stable first attempt delay = %v, should be < %v", got, flapDampInterval)
+	}
+}
+
+func TestCollectICERetryHoldsFlappingNextHopPeer(t *testing.T) {
+	now := time.Unix(5_000, 0)
+	peer := mustTestKey(0x5c)
+	hop := mustTestKey(0x5d)
+	d := &daemon{
+		table:     routing.NewTable(),
+		pathState: map[wgtypes.Key]*peerPathState{peer: {flapping: true}},
+	}
+	d.table.Upsert(&routing.PeerRoute{PublicKey: peer, NextHop: &hop})
+
+	// The peer needs recovery, but because it is flapping the first probe is
+	// deferred to the damp floor rather than fired this tick.
+	if got := d.collectICERetryLocked(now); len(got) != 0 {
+		t.Fatalf("flapping peer must be held this tick, got %v", got)
+	}
+	st := d.iceRetry[peer]
+	if st == nil || st.nextAttempt.Before(now.Add(flapDampInterval)) {
+		t.Fatalf("flapping next-hop peer should defer to damp floor, got %+v", st)
+	}
+}

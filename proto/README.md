@@ -32,6 +32,9 @@ gRPC. Its JSON names map to this contract as follows:
 | string paths (`direct`, `derp`, `next-hop`, …) | `Path` enum |
 | `ip4`, `ip6` | `ipv4`, `ipv6` |
 | `next_hop` | `next_hop_public_key` |
+| `last_seen_secs` | `last_seen_seconds` |
+| `path_transitions`, `path_dwell_secs`, `flapping` | `ConnectedPeer.path_transitions` / `path_dwell_seconds` / `flapping` |
+| `path_flaps_total` | `DaemonStatus.path_flaps_total` |
 
 `enter_room`, `leave_room`, `force_derp`, and `ping` are legacy CLI or
 diagnostic commands. They are intentionally absent from the stable UI API.

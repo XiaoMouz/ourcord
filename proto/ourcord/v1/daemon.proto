@@ -75,6 +75,9 @@ message DaemonStatus {
   string relay_url = 8;
   Path path_summary = 9;
   TransportStats transport = 10;
+  // Sum of per-peer path-label transitions observed during this connection.
+  // A rising value indicates an unstable overlay; see ConnectedPeer.flapping.
+  uint64 path_flaps_total = 11;
 }
 
 message ListPeersResponse {
@@ -95,6 +98,12 @@ message ConnectedPeer {
   double latency_ms = 11;
   int64 last_seen_seconds = 12;
   string last_error = 13;
+  // Number of times this peer's effective path label changed this connection.
+  uint64 path_transitions = 14;
+  // Seconds the peer has held its current path label (dwell time).
+  int64 path_dwell_seconds = 15;
+  // True when the peer's path is churning (>= threshold transitions in window).
+  bool flapping = 16;
 }
 
 // PATH_UNSPECIFIED is mandatory for absent or unrecognised values. Clients

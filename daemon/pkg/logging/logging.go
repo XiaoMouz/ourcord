@@ -138,6 +138,8 @@ func eventFor(msg string) string {
 		return "network.path.direct"
 	case strings.Contains(lower, "fallback state applied"):
 		return "network.path.derp_fallback"
+	case strings.Contains(lower, "path flap"):
+		return "network.path.flap"
 	case strings.Contains(lower, "next-hop"):
 		return "network.path.next_hop"
 	case strings.Contains(lower, "device credential exchanged"):

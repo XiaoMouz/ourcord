@@ -6,17 +6,18 @@ package ipc
 
 // DaemonStatus is the JSON compatibility shape for ourcord.v1.DaemonStatus.
 type DaemonStatus struct {
-	Running     bool           `json:"running"`
-	VPNActive   bool           `json:"vpn_active"`
-	IP4         string         `json:"ip4"`
-	IP6         string         `json:"ip6"`
-	NetworkID   string         `json:"network_id,omitempty"`
-	RoomID      string         `json:"room_id,omitempty"`
-	PeerCount   int            `json:"peer_count"`
-	RelayUsed   bool           `json:"relay_used"` // true if currently relaying via DERP
-	RelayURL    string         `json:"relay_url"`
-	PathSummary string         `json:"path_summary"` // inactive, no-peers, waiting, direct, derp, next-hop, degraded
-	Transport   TransportStats `json:"transport"`
+	Running        bool           `json:"running"`
+	VPNActive      bool           `json:"vpn_active"`
+	IP4            string         `json:"ip4"`
+	IP6            string         `json:"ip6"`
+	NetworkID      string         `json:"network_id,omitempty"`
+	RoomID         string         `json:"room_id,omitempty"`
+	PeerCount      int            `json:"peer_count"`
+	RelayUsed      bool           `json:"relay_used"` // true if currently relaying via DERP
+	RelayURL       string         `json:"relay_url"`
+	PathSummary    string         `json:"path_summary"`     // inactive, no-peers, waiting, direct, derp, next-hop, degraded
+	PathFlapsTotal uint64         `json:"path_flaps_total"` // Σ per-peer path transitions this connection
+	Transport      TransportStats `json:"transport"`
 }
 
 type TransportStats struct {
@@ -56,6 +57,9 @@ type ConnectedPeer struct {
 	LatencyMs         float64 `json:"latency_ms"`
 	LastSeenSecs      int64   `json:"last_seen_secs"`
 	LastError         string  `json:"last_error,omitempty"`
+	PathTransitions   uint64  `json:"path_transitions"`   // times this peer's path label changed
+	PathDwellSecs     int64   `json:"path_dwell_secs"`    // seconds held in the current path
+	Flapping          bool    `json:"flapping,omitempty"` // path unstable (≥ threshold changes in window)
 }
 
 // Command types are legacy JSON IPC names. New UI code must target the stable
