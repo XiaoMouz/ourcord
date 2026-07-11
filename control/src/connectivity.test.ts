@@ -220,4 +220,31 @@ describe("connectivity sequence arbitration (real SQL)", () => {
 
     expect(edge(db, A_KEY, B_KEY).transport).toBe("ice");
   });
+
+  it("stores path-flap telemetry on the reporting edge", async () => {
+    await report(tokenA, A_KEY, {
+      peer_public_key: B_KEY, ice_direct: true, wg_reachable: true,
+      source: "ice", reporter_epoch: "epochA_000001", seq: 1, observed_at: 1000,
+      path_transitions: 7, flapping: true,
+    }, env);
+    const row = db
+      .prepare(`SELECT flap_count, flapping FROM peer_connectivity WHERE network_id=? AND src_public_key=? AND dst_public_key=?`)
+      .get(NET, A_KEY, B_KEY) as any;
+    expect(row.flap_count).toBe(7);
+    expect(row.flapping).toBe(1);
+
+    // A malformed value never drops the report: the edge still updates, flap
+    // fields fall back to safe defaults.
+    await report(tokenA, A_KEY, {
+      peer_public_key: B_KEY, ice_direct: true, wg_reachable: true,
+      source: "ice", reporter_epoch: "epochA_000001", seq: 2, observed_at: 1001,
+      path_transitions: "nonsense", flapping: "yes",
+    }, env);
+    const row2 = db
+      .prepare(`SELECT flap_count, flapping, seq FROM peer_connectivity WHERE network_id=? AND src_public_key=? AND dst_public_key=?`)
+      .get(NET, A_KEY, B_KEY) as any;
+    expect(row2.seq).toBe(2);
+    expect(row2.flap_count).toBe(0);
+    expect(row2.flapping).toBe(0);
+  });
 });

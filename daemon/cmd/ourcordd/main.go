@@ -1123,18 +1123,30 @@ func (d *daemon) nextConnectivityReportLocked(peerKey string, iceDirect bool, wg
 	} else if wgReachable && strings.HasPrefix(reason, "derp") {
 		transport = "derp"
 	}
+	// Attach this edge's path-flap telemetry so control can record instability
+	// and dampen next-hop churn. Absent (unparseable key / no samples) → zero.
+	var pathTransitions uint64
+	var flapping bool
+	if pk, err := wgtypes.ParseKey(peerKey); err == nil {
+		if st := d.pathState[pk]; st != nil {
+			pathTransitions = st.transitions
+			flapping = st.flapping
+		}
+	}
 	return cli, ctx, control.ConnectivityReport{
-		NetworkID:     networkID,
-		PeerPublicKey: peerKey,
-		Direct:        iceDirect,
-		ICEDirect:     iceDirect,
-		WGReachable:   wgReachable,
-		Transport:     transport,
-		Reason:        reason,
-		Source:        source,
-		ReporterEpoch: d.connectivityEpoch,
-		Seq:           d.connectivitySeq[k],
-		ObservedAt:    time.Now().Unix(),
+		NetworkID:       networkID,
+		PeerPublicKey:   peerKey,
+		Direct:          iceDirect,
+		ICEDirect:       iceDirect,
+		WGReachable:     wgReachable,
+		Transport:       transport,
+		Reason:          reason,
+		Source:          source,
+		ReporterEpoch:   d.connectivityEpoch,
+		Seq:             d.connectivitySeq[k],
+		ObservedAt:      time.Now().Unix(),
+		PathTransitions: pathTransitions,
+		Flapping:        flapping,
 	}, true
 }
 

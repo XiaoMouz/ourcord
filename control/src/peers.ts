@@ -329,6 +329,8 @@ export async function reportPeerConnectivity(request: Request, env: Env): Promis
     reporter_epoch?: unknown;
     seq?: unknown;
     observed_at?: unknown;
+    path_transitions?: unknown;
+    flapping?: unknown;
   };
   try {
     body = await request.json();
@@ -375,6 +377,12 @@ export async function reportPeerConnectivity(request: Request, env: Env): Promis
   const observedAtResult = parseObservedAt(body.observed_at);
   if (observedAtResult instanceof Response) return observedAtResult;
   const observedAt = observedAtResult;
+  // Path-flap telemetry for this edge (optional, best-effort — clamp rather than
+  // reject so a malformed value can never drop an otherwise-valid report).
+  const flapCount = typeof body.path_transitions === "number" && Number.isFinite(body.path_transitions)
+    ? Math.max(0, Math.min(4_000_000_000, Math.round(body.path_transitions)))
+    : 0;
+  const flapping = body.flapping === true ? 1 : 0;
   if (reporterEpoch === "" && seq !== 0) return json({ error: "reporter_epoch required with seq" }, 400);
   if (reporterEpoch !== "" && seq === 0) return json({ error: "seq required with reporter_epoch" }, 400);
   const quality = connectivityQuality(iceDirect, wgReachable, transport, reason, source);
@@ -389,18 +397,19 @@ export async function reportPeerConnectivity(request: Request, env: Env): Promis
   const edgeUpsert = env.DB.prepare(
       `INSERT INTO peer_connectivity
          (network_id, src_public_key, dst_public_key, direct, ice_direct, wg_reachable, transport, rtt_ms, reason,
-          source, quality, reporter_public_key, reporter_epoch, seq, observed_at, reported_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+          source, quality, reporter_public_key, reporter_epoch, seq, observed_at, reported_at, flap_count, flapping)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
        ON CONFLICT(network_id, src_public_key, dst_public_key)
        DO UPDATE SET direct = excluded.direct, ice_direct = excluded.ice_direct,
                      wg_reachable = excluded.wg_reachable, transport = excluded.transport, rtt_ms = excluded.rtt_ms,
                      reason = excluded.reason, source = excluded.source, quality = excluded.quality,
                      reporter_public_key = excluded.reporter_public_key, reporter_epoch = excluded.reporter_epoch,
-                     seq = excluded.seq, observed_at = excluded.observed_at, reported_at = excluded.reported_at
+                     seq = excluded.seq, observed_at = excluded.observed_at, reported_at = excluded.reported_at,
+                     flap_count = excluded.flap_count, flapping = excluded.flapping
        ${CONNECTIVITY_ACCEPT_WHERE}`,
     ).bind(
       networkID, selfKey, peerKey, iceDirect ? 1 : 0, iceDirect ? 1 : 0, wgReachable ? 1 : 0,
-      transport, rttMs, reason, source, quality, selfKey, reporterEpoch, seq, observedAt, now,
+      transport, rttMs, reason, source, quality, selfKey, reporterEpoch, seq, observedAt, now, flapCount, flapping,
     );
   try {
     await edgeUpsert.run();
@@ -488,11 +497,12 @@ async function annotateNextHops(env: Env, networkID: string, selfKey: string, pe
     wg_reachable: number;
     transport: string;
     reason: string;
+    flapping: number;
   }>;
   try {
     const res = await env.DB
       .prepare(
-        `SELECT src_public_key, dst_public_key, ice_direct, wg_reachable, transport, reason
+        `SELECT src_public_key, dst_public_key, ice_direct, wg_reachable, transport, reason, flapping
          FROM peer_connectivity
          WHERE network_id = ?
            AND wg_reachable = 1
@@ -508,6 +518,7 @@ async function annotateNextHops(env: Env, networkID: string, selfKey: string, pe
         wg_reachable: number;
         transport: string;
         reason: string;
+        flapping: number;
       }>();
     rows = res.results ?? [];
   } catch (e) {
@@ -517,16 +528,22 @@ async function annotateNextHops(env: Env, networkID: string, selfKey: string, pe
     return;
   }
   const edges = new Map(rows.map((r) => [`${r.src_public_key}\n${r.dst_public_key}`, r]));
+  // A churning edge is penalized so a stable alternative path wins, damping the
+  // direct↔next-hop oscillation. Sized to beat a stable two-hop ICE path
+  // (10+10+5) yet stay finite, so a flapping edge with no stable alternative is
+  // still used rather than dropping the peer.
+  const FLAP_PENALTY = 500;
   const edgeCost = (a: string, b: string): number => {
     const edge = edges.get(`${a}\n${b}`);
     if (!edge || edge.wg_reachable !== 1) return Number.POSITIVE_INFINITY;
-    if (edge.ice_direct === 1) return 10;
-    if (edge.transport === "wg_relay") return 100;
-    if (edge.transport === "derp") return 1000;
+    const flap = edge.flapping === 1 ? FLAP_PENALTY : 0;
+    if (edge.ice_direct === 1) return 10 + flap;
+    if (edge.transport === "wg_relay") return 100 + flap;
+    if (edge.transport === "derp") return 1000 + flap;
     // DERP is a reliable fallback, but it should not create arbitrary
     // A-B-C paths when every pair is merely DERP-reachable. Unknown
     // non-DERP WG transports, including user relays, sit between ICE and DERP.
-    return edge.reason.startsWith("derp") ? 1000 : 100;
+    return (edge.reason.startsWith("derp") ? 1000 : 100) + flap;
   };
   for (const target of peers) {
     const directCost = edgeCost(selfKey, target.public_key);

@@ -334,6 +334,11 @@ type ConnectivityReport struct {
 	ReporterEpoch string  `json:"reporter_epoch,omitempty"`
 	Seq           uint64  `json:"seq,omitempty"`
 	ObservedAt    int64   `json:"observed_at,omitempty"`
+	// Path-flap telemetry for this source→peer edge, from the daemon's own
+	// per-peer path observer. Lets control record mesh instability and bias
+	// next-hop selection away from a churning edge.
+	PathTransitions uint64 `json:"path_transitions,omitempty"`
+	Flapping        bool   `json:"flapping,omitempty"`
 }
 
 type RelayEntry struct {

@@ -210,6 +210,38 @@ func TestICEDirectReachabilityReportRefreshesTopologyEdge(t *testing.T) {
 	}
 }
 
+func TestConnectivityReportCarriesPathFlapTelemetry(t *testing.T) {
+	pk := mustTestKey(0x66)
+	fc := &fakeClient{}
+	route := &routing.PeerRoute{PublicKey: pk, VPN4: netip.MustParseAddr("198.18.0.92"), ICEReady: true}
+	d := &daemon{
+		cli:        fc,
+		activeRoom: "lobby-l1-r1-voice",
+		connCtx:    context.Background(),
+		pathState:  map[wgtypes.Key]*peerPathState{pk: {transitions: 5, flapping: true}},
+	}
+
+	d.reportICEDirectReachabilityLocked([]*routing.PeerRoute{route})
+
+	reports := waitConnectivityReports(t, fc, 1)
+	if len(reports) != 1 {
+		t.Fatalf("connectivity reports = %+v, want one", reports)
+	}
+	if got := reports[0]; got.PathTransitions != 5 || !got.Flapping {
+		t.Fatalf("report did not carry flap telemetry: %+v", got)
+	}
+
+	// A peer with no observed flap state reports zero/false, not garbage.
+	other := mustTestKey(0x67)
+	fc2 := &fakeClient{}
+	d.cli = fc2
+	d.reportICEDirectReachabilityLocked([]*routing.PeerRoute{{PublicKey: other, VPN4: netip.MustParseAddr("198.18.0.93"), ICEReady: true}})
+	reports = waitConnectivityReports(t, fc2, 1)
+	if got := reports[0]; got.PathTransitions != 0 || got.Flapping {
+		t.Fatalf("unobserved peer should report zero flap telemetry: %+v", got)
+	}
+}
+
 func TestConnectivityReportsCarryMonotonicSequencePerEdge(t *testing.T) {
 	pkA := mustTestKey(0x65)
 	pkB := mustTestKey(0x66)

@@ -582,6 +582,45 @@ describe("registerPeer / getPeerConfig endpoint hints", () => {
     vi.unstubAllGlobals();
   });
 
+  it("routes a flapping direct edge via a stable next hop, then direct once it settles", async () => {
+    const token = await makeToken();
+    // Fresh peer rows per call: annotateNextHops mutates next_hop_public_key on
+    // these objects, so a shared array would leak the first result into the second.
+    const peerRows = () => [
+      { id: "peer-b", user_id: "u2", public_key: OTHER_WG_KEY, name: "hop", platform: "linux", last_seen: 30, ip4: "198.18.0.12", ip6: "fdab:cdef:123::b", derp_node_key: "nodekey:b", endpoint: "" },
+      { id: "peer-c", user_id: "u3", public_key: THIRD_WG_KEY, name: "behind", platform: "linux", last_seen: 20, ip4: "198.18.0.13", ip6: "fdab:cdef:123::c", derp_node_key: "nodekey:c", endpoint: "" },
+    ];
+    // Direct A→C is ICE (would normally win), but A-B and B-C are stable ICE too.
+    const mkCap = (acFlapping: number) => makeCapturingDB([
+      { first: null }, // ban check
+      {}, // last_seen update
+      { all: { results: peerRows() } },
+      { all: { results: [
+        { src_public_key: VALID_WG_KEY, dst_public_key: THIRD_WG_KEY, ice_direct: 1, wg_reachable: 1, transport: "ice", reason: "", flapping: acFlapping },
+        { src_public_key: VALID_WG_KEY, dst_public_key: OTHER_WG_KEY, ice_direct: 1, wg_reachable: 1, transport: "ice", reason: "", flapping: 0 },
+        { src_public_key: OTHER_WG_KEY, dst_public_key: THIRD_WG_KEY, ice_direct: 1, wg_reachable: 1, transport: "ice", reason: "", flapping: 0 },
+      ] } },
+      { all: { results: [] } }, // relay map
+    ]);
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ user_ids: ["u1", "u2", "u3"] })));
+    vi.stubGlobal("fetch", fetchMock);
+    const mkEnv = (cap: ReturnType<typeof makeCapturingDB>) => ({ ...makeEnv(cap.db), SERVICE_URL: "https://service.example", SERVICE_INTERNAL_TOKEN: "s2s" });
+    const mkReq = () => new Request("https://control.example/api/peers/config?room_id=lobby-L-room-R-voice", {
+      headers: { Authorization: `Bearer ${token}`, "X-Peer-Public-Key": VALID_WG_KEY },
+    });
+    const nextHopForC = async (cap: ReturnType<typeof makeCapturingDB>) => {
+      const body = await (await getPeerConfig(mkReq(), mkEnv(cap))).json<{ peers: Array<{ public_key: string; next_hop_public_key?: string }> }>();
+      return body.peers.find((p) => p.public_key === THIRD_WG_KEY)?.next_hop_public_key;
+    };
+
+    // Flapping direct A→C ⇒ the stable A-B-C hop wins.
+    expect(await nextHopForC(mkCap(1))).toBe(OTHER_WG_KEY);
+    // Settled A→C (flapping=0) ⇒ direct wins, no next hop.
+    expect(await nextHopForC(mkCap(0))).toBeUndefined();
+
+    vi.unstubAllGlobals();
+  });
+
   it("routes via a next hop when the direct edge is unreachable (absent from wg_reachable rows)", async () => {
     // The daemon reported A-C wg_reachable=false, so the A-C/C-A edges are
     // filtered out by the WHERE wg_reachable=1 query. A-B and B-C survive (even
