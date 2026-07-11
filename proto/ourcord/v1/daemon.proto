@@ -1,0 +1,134 @@
+syntax = "proto3";
+
+package ourcord.v1;
+
+option go_package = "github.com/ourcord/ourcord/proto/gen/go/ourcord/v1;ourcordv1";
+
+// DaemonService is the stable local UI-to-daemon contract.
+//
+// It describes operations, messages, and field numbers only. The current
+// daemon still transports the equivalent requests as authenticated NDJSON over
+// a local Unix socket; see proto/README.md for the migration rules. A future
+// transport may implement these methods using gRPC without changing this API.
+service DaemonService {
+  rpc GetStatus(GetStatusRequest) returns (GetStatusResponse);
+  rpc ListPeers(ListPeersRequest) returns (ListPeersResponse);
+  rpc Connect(ConnectRequest) returns (ConnectResponse);
+  rpc Disconnect(DisconnectRequest) returns (DisconnectResponse);
+  rpc EnterNetwork(EnterNetworkRequest) returns (EnterNetworkResponse);
+  rpc LeaveNetwork(LeaveNetworkRequest) returns (LeaveNetworkResponse);
+}
+
+message GetStatusRequest {}
+
+message GetStatusResponse {
+  DaemonStatus status = 1;
+}
+
+message ListPeersRequest {}
+
+message ConnectRequest {}
+
+message ConnectResponse {
+  OperationResult result = 1;
+}
+
+message DisconnectRequest {}
+
+message DisconnectResponse {
+  OperationResult result = 1;
+}
+
+message LeaveNetworkRequest {}
+
+message LeaveNetworkResponse {
+  OperationResult result = 1;
+}
+
+// OperationResult is used for state-changing requests. Transport-level errors
+// (unauthenticated, unavailable, invalid request) belong to the RPC status;
+// an operation-specific failure is represented by ok=false and error_code.
+message OperationResult {
+  bool ok = 1;
+  string error_code = 2;
+  string error_message = 3;
+}
+
+message EnterNetworkRequest {
+  // vpn_namespace for a room, or a canonical pair:<keyA>.<keyB> identifier.
+  // Room business IDs are not accepted by this stable method.
+  string network_id = 1;
+}
+
+message EnterNetworkResponse {
+  OperationResult result = 1;
+}
+
+message DaemonStatus {
+  bool running = 1;
+  bool vpn_active = 2;
+  string ipv4 = 3;
+  string ipv6 = 4;
+  string network_id = 5;
+  uint32 peer_count = 6;
+  bool relay_used = 7;
+  string relay_url = 8;
+  Path path_summary = 9;
+  TransportStats transport = 10;
+}
+
+message ListPeersResponse {
+  repeated ConnectedPeer peers = 1;
+}
+
+message ConnectedPeer {
+  string public_key = 1;
+  string name = 2;
+  string ipv4 = 3;
+  string ipv6 = 4;
+  bool direct = 5;
+  Path path = 6;
+  string endpoint = 7;
+  string candidate_endpoint = 8;
+  string relay_url = 9;
+  string next_hop_public_key = 10;
+  double latency_ms = 11;
+  int64 last_seen_seconds = 12;
+  string last_error = 13;
+}
+
+// PATH_UNSPECIFIED is mandatory for absent or unrecognised values. Clients
+// must handle enum values they do not know, so new paths can be added safely.
+enum Path {
+  PATH_UNSPECIFIED = 0;
+  PATH_INACTIVE = 1;
+  PATH_NO_PEERS = 2;
+  PATH_WAITING = 3;
+  PATH_DIRECT = 4;
+  PATH_DERP = 5;
+  PATH_NEXT_HOP = 6;
+  PATH_DEGRADED = 7;
+  PATH_UNRESOLVED = 8;
+}
+
+message TransportStats {
+  uint32 mtu = 1;
+  uint64 ice_sent_packets = 2;
+  uint64 ice_recv_packets = 3;
+  uint64 ice_recv_drops = 4;
+  uint64 ice_send_errors = 5;
+  uint64 ice_recv_errors = 6;
+  uint64 ice_probe_sent = 7;
+  uint64 ice_probe_ack_sent = 8;
+  uint64 ice_probe_ack_received = 9;
+  uint64 ice_probe_timeouts = 10;
+  uint64 ice_probe_invalid = 11;
+  uint64 ice_max_packet_bytes = 12;
+  uint64 derp_sent_packets = 13;
+  uint64 derp_recv_packets = 14;
+  uint64 derp_recv_drops = 15;
+  uint64 derp_suppressed_packets = 16;
+  uint64 derp_send_errors = 17;
+  uint64 derp_recv_errors = 18;
+  uint64 derp_max_packet_bytes = 19;
+}

@@ -10,6 +10,7 @@ daemon/ourcordd
 daemon/ourcord-cli
 filebackend/ourcord-filebackend
 daemon/bin/
+proto/gen/
 
 # Keys / secrets
 *.pem

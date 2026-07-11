@@ -1,8 +1,10 @@
-// Package ipc defines the gRPC service interface for daemon<->UI communication.
-// The daemon listens on a Unix domain socket; UI clients connect to it.
+// Package ipc implements the current authenticated JSON compatibility transport
+// for daemon<->UI communication. Its stable API is defined by
+// proto/ourcord/v1/daemon.proto; these types remain until generated bindings
+// replace this transitional wire format.
 package ipc
 
-// DaemonStatus represents the current VPN connection state.
+// DaemonStatus is the JSON compatibility shape for ourcord.v1.DaemonStatus.
 type DaemonStatus struct {
 	Running     bool           `json:"running"`
 	VPNActive   bool           `json:"vpn_active"`
@@ -39,7 +41,7 @@ type TransportStats struct {
 	DERPMaxPacketBytes    uint64 `json:"derp_max_packet_bytes"`
 }
 
-// ConnectedPeer represents a connected VPN peer.
+// ConnectedPeer is the JSON compatibility shape for ourcord.v1.ConnectedPeer.
 type ConnectedPeer struct {
 	PublicKey         string  `json:"public_key"`
 	Name              string  `json:"name"`
@@ -56,7 +58,8 @@ type ConnectedPeer struct {
 	LastError         string  `json:"last_error,omitempty"`
 }
 
-// Command types sent from UI to daemon via IPC.
+// Command types are legacy JSON IPC names. New UI code must target the stable
+// RPC names in proto/ourcord/v1/daemon.proto instead.
 const (
 	CmdConnect      = "connect"
 	CmdDisconnect   = "disconnect"
