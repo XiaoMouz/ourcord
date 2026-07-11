@@ -129,4 +129,12 @@ CREATE TABLE IF NOT EXISTS lobby_invites (
   revoked INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_invites_lobby ON lobby_invites(lobby_id);
+
+-- Global replay guard for control→service internal calls (G6); see
+-- migrations/0004_internal_nonces.sql.
+CREATE TABLE IF NOT EXISTS internal_nonces (
+  nonce TEXT PRIMARY KEY,
+  expires_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_internal_nonces_expires ON internal_nonces(expires_at);
 `;

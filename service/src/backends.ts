@@ -100,50 +100,58 @@ export async function resolveFileBackend(
   policy: FilePolicy,
   _preference?: "user_server" | "lobby_server" | "r2",
 ): Promise<{ location: "user_server" | "lobby_server" | "r2"; backend: FileBackend | null } | null> {
-  type Tier = "user_server" | "lobby_server" | "r2";
-  const chain: Tier[] = ["user_server", "lobby_server", "r2"];
   const now = Math.floor(Date.now() / 1000);
-  const healthy = liveBackendWhere(now);
+  // b.-qualified health filter so every branch shares one aliased table.
+  const healthyB = liveBackendWhere(now)
+    .replaceAll("health_status", "b.health_status")
+    .replaceAll("last_health_at", "b.last_health_at");
 
-  for (const tier of chain) {
-    if (tier === "user_server" && policy.user_server_enabled === 1) {
-      // 自建: the uploader's own personal backend wins first…
-      const own = await env.DB
-        .prepare(
-          `SELECT * FROM file_backends
-           WHERE owner_id = ? AND lobby_id IS NULL AND active = 1
-             AND ${healthy}
-           ORDER BY created_at DESC LIMIT 1`,
-        )
-        .bind(uploaderId)
-        .first<FileBackend>();
-      if (own) return { location: "user_server", backend: own };
-      // …then 分享: a personal backend someone shared with the uploader.
-      const shared = await env.DB
-        .prepare(
-          `SELECT b.* FROM file_backends b
-           JOIN file_backend_shares s ON s.backend_id = b.id
-           WHERE s.grantee_id = ? AND b.lobby_id IS NULL AND b.active = 1
-             AND ${healthy.replaceAll("health_status", "b.health_status").replaceAll("last_health_at", "b.last_health_at")}
-           ORDER BY s.created_at DESC LIMIT 1`,
-        )
-        .bind(uploaderId)
-        .first<FileBackend>();
-      if (shared) return { location: "user_server", backend: shared };
-    } else if (tier === "lobby_server" && policy.lobby_server_enabled === 1) {
-      const lobby = await env.DB
-        .prepare(
-          `SELECT * FROM file_backends
-           WHERE lobby_id = ? AND active = 1
-             AND ${healthy}
-           ORDER BY created_at DESC LIMIT 1`,
-        )
-        .bind(lobbyId)
-        .first<FileBackend>();
-      if (lobby) return { location: "lobby_server", backend: lobby };
-    } else if (tier === "r2" && policy.r2_enabled === 1) {
-      return { location: "r2", backend: null };
+  // The 自建 → 分享 → 大厅 chain is a single ordered query instead of up to
+  // three sequential round-trips: each enabled tier is a UNION ALL branch tagged
+  // with a priority (own=1, shared=2, lobby=3), and we take the lowest priority,
+  // newest row. r2 stays a terminal fallback with no backend row.
+  const branches: string[] = [];
+  const binds: unknown[] = [];
+  if (policy.user_server_enabled === 1) {
+    branches.push(
+      `SELECT b.*, 1 AS __prio, b.created_at AS __sort
+       FROM file_backends b
+       WHERE b.owner_id = ? AND b.lobby_id IS NULL AND b.active = 1 AND ${healthyB}`,
+    );
+    binds.push(uploaderId);
+    branches.push(
+      `SELECT b.*, 2 AS __prio, s.created_at AS __sort
+       FROM file_backends b
+       JOIN file_backend_shares s ON s.backend_id = b.id
+       WHERE s.grantee_id = ? AND b.lobby_id IS NULL AND b.active = 1 AND ${healthyB}`,
+    );
+    binds.push(uploaderId);
+  }
+  if (policy.lobby_server_enabled === 1) {
+    branches.push(
+      `SELECT b.*, 3 AS __prio, b.created_at AS __sort
+       FROM file_backends b
+       WHERE b.lobby_id = ? AND b.active = 1 AND ${healthyB}`,
+    );
+    binds.push(lobbyId);
+  }
+
+  if (branches.length > 0) {
+    const sql = `${branches.join("\nUNION ALL\n")}\nORDER BY __prio ASC, __sort DESC LIMIT 1`;
+    const row = await env.DB.prepare(sql).bind(...binds).first<FileBackend & { __prio?: number; __sort?: number }>();
+    if (row) {
+      const { __prio, __sort, ...backend } = row;
+      void __prio;
+      void __sort;
+      // own/shared personal backends have lobby_id IS NULL; a lobby backend
+      // carries its lobby_id. That distinction is the location, so no synthetic
+      // column is needed.
+      const location = (backend as FileBackend).lobby_id ? "lobby_server" : "user_server";
+      return { location, backend: backend as FileBackend };
     }
+  }
+  if (policy.r2_enabled === 1) {
+    return { location: "r2", backend: null };
   }
   return null;
 }

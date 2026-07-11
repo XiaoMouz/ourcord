@@ -151,7 +151,7 @@ export default {
       // files, and CRUD; daemon/control may use vpn_namespace as the network
       // routing domain for voice/video/file overlays.
       if (method === "GET" && parts[1] === "internal" && parts[2] === "rooms" && parts[4] === "member-ids") {
-        if (!env.SERVICE_INTERNAL_TOKEN || !(await verifyInternalRequest(request, env.SERVICE_INTERNAL_TOKEN))) {
+        if (!env.SERVICE_INTERNAL_TOKEN || !(await verifyInternalRequest(request, env.SERVICE_INTERNAL_TOKEN, env.DB))) {
           return json({ error: "Forbidden" }, 403);
         }
         const roomOrNamespace = decodeURIComponent(parts[3]);

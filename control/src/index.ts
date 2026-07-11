@@ -57,7 +57,7 @@ export default {
       if (method === "POST" && path === "/api/auth/device") {
         const rl = await checkRateLimit(request, env, "auth-device", 20, 60);
         if (rl) return rl;
-        return exchangeDeviceToken(request, env);
+        return exchangeDeviceToken(request, env, ctx);
       }
 
       // ── Devices ────────────────────────────────────────────────────────────

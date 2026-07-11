@@ -4,16 +4,29 @@ import { log } from "./log";
 // Simple JWT-like token using HMAC-SHA256
 // Format: base64url(payload).base64url(signature)
 
+// Importing a CryptoKey is not free, and hmacSign runs on every JWT sign/verify
+// and every signed internal call with an effectively constant secret. Cache the
+// imported key per secret (the Promise, so concurrent callers share one import).
+const signKeyCache = new Map<string, Promise<CryptoKey>>();
+function importSignKey(secret: string): Promise<CryptoKey> {
+  let key = signKeyCache.get(secret);
+  if (!key) {
+    key = crypto.subtle.importKey(
+      "raw",
+      new TextEncoder().encode(secret),
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["sign"],
+    );
+    signKeyCache.set(secret, key);
+  }
+  return key;
+}
+
 // Exported for internalAuth.ts (G6 signed internal calls) — one HMAC/base64url
 // implementation per worker so token signing and internal-call signing cannot drift.
 export async function hmacSign(secret: string, data: string): Promise<string> {
-  const key = await crypto.subtle.importKey(
-    "raw",
-    new TextEncoder().encode(secret),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"]
-  );
+  const key = await importSignKey(secret);
   const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(data));
   return btoa(String.fromCharCode(...new Uint8Array(sig)))
     .replace(/\+/g, "-").replace(/\//g, "_").replace(/=/g, "");

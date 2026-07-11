@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
-import { registerBackend, shareBackend, deactivateBackend, checkBackendHealth, validBackendURL, joinBackendURL, backendHealthURL, signBackendCapability, backendFileURL, listBackends } from "./backends";
+import { registerBackend, shareBackend, deactivateBackend, checkBackendHealth, validBackendURL, joinBackendURL, backendHealthURL, signBackendCapability, backendFileURL, listBackends, resolveFileBackend } from "./backends";
 import { getDownloadUrl } from "./files";
-import type { Env } from "./types";
+import type { Env, FilePolicy } from "./types";
 
 const SECRET = "test-secret-1234567890abcdef";
 
@@ -391,6 +391,48 @@ describe("listBackends never exposes upload_secret", () => {
     const listSQL = sqls.find((s) => /FROM file_backends/.test(s))!;
     expect(listSQL).not.toMatch(/b\.\*/);
     expect(listSQL).not.toMatch(/upload_secret/);
+  });
+});
+
+describe("resolveFileBackend", () => {
+  const policyAllOn: FilePolicy = {
+    lobby_id: "L1", max_size_bytes: 1, max_total_files: 0, max_temp_files: 0,
+    retain_days: 0, r2_enabled: 1, user_server_enabled: 1, lobby_server_enabled: 1,
+  };
+
+  it("derives lobby_server location from a backend's lobby_id", async () => {
+    const backend = { id: "B9", owner_id: "u2", lobby_id: "L1", name: "team", base_url: "https://team.example", active: 1, created_at: 5 };
+    const res = await resolveFileBackend(envOf(makeDB([{ first: backend }])), "u1", "L1", policyAllOn);
+    expect(res?.location).toBe("lobby_server");
+    expect(res?.backend?.id).toBe("B9");
+  });
+
+  it("collapses the 自建→分享→大厅 tiers into one UNION query, then falls to r2", async () => {
+    const sqls: string[] = [];
+    const db = {
+      prepare: vi.fn((q: string) => {
+        sqls.push(q);
+        const s: any = { bind: vi.fn(() => s), first: vi.fn(async () => null), run: vi.fn(), all: vi.fn() };
+        return s;
+      }),
+      batch: vi.fn(),
+      exec: vi.fn(),
+    } as unknown as D1Database;
+    const res = await resolveFileBackend(envOf(db), "u1", "L1", policyAllOn);
+    expect(res).toEqual({ location: "r2", backend: null });
+    const tierSqls = sqls.filter((s) => /file_backends/.test(s));
+    expect(tierSqls).toHaveLength(1);
+    expect(tierSqls[0]).toMatch(/UNION ALL/);
+  });
+
+  it("returns null when every tier including r2 is disabled", async () => {
+    const res = await resolveFileBackend(
+      envOf(makeDB([])),
+      "u1",
+      "L1",
+      { ...policyAllOn, r2_enabled: 0, user_server_enabled: 0, lobby_server_enabled: 0 },
+    );
+    expect(res).toBeNull();
   });
 });
 

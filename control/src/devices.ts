@@ -86,7 +86,7 @@ export async function enrollDevice(request: Request, env: Env): Promise<Response
 // JWT. Unauthenticated by design (this IS the authentication); rate-limited at
 // the route. Bans are enforced here so a banned user's devices stop refreshing
 // within one JWT TTL.
-export async function exchangeDeviceToken(request: Request, env: Env): Promise<Response> {
+export async function exchangeDeviceToken(request: Request, env: Env, ctx?: ExecutionContext): Promise<Response> {
   const tooBig = checkBodySize(request, 4 * 1024);
   if (tooBig) return tooBig;
 
@@ -121,7 +121,11 @@ export async function exchangeDeviceToken(request: Request, env: Env): Promise<R
   }
 
   const now = Math.floor(Date.now() / 1000);
-  await env.DB.prepare("UPDATE device_tokens SET last_used = ? WHERE id = ?").bind(now, row.id).run();
+  // last_used is best-effort telemetry, not part of the auth decision — don't
+  // block the JWT response on the write when the runtime can finish it after.
+  const touch = env.DB.prepare("UPDATE device_tokens SET last_used = ? WHERE id = ?").bind(now, row.id).run();
+  if (ctx) ctx.waitUntil(touch);
+  else await touch;
 
   const payload = makeToken(row.user_id, row.email);
   const token = await signToken(payload, getJwtSecret(env));

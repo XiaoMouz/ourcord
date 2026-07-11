@@ -65,6 +65,7 @@ describe("internal room membership lookup", () => {
 
   it("resolves a network namespace to its backing room and lobby members", async () => {
     const db = makeDB([
+      { run: { meta: { changes: 1 } } }, // internal_nonces INSERT OR IGNORE (fresh)
       { first: { id: "room-1", lobby_id: "lobby-1", vpn_namespace: "lobby-lobby-1-room-1-voice" } },
       { all: { results: [{ user_id: "u1" }, { user_id: "u2" }] } },
     ]);
@@ -136,12 +137,15 @@ describe("internal room membership lookup", () => {
   it("rejects a replayed nonce inside the window", async () => {
     const headers = await signInternal("s2s", "GET", MEMBER_URL);
     const db = makeDB([
+      { run: { meta: { changes: 1 } } }, // internal_nonces INSERT OR IGNORE (fresh)
       { first: { id: "room-1", lobby_id: "lobby-1", vpn_namespace: "lobby-lobby-1-room-1-voice" } },
       { all: { results: [{ user_id: "u1" }] } },
     ]);
     const first = await worker.fetch(new Request(MEMBER_URL, { headers }), makeEnv(db), {} as ExecutionContext);
     expect(first.status).toBe(200);
 
+    // Replaying the same nonce is rejected before any DB work by the per-isolate
+    // negative cache; the D1 internal_nonces table is the cross-isolate backstop.
     const replay = await worker.fetch(new Request(MEMBER_URL, { headers }), makeEnv(makeDB([])), {} as ExecutionContext);
     expect(replay.status).toBe(403);
   });
