@@ -21,7 +21,9 @@
 | `--control-url` | `https://control.ourcord.app` | 控制面 URL |
 | `--socket` | `ipc.DefaultSocketPath()` | IPC unix socket 路径 |
 | `--state-dir` | `$XDG_STATE_HOME/ourcord` 或 `$HOME/.local/share/ourcord` | 持久状态目录（含 `wg.key`、`token`） |
-| `--log-level` | `info` | `debug` / `info` / `error` |
+| `--log-level` | `info` | `debug` / `info` / `warn` / `error`；控制 JSON runtime 日志的最小级别 |
+| `--log-format` | `json` | `json`（JSON Lines，默认）或 `text` |
+| `--log-file` | `""` | 可选的追加日志文件；以 `0640` 权限创建 |
 | `--wg-listen-port` | `0` | 固定 WG UDP 监听端口（0=临时端口）；smoke / 手动 mesh 时需要固定 |
 | `--wg-endpoint` | `""` | 注册时上报给 control 的 `host:port` 公网端点提示 |
 

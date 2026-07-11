@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -21,6 +22,7 @@ import (
 
 	"github.com/ourcord/ourcord/relay/pkg/controlclient"
 	"github.com/ourcord/ourcord/relay/pkg/limiter"
+	"github.com/ourcord/ourcord/relay/pkg/logging"
 	"github.com/ourcord/ourcord/relay/pkg/state"
 	"tailscale.com/derp/derpserver"
 	"tailscale.com/net/stunserver"
@@ -45,11 +47,16 @@ func main() {
 		stun         = flag.Bool("stun", true, "run STUN server on same address (UDP)")
 		stunPort     = flag.Int("stun-port", 3478, "STUN listen port")
 		stateDir     = flag.String("state-dir", state.DefaultDir, "Persistent state directory (DERP node key, relay id)")
+		logLevel     = flag.String("log-level", "info", "Runtime log level: debug, info, warn, error")
+		logFormat    = flag.String("log-format", "json", "Runtime log format: json or text")
+		logFile      = flag.String("log-file", "", "Optional append-only runtime log file")
 	)
 	flag.Parse()
 
-	log.SetFlags(log.LstdFlags | log.Lmsgprefix)
-	log.SetPrefix("[ourcord-relay] ")
+	if err := configureRuntimeLogging("relay", *logLevel, *logFormat, *logFile); err != nil {
+		fmt.Fprintf(os.Stderr, "configure logging: %v\n", err)
+		os.Exit(2)
+	}
 
 	rootCtx, rootCancel := context.WithCancel(context.Background())
 	defer rootCancel()
@@ -317,6 +324,36 @@ func main() {
 	if err := srv.Serve(limitedLn); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("Server error: %v", err)
 	}
+}
+
+func configureRuntimeLogging(component, rawLevel, format, filePath string) error {
+	level, err := logging.ParseLevel(rawLevel)
+	if err != nil {
+		return err
+	}
+	var output io.Writer = os.Stderr
+	if filePath != "" {
+		if err := os.MkdirAll(filepath.Dir(filePath), 0o700); err != nil {
+			return fmt.Errorf("create log directory: %w", err)
+		}
+		file, err := os.OpenFile(filePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o640)
+		if err != nil {
+			return fmt.Errorf("open log file: %w", err)
+		}
+		if err := file.Chmod(0o640); err != nil {
+			file.Close()
+			return fmt.Errorf("chmod log file: %w", err)
+		}
+		output = io.MultiWriter(os.Stderr, file)
+	}
+	writer, err := logging.NewWriter(output, component, format, level)
+	if err != nil {
+		return err
+	}
+	log.SetFlags(0)
+	log.SetPrefix("")
+	log.SetOutput(writer)
+	return nil
 }
 
 func loadOptionalFile(path string) string {

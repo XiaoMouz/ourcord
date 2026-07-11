@@ -12,13 +12,22 @@ import (
 )
 
 func main() {
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "enroll", "devices", "revoke-device":
+			os.Exit(runDeviceCommand(os.Args[1], os.Args[2:]))
+		case "diagnostics":
+			os.Exit(runDiagnosticsCommand(os.Args[2:]))
+		}
+	}
+
 	var socketPath = flag.String("socket", ipc.DefaultSocketPath(), "Unix socket path")
 	flag.Parse()
 
 	args := flag.Args()
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, "Usage: ourcord-cli [--socket path] <command> [args...]")
-		fmt.Fprintln(os.Stderr, "Commands: status, connect, disconnect, ping, peers, enter-room <room_id>, leave-room, enter-network <network_id>, leave-network, force-derp <peer_public_key> [reason]")
+		fmt.Fprintln(os.Stderr, "Commands: status, connect, disconnect, ping, peers, enter-room <room_id>, leave-room, enter-network <network_id>, leave-network, force-derp <peer_public_key> [reason], enroll, devices, revoke-device <device_id>, diagnostics collect")
 		os.Exit(1)
 	}
 

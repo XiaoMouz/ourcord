@@ -35,6 +35,14 @@ describe("log", () => {
     expect(parsed.error).toBe("nope");
   });
 
+  it("redacts credential values and sensitive field names", () => {
+    log({ event: "auth.failure", device_token: "dt_abcdefghijklmnopqrstuvwxyz0123456789", nested: { authorization: "Bearer secret" } });
+    const parsed = JSON.parse(logSpy.mock.calls[0][0] as string);
+    expect(parsed.device_token).toBe("[REDACTED]");
+    expect(parsed.nested.authorization).toBe("[REDACTED]");
+    expect(JSON.stringify(parsed)).not.toContain("abcdefghijklmnopqrstuvwxyz");
+  });
+
   it("newRequestId returns a 36-char uuid", () => {
     const id = newRequestId();
     expect(id).toHaveLength(36);

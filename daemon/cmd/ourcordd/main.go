@@ -7,6 +7,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/netip"
@@ -30,6 +31,7 @@ import (
 	ourderp "github.com/ourcord/ourcord/daemon/pkg/derp"
 	ourice "github.com/ourcord/ourcord/daemon/pkg/ice"
 	"github.com/ourcord/ourcord/daemon/pkg/ipc"
+	"github.com/ourcord/ourcord/daemon/pkg/logging"
 	"github.com/ourcord/ourcord/daemon/pkg/routing"
 	"github.com/ourcord/ourcord/daemon/pkg/tun"
 	"github.com/ourcord/ourcord/daemon/pkg/wg"
@@ -41,16 +43,18 @@ func main() {
 		socketPath     = flag.String("socket", ipc.DefaultSocketPath(), "Unix socket path for IPC")
 		stateDir       = flag.String("state-dir", wg.DefaultStateDir(), "Persistent state directory (WireGuard private key, etc.)")
 		logLevel       = flag.String("log-level", "info", "Log level: debug, info, error")
+		logFormat      = flag.String("log-format", "json", "Runtime log format: json or text")
+		logFile        = flag.String("log-file", "", "Optional append-only runtime log file")
 		wgListenPort   = flag.Int("wg-listen-port", 0, "Pin WireGuard UDP listen port (0 = ephemeral; set for smoke/manual mesh)")
 		wgEndpointHint = flag.String("wg-endpoint", "", "Public host:port hint for our wg endpoint sent to control on register (empty = none)")
 		disableICE     = flag.Bool("disable-ice", false, "Disable SignalDO/ICE direct path attempts; DERP remains available (diagnostic / constrained-network smoke)")
 	)
 	flag.Parse()
 
-	log.SetFlags(log.LstdFlags | log.Lmsgprefix)
-	log.SetPrefix("[ourcordd] ")
-
-	_ = logLevel
+	if err := configureRuntimeLogging("daemon", *logLevel, *logFormat, *logFile); err != nil {
+		fmt.Fprintf(os.Stderr, "configure logging: %v\n", err)
+		os.Exit(2)
+	}
 
 	// Load (or generate-then-persist) the WireGuard identity. The key MUST be
 	// stable across restarts: control plane allocates one VPN IP per public
@@ -122,6 +126,36 @@ func main() {
 	if err := ipcSrv.Serve(ctx); err != nil {
 		log.Printf("IPC server error: %v", err)
 	}
+}
+
+func configureRuntimeLogging(component, rawLevel, format, filePath string) error {
+	level, err := logging.ParseLevel(rawLevel)
+	if err != nil {
+		return err
+	}
+	var output io.Writer = os.Stderr
+	if filePath != "" {
+		if err := os.MkdirAll(filepath.Dir(filePath), 0o700); err != nil {
+			return fmt.Errorf("create log directory: %w", err)
+		}
+		file, err := os.OpenFile(filePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o640)
+		if err != nil {
+			return fmt.Errorf("open log file: %w", err)
+		}
+		if err := file.Chmod(0o640); err != nil {
+			file.Close()
+			return fmt.Errorf("chmod log file: %w", err)
+		}
+		output = io.MultiWriter(os.Stderr, file)
+	}
+	writer, err := logging.NewWriter(output, component, format, level)
+	if err != nil {
+		return err
+	}
+	log.SetFlags(0)
+	log.SetPrefix("")
+	log.SetOutput(writer)
+	return nil
 }
 
 // daemon implements ipc.Handler and coordinates VPN subsystems.
