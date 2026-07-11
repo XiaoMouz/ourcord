@@ -67,13 +67,15 @@ go test -race ./...
 
 ## IPC
 
-- gRPC over Unix Socket（macOS/Linux）/ Named Pipe（Windows）
-- proto 定义最终落 `proto/`，当前可在 `pkg/ipc/` 内联但要标 `// TODO(proto): 移到 proto/`
+- 当前是带 HMAC 握手的 NDJSON over Unix Socket（macOS/Linux）；Windows Named Pipe
+  是未来实现，不要把当前 JSON IPC 误称为 gRPC。
+- `proto/ourcord/v1/daemon.proto` 是稳定 daemon ↔ UI 契约的事实源。`pkg/ipc/`
+  内的 JSON 类型是兼容适配层；新增稳定能力先更新 proto，再同步更新适配层或生成绑定。
 - `CmdStatus` 返回 `IP4` / `IP6` / `PeerCount` / `RelayUsed` / `RelayURL` / `PathSummary` 字段；`CmdListPeers` 返回每个 peer 的 `path`（`configured` / `direct` / `derp` / `next-hop` / `unresolved`）。CLI/UI 可直接读，不需要解析 wg 表。
 - `CmdEnterRoom` / `CmdLeaveRoom` 是 daemon 接入业务房间的入口：进入房间后 `FetchConfig(room_id)` 拉房间作用域 peers，离开后回到 user-scope mesh。切换 config 必须替换旧 peer set，不能让上一房间的 peer 留在路由表。
 
 ## 已知技术债
 
 - `pkg/wg` 在 macOS 上 wgctrl 不能直接配 userspace daemon；当前走 `wireguard-go` 的 IPC socket（`wg/ipc.go` `ConfigureIPC`）。
-- 中继链 fallback 已有 daemon 连通性反馈、控制层 next-hop 下发、next-hop 后持续探测并恢复直连的闭环。剩余短板是多路上报缺少全局 sequence 仲裁、路径抖动观测与降噪。
+- 中继链 fallback 已有 daemon 连通性反馈、控制层 next-hop 下发、next-hop 后持续探测并恢复直连的闭环。报告带 epoch+sequence，control 将其按 source-owned 有向边仲裁；剩余短板是路径抖动观测与降噪。
 - M 系列（Minecraft LAN）尚未实现：mDNS 反射 + 25565 端口转发 + lobby 网段广播代理；是否进入阶段二取决于网络完整性主线完成后的产品取舍。

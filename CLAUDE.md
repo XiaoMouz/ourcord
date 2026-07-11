@@ -46,4 +46,4 @@
 
 ## 当前阶段
 
-阶段一已按当前验收口径闭环：per-peer ICE、startup/runtime DERP fallback、1:1 pair network、service `vpn_namespace`、A-B-C next-hop 与恢复都已通过真实 control/service/relay/daemon + OrbStack 验证。阶段二主线已大部分落地，剩余重点是 Windows Wintun、连通性上报 sequence 仲裁，以及文档/验收脚本标准化；自治文件后端已有直传/complete/health v1。改动前判断归属哪个阶段，不要提前实现阶段三/四（媒体、UI）的内容。Minecraft LAN（M 系列）属阶段二可选附加。
+阶段一已按当前验收口径闭环：per-peer ICE、startup/runtime DERP fallback、1:1 pair network、service `vpn_namespace`、A-B-C next-hop 与恢复都已通过真实 control/service/relay/daemon + OrbStack 验证。阶段二主线已大部分落地；连通性上报已采用 epoch+sequence 仲裁与 source-owned 有向边，direct/DERP/A-B-C/recovery 已有发布验收 workflow。剩余重点是 Windows Wintun、路径抖动观测与降噪；自治文件后端已有直传/complete/health v1。改动前判断归属哪个阶段，不要提前实现阶段三/四（媒体、UI）的内容。Minecraft LAN（M 系列）属阶段二可选附加。

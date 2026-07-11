@@ -29,7 +29,7 @@ OurCord 是一个面向 5–10 人小群体的通讯平台，**底层是自建�
 | DERP 中继 | `relay/` | Go (fork tailscale/derp) | 用户/官方裸机或 VPS |
 | 客户端 daemon | `daemon/` | Go (wireguard-go + pion/ice) | 跑在终端用户机器上 |
 | UI | `ui/{desktop,mobile,web}` | Tauri / Flutter / React | 通过 IPC 与 daemon 通信 |
-| 共享 proto | `proto/` | Protobuf（待补） | 给 daemon ↔ UI 用 |
+| 共享 proto | `proto/` | Protobuf v1 契约 | 给 daemon ↔ UI 用 |
 
 详见各子目录的 `AGENTS.md`。
 
@@ -159,7 +159,9 @@ go work sync
 - **改代码前先 grep**：契约（如 `JWT_SECRET`）会跨多文件出现，统一改不要漏。
 - **跨语言改动要双侧验证**：改了 control 的接口字段，relay/daemon 的 client 必须同步更新。
 - **不要新增依赖**而不说明：Workers 包大小有 1MB 限制；Go 二进制要全平台编译。
-- **proto/ 是未来的事实源**：daemon ↔ UI ↔ control 的共享类型最终都应在这里定义；现阶段允许内联，但要标 `// TODO(proto): 移到 proto/`。
+- **proto/ 是 daemon ↔ UI 的事实源**：`proto/ourcord/v1/daemon.proto` 冻结稳定 IPC
+  契约。当前 JSON Unix-socket IPC 是兼容层；新增稳定 UI 能力先改 proto，再在同一
+  改动中更新生成绑定/兼容层。control/service 的浏览器 REST API 仍可保持 JSON。
 - **plan.md 在 session 文件夹**，不要 commit 它。
 
 ---
@@ -167,7 +169,7 @@ go work sync
 ## 8. 当前阶段
 
 - ✅ **阶段一**：VPN 核心 + 控制层 + DERP 节点 + daemon 连接管线 + IPC + 路由（含 A-B-C 链配置能力）+ 限速 + 封禁双 key 体系 + IPAM 198.18/15+ULA 已闭环。per-peer ICE 自动直连、startup/runtime DERP fallback、1:1 pair network、service `vpn_namespace`、A-B-C next-hop 与 next-hop 后直达恢复，均已通过真实 control/service/relay/daemon + OrbStack 验证。
-- 🚧 **阶段二**：网络完整性与自治主线大部分已落地：A-B-C 拓扑计算/路由下发/daemon 连通性反馈、设备级凭证、control↔service HMAC 短签名、房间作用域 peer refresh、CLI/status、自治文件后端直传/complete/health v1 均已有实现。仍未收口：Windows Wintun 地址/路由同步、连通性上报的全局 sequence 仲裁、文档/验收脚本标准化。
+- 🚧 **阶段二**：网络完整性与自治主线大部分已落地：A-B-C 拓扑计算/路由下发/daemon 连通性反馈、设备级凭证、control↔service HMAC 短签名、房间作用域 peer refresh、CLI/status、自治文件后端直传/complete/health v1 均已有实现。连通性报告已用 epoch+sequence 仲裁、以 source-owned 有向边保存；direct/DERP/A-B-C/recovery 已有发布验收 workflow。仍未收口：Windows Wintun 地址/路由同步、路径抖动观测与降噪。
 - 📋 **阶段三**：媒体层（Opus/H.264/H.265、远控）
 - 📋 **阶段四**：UI 层（Tauri/Flutter/React）
 - 📋 **阶段二可选附加**：Minecraft LAN 联机；是否作为阶段二差异化能力仍需在网络完整性主线之后确认。

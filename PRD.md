@@ -149,14 +149,12 @@ Recent validation:
 
 Known gaps:
 
-- Connectivity reporting has three async writers per edge (30s baseline
-  refresh, 10s reachability monitor, ICE upgrade/degrade callbacks) with no
-  ordering guarantee; the control-side upsert only special-cases the
-  unreachable×derp-baseline interleaving. A stale baseline report can
-  transiently downgrade a fresh ice edge for up to one refresh tick
-  (self-healing, wrong path cost only). Deep fix pending: a monotonic
-  reported_at/sequence arbitration on the upsert covering all transitions,
-  or a single per-peer reporting authority in the daemon.
+- Connectivity reports have three async writers per edge (30s baseline
+  refresh, 10s reachability monitor, ICE upgrade/degrade callbacks). The
+  daemon now tags every report with a lifecycle epoch and monotonic sequence,
+  and control stores only the reporter's source-owned directed edge. This
+  prevents reordering and a peer's observation from fabricating the opposite
+  direction; remaining work is path-flap telemetry and noise reduction.
 - A-B-C mixed DERP data-plane forwarding has been validated. Startup DERP
   reachable-edge reports are automatic; daemon unreachable/direct recovery
   reports have code coverage and independent OrbStack VM smoke coverage. The
@@ -173,7 +171,9 @@ Known gaps:
   peer config now resolves the two exact device public keys; product-level
   private-call permission and UI flow still need full end-to-end validation.
 - Windows address assignment and route sync are not implemented.
-- UI and proto schemas are placeholders.
+- UI remains a placeholder. `proto/ourcord/v1/daemon.proto` now freezes the
+  daemon ↔ UI v1 contract, while generated bindings and the protobuf/gRPC wire
+  migration remain open.
 
 Implementation decisions to close:
 
@@ -245,10 +245,10 @@ Validated in the current Phase 1 smoke:
 
 Remaining exit criteria:
 
-- Run the smoke matrix from a clean checkout/VM after review. The automatic
-  A-B-C topology proof is currently `tests/e2e/smoke_abc_netns.sh`; the
-  independent-VM rerun has also passed and should be treated as environment
-  evidence, not a separate manual shaping requirement.
+- Run the **Network release acceptance** GitHub workflow from a clean checkout
+  before release. It runs `tests/e2e/smoke_abc_netns.sh`, which proves direct,
+  runtime DERP, A-B-C next-hop, and post-impairment direct recovery; the
+  independent-VM rerun remains environment evidence, not a manual gate.
 
 ### Phase 2: Network Completeness
 
@@ -420,4 +420,6 @@ Documentation must stay aligned with current implementation:
 - `SECURITY.md` describes current trust boundaries and must not describe
   implemented HMAC/device credentials as future work.
 - `docs/ops/smoke-test.md` must match the current `198.18.0.0/15` and random ULA IPAM model.
-- `proto/` and `ui/` placeholders should state what is missing without implying the feature already exists.
+- `ui/` placeholders should state what is missing without implying the feature
+  already exists. `proto/` must keep the daemon IPC schema and its compatibility
+  rules aligned with the transitional JSON transport.

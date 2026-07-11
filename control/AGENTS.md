@@ -76,6 +76,6 @@ pnpm exec wrangler deploy  # 部署
 ## 已知技术债
 
 - `peers.ts` IP 分配在并发场景下用 UNIQUE + retry，已原子化但仍有 race 时 500 重试；无回退池。
-- 中继链拓扑计算已上线：`peer_connectivity` 上报驱动 `peers/config` 输出 `next_hop_public_key`。已知短板是多路 daemon 上报缺少全局 sequence 仲裁，可能短暂被旧 baseline 覆盖后自愈。
+- 中继链拓扑计算已上线：`peer_connectivity` 上报驱动 `peers/config` 输出 `next_hop_public_key`。报告以 epoch+sequence 仲裁，并且每个 daemon 只写自己的 `src→dst` 有向边；不要恢复旧的双向镜像写入。剩余关注点是路径抖动观测与降噪。
 - `invalidateRelayCache` 用硬编码 region 列表清 KV；region 数量上去后改为索引 key。
 - 缺 `users.role` 列；admin 用环境变量白名单临时方案。
