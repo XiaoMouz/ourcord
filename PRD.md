@@ -266,7 +266,9 @@ Required:
 - Done: autonomous file backend registry, sharing, fixed-chain selection,
   direct upload, completion verification, health checks, reference backend, and
   R2 fallback.
-- Open: Windows Wintun address assignment and route synchronization.
+- Done: Windows Wintun address assignment and route synchronization (native
+  winipcfg path in `daemon/pkg/tun/addr_windows.go`, validated by the
+  `windows-native` CI job on a real Wintun adapter).
 - Full UI remains Phase 4; Phase 2 only needs enough CLI/status surface to
   validate network behavior.
 

@@ -90,3 +90,41 @@ jobs:
           GOARCH: ${{ matrix.target.goarch }}
           CGO_ENABLED: "0"
         run: go build ./...
+
+  windows-native:
+    name: Windows (Wintun native tests)
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: daemon
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: daemon/go.mod
+          cache: true
+      # Compile + run the windows-tagged tun code natively. This catches
+      # windows-only breakage the ubuntu jobs can't, and does NOT need
+      # wintun.dll: the driver is loaded lazily only when an adapter is created,
+      # and the adapter smoke below is env-gated (skipped here).
+      - run: go build ./...
+      - run: go vet ./pkg/tun/...
+      - run: go test ./pkg/tun/... ./cmd/ourcordd/...
+      # Real Wintun adapter smoke: driver load + address assign + /32 route
+      # round-trip. Needs wintun.dll on the DLL search path; the runner account
+      # is a local admin so adapter creation and the System32 copy succeed.
+      - name: Install pinned Wintun driver
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $url = "https://www.wintun.net/builds/wintun-0.14.1.zip"
+          $expected = "07c256185d6ee3652e09fa55c0b673e2624b565e02c4b9091c79ca7d2f24ef51"
+          Invoke-WebRequest -Uri $url -OutFile wintun.zip
+          $actual = (Get-FileHash wintun.zip -Algorithm SHA256).Hash.ToLower()
+          if ($actual -ne $expected) { throw "wintun.zip sha256 mismatch: got $actual want $expected" }
+          Expand-Archive wintun.zip -DestinationPath wintun-dist -Force
+          Copy-Item wintun-dist/wintun/bin/amd64/wintun.dll -Destination "$env:WINDIR/System32/wintun.dll" -Force
+      - name: Wintun adapter smoke
+        env:
+          OURCORD_WINTUN_SMOKE: "1"
+        run: go test -run TestWintunAdapterSmoke -v ./pkg/tun/

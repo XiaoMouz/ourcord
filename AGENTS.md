@@ -169,7 +169,7 @@ go work sync
 ## 8. 当前阶段
 
 - ✅ **阶段一**：VPN 核心 + 控制层 + DERP 节点 + daemon 连接管线 + IPC + 路由（含 A-B-C 链配置能力）+ 限速 + 封禁双 key 体系 + IPAM 198.18/15+ULA 已闭环。per-peer ICE 自动直连、startup/runtime DERP fallback、1:1 pair network、service `vpn_namespace`、A-B-C next-hop 与 next-hop 后直达恢复，均已通过真实 control/service/relay/daemon + OrbStack 验证。
-- 🚧 **阶段二**：网络完整性与自治主线大部分已落地：A-B-C 拓扑计算/路由下发/daemon 连通性反馈、设备级凭证、control↔service HMAC 短签名、房间作用域 peer refresh、CLI/status、自治文件后端直传/complete/health v1 均已有实现。连通性报告已用 epoch+sequence 仲裁、以 source-owned 有向边保存；direct/DERP/A-B-C/recovery 已有发布验收 workflow。仍未收口：Windows Wintun 地址/路由同步、路径抖动观测与降噪。
+- ✅ **阶段二**：网络完整性与自治主线已闭环：A-B-C 拓扑计算/路由下发/daemon 连通性反馈、设备级凭证、control↔service HMAC 短签名、房间作用域 peer refresh、CLI/status、自治文件后端直传/complete/health v1 均已实现。连通性报告已用 epoch+sequence 仲裁、以 source-owned 有向边保存；direct/DERP/A-B-C/recovery 已有发布验收 workflow。路径抖动已有 per-peer 转换计数/dwell/flapping 遥测与 ICE 退避降噪；Windows Wintun 地址/路由同步（`addr_windows.go` + winipcfg）已落地并由 CI `windows-native` job 用真 Wintun 适配器验收。剩余为可选附加（Minecraft LAN）与打包/UI（阶段三/四）。
 - 📋 **阶段三**：媒体层（Opus/H.264/H.265、远控）
 - 📋 **阶段四**：UI 层（Tauri/Flutter/React）
 - 📋 **阶段二可选附加**：Minecraft LAN 联机；是否作为阶段二差异化能力仍需在网络完整性主线之后确认。

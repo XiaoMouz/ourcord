@@ -77,5 +77,5 @@ go test -race ./...
 ## 已知技术债
 
 - `pkg/wg` 在 macOS 上 wgctrl 不能直接配 userspace daemon；当前走 `wireguard-go` 的 IPC socket（`wg/ipc.go` `ConfigureIPC`）。
-- 中继链 fallback 已有 daemon 连通性反馈、控制层 next-hop 下发、next-hop 后持续探测并恢复直连的闭环。报告带 epoch+sequence，control 将其按 source-owned 有向边仲裁；剩余短板是路径抖动观测与降噪。
+- 中继链 fallback 已有 daemon 连通性反馈、控制层 next-hop 下发、next-hop 后持续探测并恢复直连的闭环。报告带 epoch+sequence，control 将其按 source-owned 有向边仲裁。路径抖动已由 `path_flap.go` 采样 `routePath()` 计数（per-peer transitions/dwell/flapping，surface 到 status/proto 契约），flapping 会抬高 ICE 重升退避下限降噪。
 - M 系列（Minecraft LAN）尚未实现：mDNS 反射 + 25565 端口转发 + lobby 网段广播代理；是否进入阶段二取决于网络完整性主线完成后的产品取舍。

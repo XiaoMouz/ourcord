@@ -201,9 +201,12 @@ pass quick on utun0
 
 ## 4. Windows
 
-> **当前状态：未实现。** `daemon/pkg/tun/addr_other.go` 在非 linux/非 darwin 平台直接返回
-> `tun: OS address assignment not implemented on this platform ... see plan.md W1 / Phase-2`。
-> 下面给出的是 **预期部署形态**，等 W1/Phase-2 完成 wintun + IP Helper 集成后即可使用。
+> **当前状态：已支持。** 地址/路由同步由 `daemon/pkg/tun/addr_windows.go` 通过原生
+> IP Helper API（`winipcfg`）实现——`assignAddrs`（`SetIPAddresses` + lobby ULA `/48`
+> 路由）、`syncPeerV4Routes`（按 peer 增量同步 `/32`，排除接口自身地址）、
+> `enableForwarding`（A-B-C 中继需要）。TUN 设备本身由 wireguard-go 的 Wintun 适配器
+> 提供。真机行为由 CI 的 `windows-native` job（`windows-latest` + 真 Wintun 适配器
+> smoke）验收。
 
 ### 4.1 驱动
 
@@ -284,10 +287,9 @@ netsh advfirewall firewall add rule name="OurCord daemon" dir=in action=allow pr
 ## 7. Known gaps
 
 - **macOS launchd helper 一键安装**：当前需手动 `sudo` 启动或自行写 plist；`SMJobBless` 集成仍待做。
-- **Windows Wintun 集成**：`addr_other.go` 占位返回 not-implemented；Wintun 地址/路由同步落地后本文 §4 即可正式启用。
 - **Windows MSI 安装包 + 服务包装**：仍待做，先用 `sc.exe` / `nssm` 手动方案。
 - **自动更新**：无内置 updater。
 
 ---
 
-> 修订记录：AA3 / V12 / W10 — 初版，对应 `daemon/cmd/ourcordd/main.go`、`daemon/pkg/tun/addr_{linux,darwin,other}.go`、`daemon/pkg/wg/persist.go` 当前实现。
+> 修订记录：AA3 / V12 / W10 — 初版，对应 `daemon/cmd/ourcordd/main.go`、`daemon/pkg/tun/addr_{linux,darwin,windows,other}.go`、`daemon/pkg/wg/persist.go` 当前实现。Windows Wintun 地址/路由同步已落地（`addr_windows.go` + CI `windows-native`）。
