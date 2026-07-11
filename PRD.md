@@ -170,10 +170,14 @@ Known gaps:
 - Pair signaling exists in the control-layer SignalDO route and pair-scoped
   peer config now resolves the two exact device public keys; product-level
   private-call permission and UI flow still need full end-to-end validation.
-- Windows address assignment and route sync are not implemented.
-- UI remains a placeholder. `proto/ourcord/v1/daemon.proto` now freezes the
-  daemon ↔ UI v1 contract, while generated bindings and the protobuf/gRPC wire
-  migration remain open.
+- Windows address assignment and route sync are implemented via winipcfg
+  (`daemon/pkg/tun/addr_windows.go`), validated by the `windows-native` CI job.
+- UI remains a placeholder, but the client core is being separated from the
+  interaction layer: `daemon/pkg/client` exposes typed, UI-agnostic daemon
+  operations that the CLI (and a forthcoming TUI/GUIs) share.
+  `proto/ourcord/v1/daemon.proto` freezes the daemon ↔ UI v1 contract and CI
+  generates Go/TS bindings; the protobuf/gRPC wire-transport migration (replacing
+  the JSON IPC adapter) remains open.
 
 Implementation decisions to close:
 

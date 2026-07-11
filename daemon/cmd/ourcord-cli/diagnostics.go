@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"time"
 
+	"github.com/ourcord/ourcord/daemon/pkg/client"
 	"github.com/ourcord/ourcord/daemon/pkg/ipc"
 	"github.com/ourcord/ourcord/daemon/pkg/logging"
 	"github.com/ourcord/ourcord/daemon/pkg/wg"
@@ -43,16 +44,16 @@ func runDiagnosticsCommand(args []string) int {
 }
 
 func collectDiagnostics(socketPath, logFile, outputPath string) error {
-	client, err := ipc.NewClientWithSecret(socketPath, loadHMACKeyOrNil())
+	cli, err := client.Dial(socketPath)
 	if err != nil {
 		return fmt.Errorf("connect daemon IPC: %w", err)
 	}
-	defer client.Close()
-	status, err := client.Call(ipc.CmdStatus, nil)
+	defer cli.Close()
+	status, err := cli.Status()
 	if err != nil {
 		return fmt.Errorf("read daemon status: %w", err)
 	}
-	peers, err := client.Call(ipc.CmdListPeers, nil)
+	peers, err := cli.ListPeers()
 	if err != nil {
 		return fmt.Errorf("read daemon peers: %w", err)
 	}
@@ -62,7 +63,7 @@ func collectDiagnostics(socketPath, logFile, outputPath string) error {
 	return writeDiagnosticsArchive(outputPath, socketPath, logFile, status, peers)
 }
 
-func writeDiagnosticsArchive(outputPath, socketPath, logFile string, status, peers ipc.IPCResponse) error {
+func writeDiagnosticsArchive(outputPath, socketPath, logFile string, status, peers any) error {
 	f, err := os.OpenFile(outputPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
 	if err != nil {
 		return err

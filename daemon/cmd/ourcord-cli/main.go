@@ -1,5 +1,8 @@
-// ourcord-cli — CLI tool for testing OurCord VPN daemon
-// Connects to the daemon IPC socket and runs test commands.
+// ourcord-cli — command-line interface to the OurCord VPN daemon.
+//
+// This is a thin presenter: it parses arguments and formats output, delegating
+// every daemon operation to the UI-agnostic core in daemon/pkg/client so a TUI
+// or GUI can reuse the same logic. Do not add IPC/business logic here.
 package main
 
 import (
@@ -8,6 +11,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/ourcord/ourcord/daemon/pkg/client"
 	"github.com/ourcord/ourcord/daemon/pkg/ipc"
 )
 
@@ -21,103 +25,86 @@ func main() {
 		}
 	}
 
-	var socketPath = flag.String("socket", ipc.DefaultSocketPath(), "Unix socket path")
+	socketPath := flag.String("socket", ipc.DefaultSocketPath(), "Unix socket path")
 	flag.Parse()
 
 	args := flag.Args()
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "Usage: ourcord-cli [--socket path] <command> [args...]")
-		fmt.Fprintln(os.Stderr, "Commands: status, connect, disconnect, ping, peers, enter-room <room_id>, leave-room, enter-network <network_id>, leave-network, force-derp <peer_public_key> [reason], enroll, devices, revoke-device <device_id>, diagnostics collect")
+		usage()
 		os.Exit(1)
 	}
+	os.Exit(runDaemonCommand(*socketPath, args))
+}
 
-	client, err := ipc.NewClientWithSecret(*socketPath, loadHMACKeyOrNil())
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: could not connect to daemon (%s): %v\n", *socketPath, err)
-		fmt.Fprintln(os.Stderr, "Is ourcordd running?")
-		os.Exit(1)
-	}
-	defer client.Close()
+func usage() {
+	fmt.Fprintln(os.Stderr, "Usage: ourcord-cli [--socket path] <command> [args...]")
+	fmt.Fprintln(os.Stderr, "Commands: status, connect, disconnect, ping, peers, enter-room <room_id>, leave-room, enter-network <network_id>, leave-network, force-derp <peer_public_key> [reason], enroll, devices, revoke-device <device_id>, diagnostics collect")
+}
 
+// runDaemonCommand dispatches the IPC-backed commands. Argument arity is checked
+// before dialing so a usage error doesn't require a running daemon.
+func runDaemonCommand(socketPath string, args []string) int {
 	cmd := args[0]
-	var cmdName string
+	needsArg := map[string]string{"enter-room": "room_id", "enter-network": "network_id", "force-derp": "peer_public_key"}
+	if label, ok := needsArg[cmd]; ok && len(args) < 2 {
+		fmt.Fprintf(os.Stderr, "Usage: ourcord-cli %s <%s>\n", cmd, label)
+		return 1
+	}
+
+	cli, err := client.Dial(socketPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: could not connect to daemon (%s): %v\nIs ourcordd running?\n", socketPath, err)
+		return 1
+	}
+	defer cli.Close()
+
 	switch cmd {
 	case "status":
-		cmdName = ipc.CmdStatus
-	case "connect":
-		cmdName = ipc.CmdConnect
-	case "disconnect":
-		cmdName = ipc.CmdDisconnect
-	case "ping":
-		cmdName = ipc.CmdPing
+		return emitJSON(cli.Status())
 	case "peers":
-		cmdName = ipc.CmdListPeers
+		return emitJSON(cli.ListPeers())
+	case "connect":
+		return emitOK(cli.Connect())
+	case "disconnect":
+		return emitOK(cli.Disconnect())
+	case "ping":
+		return emitOK(cli.Ping())
 	case "enter-room":
-		if len(args) < 2 {
-			fmt.Fprintln(os.Stderr, "Usage: ourcord-cli enter-room <room_id>")
-			os.Exit(1)
-		}
-		cmdName = ipc.CmdEnterRoom
+		return emitOK(cli.EnterRoom(args[1]))
 	case "leave-room":
-		cmdName = ipc.CmdLeaveRoom
+		return emitOK(cli.LeaveRoom())
 	case "enter-network":
-		if len(args) < 2 {
-			fmt.Fprintln(os.Stderr, "Usage: ourcord-cli enter-network <network_id>")
-			os.Exit(1)
-		}
-		cmdName = ipc.CmdEnterNetwork
+		return emitOK(cli.EnterNetwork(args[1]))
 	case "leave-network":
-		cmdName = ipc.CmdLeaveNetwork
+		return emitOK(cli.LeaveNetwork())
 	case "force-derp":
-		if len(args) < 2 {
-			fmt.Fprintln(os.Stderr, "Usage: ourcord-cli force-derp <peer_public_key> [reason]")
-			os.Exit(1)
-		}
-		cmdName = ipc.CmdForceDERP
-	default:
-		fmt.Fprintf(os.Stderr, "Unknown command: %s\n", cmd)
-		os.Exit(1)
-	}
-
-	params := map[string]string(nil)
-	if cmdName == ipc.CmdEnterRoom {
-		params = map[string]string{"room_id": args[1]}
-	}
-	if cmdName == ipc.CmdEnterNetwork {
-		params = map[string]string{"network_id": args[1]}
-	}
-	if cmdName == ipc.CmdForceDERP {
-		reason := "diagnostic-force-derp"
+		reason := ""
 		if len(args) >= 3 {
 			reason = args[2]
 		}
-		params = map[string]string{"public_key": args[1], "reason": reason}
+		return emitOK(cli.ForceDERP(args[1], reason))
+	default:
+		fmt.Fprintf(os.Stderr, "Unknown command: %s\n", cmd)
+		return 1
 	}
-	resp, err := client.Call(cmdName, params)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "IPC call error: %v\n", err)
-		os.Exit(1)
-	}
-
-	if !resp.OK {
-		fmt.Fprintf(os.Stderr, "Error: %s\n", resp.Error)
-		os.Exit(1)
-	}
-
-	out, _ := json.MarshalIndent(resp.Data, "", "  ")
-	fmt.Println(string(out))
 }
 
-// loadHMACKeyOrNil returns the shared IPC HMAC secret if the file exists
-// and is readable. If absent, returns nil so the CLI keeps working against
-// daemons built without W3 HMAC enforcement (unlikely now, but allows graceful
-// rollout). A daemon with HMAC enabled will reject the connection if the key
-// is missing/wrong, surfacing a clear error to the user.
-func loadHMACKeyOrNil() []byte {
-	key, err := ipc.LoadOrCreateHMACKey(ipc.DefaultHMACKeyPath())
+// emitJSON prints a typed result as indented JSON, or the error to stderr.
+func emitJSON[T any](v T, err error) int {
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "warn: could not load IPC key: %v\n", err)
-		return nil
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		return 1
 	}
-	return key
+	out, _ := json.MarshalIndent(v, "", "  ")
+	fmt.Println(string(out))
+	return 0
+}
+
+// emitOK reports a mutating command's outcome via exit code (silent on success).
+func emitOK(err error) int {
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		return 1
+	}
+	return 0
 }
