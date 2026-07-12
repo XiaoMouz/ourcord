@@ -8,9 +8,12 @@ dist/
 relay/ourcord-relay
 daemon/ourcordd
 daemon/ourcord-cli
+daemon/ourcord-tui
 filebackend/ourcord-filebackend
 daemon/bin/
 proto/gen/
+# stray `go build ./cmd/...` outputs (native + cross-compiled)
+*.exe
 
 # Keys / secrets
 *.pem
