@@ -34,21 +34,28 @@ error. The stable field contract is `proto/ourcord/v1/daemon.proto`.
 | C3 | `diagnostics.go` dialed IPC directly with its own key-loading helper. | Med | **Fixed** — now uses `client.Dial`/`Status`/`ListPeers`. |
 | C4 | Device + diagnostics **core** logic (`enrollDevice`, `listDevices`, `revokeDevice`, `collectDiagnostics`) was UI-free but lived in `package main` under `cmd/ourcord-cli`, so a TUI/GUI could not import it. | Med | **Fixed** — moved to `daemon/pkg/client` (`devices.go`, `diagnostics.go`) as exported `EnrollDevice`/`ListDevices`/`RevokeDevice`/`CollectDiagnostics`; the CLI keeps only the flag-parsing presenters. |
 | C5a | No presenter-agnostic "view model" (a status/peers poller a UI can subscribe to). | — | **Fixed** — `client.Watch(ctx, socket, interval)` streams `Snapshot{Status, Peers, Err}`; dials lazily and re-dials on error so it survives a daemon restart. CLI `watch` renders it as a live read-only view (dependency-free). |
-| C5b | No interactive TUI. | — | **In progress** — `cmd/ourcord-tui` (Bubble Tea) over `client.Watch` + the mutating ops. |
+| C5b | No interactive TUI. | — | **Fixed** — `cmd/ourcord-tui` (Bubble Tea) renders `client.Watch` snapshots and drives connect/disconnect/enter-network/leave via the typed `client` ops. Model logic is unit-tested; it shares 100% of its daemon logic with the CLI. |
 
 `daemon/pkg/client` is now the complete UI-agnostic surface: daemon IPC ops
 (`client.go`), device/control-plane ops (`devices.go`), and diagnostics
 collection (`diagnostics.go`). `cmd/ourcord-cli` contains only presenters and has
 no core logic left.
 
+## Status
+
+CLI and TUI both work over one shared core (`daemon/pkg/client`): daemon IPC ops,
+device/control-plane ops, diagnostics, and the `Watch` view-model. `ourcord-cli`
+and `ourcord-tui` contain only presentation. A future GUI is a third presenter
+over the same package.
+
 ## Next steps
 
-1. **C5b** — `cmd/ourcord-tui` (Bubble Tea): render `client.Watch` snapshots and
-   drive connect/disconnect/enter-network/leave through `daemon/pkg/client`,
-   proving the same core backs both an interactive TUI and the CLI.
-2. Keep the proto contract (`proto/ourcord/v1/daemon.proto`) as the single field
-   source; when the gRPC transport replaces the JSON IPC adapter, only
-   `daemon/pkg/ipc` + `daemon/pkg/client` internals change, not the presenters.
+1. Richer TUI: scrollable peer list, per-peer detail, device management screen.
+2. When the gRPC transport replaces the JSON IPC adapter, only `daemon/pkg/ipc` +
+   `daemon/pkg/client` internals change — presenters are untouched (proto contract
+   `proto/ourcord/v1/daemon.proto` stays the field source of truth).
+3. Native GUIs (`ui/desktop`, `ui/mobile`) bind to the same core via the gRPC
+   surface once it lands.
 
 ## Verification
 
