@@ -385,6 +385,29 @@ sys.exit(1)
   done
 }
 
+# wait_peer_path_in waits until a peer's path is any of a space-separated set.
+# Used where a transient intermediate state (e.g. "degraded") can be superseded
+# by another valid non-direct state (e.g. "next-hop") faster than the poll
+# interval — the point is only that the peer left direct onto a relay.
+wait_peer_path_in() {
+  local name=$1 ip=$2 accepted=$3 deadline=$((SECONDS + 120))
+  until cli "$name" peers | python3 -c '
+import json, sys
+ip = sys.argv[1]
+accepted = set(sys.argv[2].split())
+for peer in json.load(sys.stdin):
+    if peer.get("ip4") == ip:
+        sys.exit(0 if peer.get("path") in accepted else 1)
+sys.exit(1)
+' "$ip" "$accepted" >/dev/null; do
+    if (( SECONDS > deadline )); then
+      cli "$name" peers >&2 || true
+      fail "$name did not report $ip as one of: $accepted"
+    fi
+    sleep 2
+  done
+}
+
 vpn_ip() {
   local name=$1
   cli "$name" status | python3 -c 'import json,sys; print(json.load(sys.stdin)["ip4"])'
@@ -436,9 +459,13 @@ main() {
   log "Waiting for runtime DERP fallback after A<->C UDP impairment"
   wait_file_text "$WORKDIR/daemon-a.log" "fallback state applied" daemon-a
   wait_file_text "$WORKDIR/daemon-c.log" "fallback state applied" daemon-c
-  wait_peer_path a "$c_ip" degraded
-  wait_peer_path c "$a_ip" degraded
-  log "Verifying DERP fallback VPN data path"
+  # Fallback lands on DERP ("degraded") or, once control publishes the A-B-C
+  # route moments later, on "next-hop" — both mean A left the direct path onto a
+  # relay. The "fallback state applied" log above is the authoritative fallback
+  # proof; assert only off-direct here to avoid racing that fast transition.
+  wait_peer_path_in a "$c_ip" "degraded next-hop"
+  wait_peer_path_in c "$a_ip" "degraded next-hop"
+  log "Verifying relay (DERP or next-hop) VPN data path after impairment"
   sudo ip netns exec ocabc-a ping -c 4 -W 3 "$c_ip"
 
   log "Waiting for control to select A-B-C next-hop automatically"

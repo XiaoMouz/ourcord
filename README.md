@@ -135,10 +135,14 @@ go build -o ourcord-relay ./cmd/ourcord-relay
 cd daemon
 go build -o ourcordd ./cmd/ourcordd
 go build -o ourcord-cli ./cmd/ourcord-cli
+go build -o ourcord-tui ./cmd/ourcord-tui
 ./ourcordd --control-url https://your-control.workers.dev &
-./ourcord-cli status
+./ourcord-cli status         # one-shot commands + `ourcord-cli watch` live view
+./ourcord-tui                # interactive terminal UI
 ```
 
+`ourcord-cli` and `ourcord-tui` are thin presenters over one UI-agnostic core
+(`daemon/pkg/client`); see [docs/ui/client-core.md](docs/ui/client-core.md).
 详见 [docs/PLATFORMS.md](docs/PLATFORMS.md) 了解各 OS 的权限/部署细节。
 
 ## 开发路线图
