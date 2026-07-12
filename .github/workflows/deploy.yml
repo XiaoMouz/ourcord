@@ -1,0 +1,53 @@
+name: Deploy
+
+# Manual, operator-triggered deploy of the Cloudflare Workers. It codifies the
+# one invariant that matters: D1 migrations are applied BEFORE the code that
+# depends on the new schema, and the service (which control calls internally) is
+# updated before control.
+#
+# Prerequisites (see docs/ops/release.md):
+#   - repo secret CLOUDFLARE_API_TOKEN (and CLOUDFLARE_ACCOUNT_ID if needed)
+#   - real database_id / KV id / R2 bucket set in control|service/wrangler.toml
+#   - Worker secrets provisioned once via `wrangler secret put` (JWT_SECRET,
+#     SERVICE_INTERNAL_TOKEN, ADMIN_USER_IDS, EMAIL_API_KEY, …)
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Which worker(s) to migrate + deploy
+        type: choice
+        options: [both, service, control]
+        default: both
+
+permissions:
+  contents: read
+
+env:
+  CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+  CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+jobs:
+  deploy:
+    name: migrate + deploy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: corepack enable
+      - run: corepack prepare pnpm@9.15.9 --activate
+      - name: Install worker dependencies
+        run: |
+          (cd control && pnpm install --frozen-lockfile)
+          (cd service && pnpm install --frozen-lockfile)
+      # Service first: control makes signed internal calls to it, and the
+      # internal_nonces table (migration 0004) must exist before the new service
+      # code inserts into it. migrate always precedes deploy.
+      - name: Migrate + deploy service
+        if: ${{ inputs.target == 'both' || inputs.target == 'service' }}
+        run: (cd service && pnpm run migrate && pnpm run deploy)
+      - name: Migrate + deploy control
+        if: ${{ inputs.target == 'both' || inputs.target == 'control' }}
+        run: (cd control && pnpm run migrate && pnpm run deploy)
