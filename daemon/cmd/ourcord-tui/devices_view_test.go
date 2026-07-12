@@ -56,4 +56,14 @@ func TestDevicesViewLoadsAndNavigates(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("x on a device should issue a revoke command")
 	}
+	// A successful revoke sequences a reload (not a concurrent batch) so the
+	// list can't show stale state; a failed revoke does not reload.
+	u, cmd = m.Update(deviceRevokedMsg{id: "dev-2"})
+	if mm := u.(model); !mm.devLoading || cmd == nil || !strings.HasSuffix(mm.msg, ": ok") {
+		t.Fatalf("successful revoke should set ok + trigger reload: loading=%v msg=%q", mm.devLoading, mm.msg)
+	}
+	u, cmd = m.Update(deviceRevokedMsg{id: "dev-2", err: errFake("nope")})
+	if mm := u.(model); cmd != nil || !strings.Contains(mm.msg, "nope") {
+		t.Fatalf("failed revoke should surface error and not reload: cmd=%v msg=%q", cmd, mm.msg)
+	}
 }

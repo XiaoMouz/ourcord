@@ -20,6 +20,11 @@ type devicesMsg struct {
 	err     error
 }
 
+type deviceRevokedMsg struct {
+	id  string
+	err error
+}
+
 func loadDevicesCmd(controlURL, token string) tea.Cmd {
 	return func() tea.Msg {
 		devs, err := client.ListDevices(context.Background(), http.DefaultClient, controlURL, token)
@@ -29,7 +34,7 @@ func loadDevicesCmd(controlURL, token string) tea.Cmd {
 
 func revokeDeviceCmd(controlURL, token, id string) tea.Cmd {
 	return func() tea.Msg {
-		return actionMsg{"revoke " + short(id), client.RevokeDevice(context.Background(), http.DefaultClient, controlURL, token, id)}
+		return deviceRevokedMsg{id: id, err: client.RevokeDevice(context.Background(), http.DefaultClient, controlURL, token, id)}
 	}
 }
 
@@ -55,9 +60,9 @@ func (m model) handleDevicesKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "x":
 		if m.userToken != "" && m.devCursor >= 0 && m.devCursor < len(m.devices) {
-			id := m.devices[m.devCursor].ID
-			// Revoke, then reload so the list reflects the new state.
-			return m, tea.Batch(revokeDeviceCmd(m.controlURL, m.userToken, id), loadDevicesCmd(m.controlURL, m.userToken))
+			// Revoke; the reload is issued only after it lands (see
+			// deviceRevokedMsg in Update) so the list can't show stale state.
+			return m, revokeDeviceCmd(m.controlURL, m.userToken, m.devices[m.devCursor].ID)
 		}
 	}
 	return m, nil

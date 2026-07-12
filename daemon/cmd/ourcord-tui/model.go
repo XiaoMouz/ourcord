@@ -99,6 +99,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.devCursor = maxInt(0, len(m.devices)-1)
 		}
 		return m, nil
+	case deviceRevokedMsg:
+		if msg.err != nil {
+			m.msg = "revoke " + short(msg.id) + ": " + msg.err.Error()
+			return m, nil
+		}
+		// Revoke landed — now reload so the list reflects the new state.
+		m.msg, m.devLoading = "revoke "+short(msg.id)+": ok", true
+		return m, loadDevicesCmd(m.controlURL, m.userToken)
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		return m, nil
