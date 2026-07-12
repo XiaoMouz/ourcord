@@ -59,8 +59,12 @@ type model struct {
 	msg        string
 	width      int
 
+	// network view peer selection
+	peerCursor int
+	peerKey    string // selected peer (by public key) for the detail view
+
 	// devices view (control-plane device management)
-	view       string // viewNet | viewDevices
+	view       string // viewNet | viewPeer | viewDevices
 	devices    []client.DeviceRecord
 	devErr     error
 	devCursor  int
@@ -69,6 +73,7 @@ type model struct {
 
 const (
 	viewNet     = "net"
+	viewPeer    = "peer"
 	viewDevices = "devices"
 )
 
@@ -83,6 +88,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case snapshotMsg:
 		m.snap = client.Snapshot(msg)
 		m.haveSnap = true
+		if m.peerCursor >= len(m.snap.Peers) { // list shrank under the cursor
+			m.peerCursor = maxInt(0, len(m.snap.Peers)-1)
+		}
 		return m, waitForSnapshot(m.sub) // keep reading the stream
 	case streamClosedMsg:
 		return m, tea.Quit
@@ -120,6 +128,9 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.view == viewDevices {
 		return m.handleDevicesKey(msg)
 	}
+	if m.view == viewPeer {
+		return m.handlePeerKey(msg)
+	}
 	if m.entering {
 		switch msg.String() {
 		case "esc":
@@ -152,6 +163,18 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, doOp(m.socket, "leave-network", func(c *client.Client) error { return c.LeaveNetwork() })
 	case "n":
 		m.entering, m.input = true, ""
+	case "j", "down":
+		if n := len(m.snap.Peers); n > 0 && m.peerCursor < n-1 {
+			m.peerCursor++
+		}
+	case "k", "up":
+		if m.peerCursor > 0 {
+			m.peerCursor--
+		}
+	case "enter":
+		if m.peerCursor < len(m.snap.Peers) {
+			m.peerKey, m.view = m.snap.Peers[m.peerCursor].PublicKey, viewPeer
+		}
 	case "D":
 		m.view, m.devLoading, m.msg = viewDevices, m.userToken != "", ""
 		if m.userToken != "" {
@@ -174,6 +197,9 @@ func (m model) View() string {
 	if m.view == viewDevices {
 		return m.devicesView()
 	}
+	if m.view == viewPeer {
+		return m.peerDetailView()
+	}
 	var b strings.Builder
 	b.WriteString(titleStyle.Render("OurCord") + "\n\n")
 
@@ -195,7 +221,7 @@ func (m model) View() string {
 		b.WriteString(kv("network", dash(s.NetworkID)) + "   ")
 		b.WriteString(kv("peers", fmt.Sprintf("%d", s.PeerCount)) + "   ")
 		b.WriteString(kv("flaps", fmt.Sprintf("%d", s.PathFlapsTotal)) + "\n\n")
-		b.WriteString(peerTable(m.snap.Peers))
+		b.WriteString(peerTable(m.snap.Peers, m.peerCursor))
 	}
 
 	b.WriteString("\n")
@@ -208,24 +234,29 @@ func (m model) View() string {
 		}
 		b.WriteString(style.Render(m.msg) + "\n")
 	}
-	b.WriteString(helpStyle.Render("[c]onnect  [d]isconnect  enter-[n]etwork  [l]eave  [D]evices  [q]uit"))
+	b.WriteString(helpStyle.Render("[jk] select  [enter] peer detail  [c]onnect  [d]isconnect  [n]etwork  [l]eave  [D]evices  [q]uit"))
 	return b.String()
 }
 
 func kv(k, v string) string { return labelStyle.Render(k+":") + " " + v }
 
-func peerTable(peers []ipc.ConnectedPeer) string {
+func peerTable(peers []ipc.ConnectedPeer, cursor int) string {
 	if len(peers) == 0 {
 		return labelStyle.Render("(no peers)")
 	}
 	var b strings.Builder
-	b.WriteString(headerStyle.Render(fmt.Sprintf("%-16s %-10s %-7s %-5s %s", "IPV4", "PATH", "DIRECT", "FLAP", "PUBLIC KEY")) + "\n")
-	for _, p := range peers {
+	b.WriteString(headerStyle.Render(fmt.Sprintf("  %-16s %-10s %-7s %-5s %s", "IPV4", "PATH", "DIRECT", "FLAP", "PUBLIC KEY")) + "\n")
+	for i, p := range peers {
 		flap := ""
 		if p.Flapping {
 			flap = "yes"
 		}
-		b.WriteString(fmt.Sprintf("%-16s %-10s %-7s %-5s %s\n", dash(p.IP4), dash(p.Path), boolWord(p.Direct, "yes", "no"), flap, short(p.PublicKey)))
+		row := fmt.Sprintf("%-16s %-10s %-7s %-5s %s", dash(p.IP4), dash(p.Path), boolWord(p.Direct, "yes", "no"), flap, short(p.PublicKey))
+		if i == cursor {
+			b.WriteString(okStyle.Render("▶ "+row) + "\n")
+		} else {
+			b.WriteString("  " + row + "\n")
+		}
 	}
 	return b.String()
 }

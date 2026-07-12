@@ -53,9 +53,13 @@ The TUI has two screens over the same core: the live network view
 `client.ListDevices` / `client.RevokeDevice` — proving the *control-plane* ops
 are presenter-agnostic too, not just the daemon IPC ops.
 
+The TUI now has three screens over the same core: live network (status + peer
+table with `[jk]` selection), per-peer detail (`[enter]` — full transport/flap
+fields, tracked live by public key), and device management (`[D]`).
+
 ## Next steps
 
-1. Richer TUI: scrollable peer list, per-peer detail.
+1. Richer TUI: scrollable peer list for large meshes; peer-detail actions.
 2. When the gRPC transport replaces the JSON IPC adapter, only `daemon/pkg/ipc` +
    `daemon/pkg/client` internals change — presenters are untouched (proto contract
    `proto/ourcord/v1/daemon.proto` stays the field source of truth).
