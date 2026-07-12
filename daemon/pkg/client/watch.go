@@ -32,6 +32,9 @@ func Watch(ctx context.Context, socketPath string, interval time.Duration) <-cha
 // watchWith is Watch with an injectable dialer so tests can connect without the
 // machine's IPC HMAC key.
 func watchWith(ctx context.Context, dial func() (*Client, error), interval time.Duration) <-chan Snapshot {
+	if interval <= 0 {
+		interval = time.Second // NewTicker panics on non-positive intervals
+	}
 	ch := make(chan Snapshot, 1)
 	go func() {
 		defer close(ch)

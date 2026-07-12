@@ -40,9 +40,11 @@ func revokeDeviceCmd(controlURL, token, id string) tea.Cmd {
 
 func (m model) handleDevicesKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
-	case "ctrl+c":
+	case "ctrl+c", "q":
+		// q quits the app in every view (matches the [q]uit help text);
+		// esc / D go back to the network view.
 		return m, tea.Quit
-	case "esc", "D", "q":
+	case "esc", "D":
 		m.view, m.msg = viewNet, ""
 		return m, nil
 	case "j", "down":
