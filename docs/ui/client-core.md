@@ -33,7 +33,8 @@ error. The stable field contract is `proto/ourcord/v1/daemon.proto`.
 | C2 | IPC responses are `IPCResponse{Data interface{}}`; every consumer had to re-marshal to get typed data. | Med | **Fixed** — `client` exposes typed `Status()`/`ListPeers()` etc. via a generic `decode`. |
 | C3 | `diagnostics.go` dialed IPC directly with its own key-loading helper. | Med | **Fixed** — now uses `client.Dial`/`Status`/`ListPeers`. |
 | C4 | Device + diagnostics **core** logic (`enrollDevice`, `listDevices`, `revokeDevice`, `collectDiagnostics`) was UI-free but lived in `package main` under `cmd/ourcord-cli`, so a TUI/GUI could not import it. | Med | **Fixed** — moved to `daemon/pkg/client` (`devices.go`, `diagnostics.go`) as exported `EnrollDevice`/`ListDevices`/`RevokeDevice`/`CollectDiagnostics`; the CLI keeps only the flag-parsing presenters. |
-| C5 | No TUI yet; no presenter-agnostic "view model" (e.g. a periodic status/peers poller a TUI can subscribe to). | — | **Open** — build `cmd/ourcord-tui` (bubbletea) + a shared poll helper. |
+| C5a | No presenter-agnostic "view model" (a status/peers poller a UI can subscribe to). | — | **Fixed** — `client.Watch(ctx, socket, interval)` streams `Snapshot{Status, Peers, Err}`; dials lazily and re-dials on error so it survives a daemon restart. CLI `watch` renders it as a live read-only view (dependency-free). |
+| C5b | No interactive TUI. | — | **In progress** — `cmd/ourcord-tui` (Bubble Tea) over `client.Watch` + the mutating ops. |
 
 `daemon/pkg/client` is now the complete UI-agnostic surface: daemon IPC ops
 (`client.go`), device/control-plane ops (`devices.go`), and diagnostics
@@ -42,12 +43,10 @@ no core logic left.
 
 ## Next steps
 
-1. **C5** — add a core `Watch` helper (poll `Status`/`ListPeers` on an interval,
-   emit snapshots) usable by both a CLI `--watch`/`status --watch` and the TUI.
-2. **C5** — add `cmd/ourcord-tui` (Bubble Tea) that renders status/peers and
-   drives connect/enter-network/leave through `daemon/pkg/client`, proving the
-   core is presenter-agnostic.
-3. Keep the proto contract (`proto/ourcord/v1/daemon.proto`) as the single field
+1. **C5b** — `cmd/ourcord-tui` (Bubble Tea): render `client.Watch` snapshots and
+   drive connect/disconnect/enter-network/leave through `daemon/pkg/client`,
+   proving the same core backs both an interactive TUI and the CLI.
+2. Keep the proto contract (`proto/ourcord/v1/daemon.proto`) as the single field
    source; when the gRPC transport replaces the JSON IPC adapter, only
    `daemon/pkg/ipc` + `daemon/pkg/client` internals change, not the presenters.
 
