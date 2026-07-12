@@ -7,3 +7,7 @@ lint:
 breaking:
   use:
     - FILE
+  except:
+    # go_package intentionally moved once (proto/gen → daemon/pkg/pb) when the
+    # gRPC transport landed; it is a codegen location, not a wire contract.
+    - FILE_SAME_GO_PACKAGE

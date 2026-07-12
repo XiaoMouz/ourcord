@@ -138,6 +138,14 @@ func authHandshakeServer(conn net.Conn, secret []byte) ([]byte, error) {
 		return nil, errors.New("invalid hmac")
 	}
 	leftover, _ := io.ReadAll(dec.Buffered())
+	// The client's json.Encoder terminates its response with '\n', which
+	// dec.Decode does not consume — it belongs to the handshake framing, not
+	// to the application stream. The JSON transport tolerated it (Decode skips
+	// leading whitespace) but byte-exact protocols (the gRPC HTTP/2 preface)
+	// must start clean, so strip leading JSON whitespace here.
+	for len(leftover) > 0 && (leftover[0] == '\n' || leftover[0] == '\r' || leftover[0] == ' ' || leftover[0] == '\t') {
+		leftover = leftover[1:]
+	}
 	return leftover, nil
 }
 

@@ -2,39 +2,82 @@
 // over its local IPC socket. It exposes typed operations (Status, ListPeers,
 // Connect, EnterNetwork, …) that return data and errors — no flag parsing, no
 // stdout/stderr, no os.Exit. A CLI, a TUI, or a native GUI can share this one
-// implementation instead of each re-deriving the IPC command names, parameter
-// shapes, and response decoding. Keep this package free of any presentation
-// concern so the interaction layer stays swappable.
+// implementation instead of each re-deriving the transport, parameter shapes,
+// and response decoding. Keep this package free of any presentation concern so
+// the interaction layer stays swappable.
+//
+// The wire transport is gRPC (proto/ourcord/v1) over an authenticated unix
+// socket: the W3 HMAC handshake completes on the raw conn before HTTP/2
+// starts. Presenters never see any of this — the API below is unchanged from
+// the JSON-transport era.
 package client
 
 import (
-	"encoding/json"
-	"fmt"
+	"context"
+	"net"
+
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 
 	"github.com/ourcord/ourcord/daemon/pkg/ipc"
+	ourcordv1 "github.com/ourcord/ourcord/daemon/pkg/pb/ourcordv1"
 )
 
-// Client is a typed wrapper over an ipc.Client connection to the daemon.
+// Client is a typed wrapper over the daemon's gRPC IPC surface.
 type Client struct {
-	ipc *ipc.Client
+	conn *grpc.ClientConn // nil when constructed via New (test seam)
+	svc  ourcordv1.DaemonServiceClient
+	diag ourcordv1.DaemonDiagnosticsServiceClient
 }
 
 // Dial connects to the daemon at socketPath using the shared IPC HMAC key
 // (loaded from the default path; nil when unavailable, matching the daemon's
-// graceful-rollout behavior). The caller owns Close.
+// graceful-rollout behavior). It fails fast when the daemon is not listening.
+// The caller owns Close.
 func Dial(socketPath string) (*Client, error) {
-	ic, err := ipc.NewClientWithSecret(socketPath, loadHMACKey())
+	secret := loadHMACKey()
+	// Probe eagerly: grpc.NewClient is lazy and would defer "daemon not
+	// running" to the first RPC, which makes for worse presenter UX.
+	probe, err := ipc.DialAuthenticated(context.Background(), socketPath, secret)
 	if err != nil {
 		return nil, err
 	}
-	return &Client{ipc: ic}, nil
+	_ = probe.Close()
+
+	conn, err := grpc.NewClient(
+		"passthrough:///ourcordd",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) {
+			return ipc.DialAuthenticated(ctx, socketPath, secret)
+		}),
+	)
+	if err != nil {
+		return nil, err
+	}
+	return &Client{
+		conn: conn,
+		svc:  ourcordv1.NewDaemonServiceClient(conn),
+		diag: ourcordv1.NewDaemonDiagnosticsServiceClient(conn),
+	}, nil
 }
 
-// New wraps an already-connected ipc.Client. Primarily a test seam.
-func New(ipcClient *ipc.Client) *Client { return &Client{ipc: ipcClient} }
+// New wraps an existing gRPC connection (e.g. a bufconn in tests).
+func New(conn grpc.ClientConnInterface) *Client {
+	return &Client{
+		svc:  ourcordv1.NewDaemonServiceClient(conn),
+		diag: ourcordv1.NewDaemonDiagnosticsServiceClient(conn),
+	}
+}
 
-// Close releases the underlying IPC connection.
-func (c *Client) Close() error { return c.ipc.Close() }
+// Close releases the underlying connection.
+func (c *Client) Close() error {
+	if c.conn != nil {
+		return c.conn.Close()
+	}
+	return nil
+}
 
 func loadHMACKey() []byte {
 	key, err := ipc.LoadOrCreateHMACKey(ipc.DefaultHMACKeyPath())
@@ -45,8 +88,8 @@ func loadHMACKey() []byte {
 }
 
 // DaemonError is returned when the daemon accepts the request but rejects the
-// operation (IPCResponse.OK == false). Transport failures are returned as the
-// underlying error instead.
+// operation (OperationResult.ok == false, or an application-level RPC status).
+// Transport failures are returned as the underlying error instead.
 type DaemonError struct {
 	Cmd string
 	Msg string
@@ -59,82 +102,97 @@ func (e *DaemonError) Error() string {
 	return e.Msg
 }
 
-// call runs an IPC command and converts a daemon-side rejection into an error.
-func (c *Client) call(cmd string, params map[string]string) (ipc.IPCResponse, error) {
-	resp, err := c.ipc.Call(cmd, params)
+// opErr folds an OperationResult + transport error into the client's error
+// contract: transport error as-is, ok=false as *DaemonError, else nil.
+func opErr(cmd string, res *ourcordv1.OperationResult, err error) error {
 	if err != nil {
-		return resp, err
+		return rpcErr(cmd, err)
 	}
-	if !resp.OK {
-		return resp, &DaemonError{Cmd: cmd, Msg: resp.Error}
+	if res == nil || !res.GetOk() {
+		return &DaemonError{Cmd: cmd, Msg: res.GetErrorMessage()}
 	}
-	return resp, nil
+	return nil
 }
 
-// decode re-marshals a generic IPC payload (a map on the wire) into a concrete
-// type, so callers get typed structs instead of interface{}.
-func decode[T any](data interface{}) (T, error) {
-	var out T
-	b, err := json.Marshal(data)
-	if err != nil {
-		return out, fmt.Errorf("encode ipc payload: %w", err)
+// rpcErr converts an application-level gRPC status error (the codes our
+// daemon adapters emit) into a DaemonError so presenters show the daemon's
+// words. Transport-level failures (Unavailable, DeadlineExceeded, …) pass
+// through unchanged — they are not daemon rejections.
+func rpcErr(cmd string, err error) error {
+	if st, ok := status.FromError(err); ok && st.Message() != "" &&
+		(st.Code() == codes.Internal || st.Code() == codes.Unknown) {
+		return &DaemonError{Cmd: cmd, Msg: st.Message()}
 	}
-	if err := json.Unmarshal(b, &out); err != nil {
-		return out, fmt.Errorf("decode ipc payload: %w", err)
-	}
-	return out, nil
+	return err
 }
 
 // Status returns the daemon's current VPN status.
 func (c *Client) Status() (ipc.DaemonStatus, error) {
-	resp, err := c.call(ipc.CmdStatus, nil)
+	resp, err := c.svc.GetStatus(context.Background(), &ourcordv1.GetStatusRequest{})
 	if err != nil {
-		return ipc.DaemonStatus{}, err
+		return ipc.DaemonStatus{}, rpcErr("status", err)
 	}
-	return decode[ipc.DaemonStatus](resp.Data)
+	return ipc.StatusFromProto(resp.GetStatus()), nil
 }
 
 // ListPeers returns the daemon's current connected-peer list.
 func (c *Client) ListPeers() ([]ipc.ConnectedPeer, error) {
-	resp, err := c.call(ipc.CmdListPeers, nil)
+	resp, err := c.svc.ListPeers(context.Background(), &ourcordv1.ListPeersRequest{})
 	if err != nil {
-		return nil, err
+		return nil, rpcErr("peers", err)
 	}
-	return decode[[]ipc.ConnectedPeer](resp.Data)
+	return ipc.PeersFromProto(resp.GetPeers()), nil
 }
 
 // Connect brings the VPN up.
-func (c *Client) Connect() error { _, err := c.call(ipc.CmdConnect, nil); return err }
+func (c *Client) Connect() error {
+	resp, err := c.svc.Connect(context.Background(), &ourcordv1.ConnectRequest{})
+	return opErr("connect", resp.GetResult(), err)
+}
 
 // Disconnect tears the VPN down.
-func (c *Client) Disconnect() error { _, err := c.call(ipc.CmdDisconnect, nil); return err }
+func (c *Client) Disconnect() error {
+	resp, err := c.svc.Disconnect(context.Background(), &ourcordv1.DisconnectRequest{})
+	return opErr("disconnect", resp.GetResult(), err)
+}
 
 // EnterNetwork joins a network by its room vpn_namespace or a pair:<a>.<b> id.
 func (c *Client) EnterNetwork(networkID string) error {
-	_, err := c.call(ipc.CmdEnterNetwork, map[string]string{"network_id": networkID})
-	return err
+	resp, err := c.svc.EnterNetwork(context.Background(), &ourcordv1.EnterNetworkRequest{NetworkId: networkID})
+	return opErr("enter-network", resp.GetResult(), err)
 }
 
 // LeaveNetwork leaves the current network.
-func (c *Client) LeaveNetwork() error { _, err := c.call(ipc.CmdLeaveNetwork, nil); return err }
-
-// EnterRoom is the legacy room-id alias for EnterNetwork.
-func (c *Client) EnterRoom(roomID string) error {
-	_, err := c.call(ipc.CmdEnterRoom, map[string]string{"room_id": roomID})
-	return err
+func (c *Client) LeaveNetwork() error {
+	resp, err := c.svc.LeaveNetwork(context.Background(), &ourcordv1.LeaveNetworkRequest{})
+	return opErr("leave-network", resp.GetResult(), err)
 }
 
+// EnterRoom is the legacy room-id alias for EnterNetwork. The daemon resolves
+// both identifiers through the same path; prefer EnterNetwork with the room's
+// vpn_namespace.
+func (c *Client) EnterRoom(roomID string) error { return c.EnterNetwork(roomID) }
+
 // LeaveRoom is the legacy alias for LeaveNetwork.
-func (c *Client) LeaveRoom() error { _, err := c.call(ipc.CmdLeaveRoom, nil); return err }
+func (c *Client) LeaveRoom() error { return c.LeaveNetwork() }
 
 // ForceDERP is a diagnostic that forces a peer onto the DERP relay path.
 func (c *Client) ForceDERP(peerPublicKey, reason string) error {
 	if reason == "" {
 		reason = "diagnostic-force-derp"
 	}
-	_, err := c.call(ipc.CmdForceDERP, map[string]string{"public_key": peerPublicKey, "reason": reason})
-	return err
+	resp, err := c.diag.ForceDERP(context.Background(), &ourcordv1.ForceDERPRequest{
+		PeerPublicKey: peerPublicKey,
+		Reason:        reason,
+	})
+	return opErr("force-derp", resp.GetResult(), err)
 }
 
 // Ping checks daemon liveness.
-func (c *Client) Ping() error { _, err := c.call(ipc.CmdPing, nil); return err }
+func (c *Client) Ping() error {
+	_, err := c.diag.Ping(context.Background(), &ourcordv1.PingRequest{})
+	if err != nil {
+		return rpcErr("ping", err)
+	}
+	return nil
+}

@@ -57,14 +57,16 @@ The TUI now has three screens over the same core: live network (status + peer
 table with `[jk]` selection), per-peer detail (`[enter]` — full transport/flap
 fields, tracked live by public key), and device management (`[D]`).
 
+The wire transport is now **gRPC** (proto/ourcord/v1) over the authenticated
+unix socket; the JSON adapter is gone. The swap changed only `daemon/pkg/ipc` +
+`daemon/pkg/client` internals — the CLI and TUI needed **zero changes**, which
+is the separation working exactly as designed.
+
 ## Next steps
 
 1. Richer TUI: scrollable peer list for large meshes; peer-detail actions.
-2. When the gRPC transport replaces the JSON IPC adapter, only `daemon/pkg/ipc` +
-   `daemon/pkg/client` internals change — presenters are untouched (proto contract
-   `proto/ourcord/v1/daemon.proto` stays the field source of truth).
-3. Native GUIs (`ui/desktop`, `ui/mobile`) bind to the same core via the gRPC
-   surface once it lands.
+2. Native GUIs (`ui/desktop`, `ui/mobile`) bind to the same core; non-Go stacks
+   can implement the proto contract directly against the daemon's gRPC socket.
 
 ## Verification
 

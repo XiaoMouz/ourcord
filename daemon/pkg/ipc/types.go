@@ -1,7 +1,10 @@
-// Package ipc implements the current authenticated JSON compatibility transport
-// for daemon<->UI communication. Its stable API is defined by
-// proto/ourcord/v1/daemon.proto; these types remain until generated bindings
-// replace this transitional wire format.
+// Package ipc provides the daemon<->UI IPC layer: the authenticated unix-socket
+// transport the gRPC server/clients run over (transport.go, auth.go), the
+// daemon-side domain types (DaemonStatus, ConnectedPeer), and the conversions
+// between those and the wire types generated from proto/ourcord/v1
+// (conv.go). The proto contract is the field source of truth; the JSON structs
+// here are what the daemon core produces and what pkg/client returns to
+// presenters.
 package ipc
 
 // DaemonStatus is the JSON compatibility shape for ourcord.v1.DaemonStatus.
@@ -62,8 +65,9 @@ type ConnectedPeer struct {
 	Flapping          bool    `json:"flapping,omitempty"` // path unstable (≥ threshold changes in window)
 }
 
-// Command types are legacy JSON IPC names. New UI code must target the stable
-// RPC names in proto/ourcord/v1/daemon.proto instead.
+// Command names key the daemon's internal HandleIPC mux; the gRPC service
+// adapters translate the proto RPCs onto these. They are no longer a wire
+// format.
 const (
 	CmdConnect      = "connect"
 	CmdDisconnect   = "disconnect"
@@ -77,13 +81,15 @@ const (
 	CmdPing         = "ping"
 )
 
-// IPCRequest is the JSON format for IPC commands.
+// IPCRequest is the daemon's internal command envelope (HandleIPC mux input).
 type IPCRequest struct {
 	Cmd    string            `json:"cmd"`
 	Params map[string]string `json:"params,omitempty"`
 }
 
-// IPCResponse is the JSON format for IPC responses.
+// IPCResponse is the daemon's internal command result (HandleIPC mux output).
+// Data holds concrete domain values (DaemonStatus, []ConnectedPeer) that the
+// gRPC adapters convert to proto messages.
 type IPCResponse struct {
 	OK    bool        `json:"ok"`
 	Error string      `json:"error,omitempty"`

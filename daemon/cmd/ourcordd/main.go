@@ -25,6 +25,7 @@ import (
 
 	"golang.zx2c4.com/wireguard/conn"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
+	"google.golang.org/grpc"
 	"tailscale.com/types/key"
 
 	"github.com/ourcord/ourcord/daemon/pkg/control"
@@ -93,24 +94,23 @@ func main() {
 		log.Fatalf("Load IPC HMAC key: %v", err)
 	}
 
-	// IPC server
-	ipcSrv := ipc.NewServer(*socketPath, d)
-	ipcSrv.SetHMACSecret(hmacKey)
-	if err := ipcSrv.Listen(); err != nil {
+	// IPC server: gRPC over the authenticated unix socket (peercred + W3 HMAC
+	// handshake run before HTTP/2 starts; see pkg/ipc/transport.go).
+	lis, err := ipc.ListenAuthenticated(*socketPath, hmacKey)
+	if err != nil {
 		log.Fatalf("IPC listen: %v", err)
 	}
+	grpcSrv := grpc.NewServer()
+	registerGRPCServices(grpcSrv, d)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	// Graceful shutdown
+	// Graceful shutdown: Stop unblocks Serve below; the daemon's own connection
+	// contexts are torn down by disconnect()/process exit.
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		<-quit
 		log.Println("Shutting down...")
-		cancel()
-		ipcSrv.Close()
+		grpcSrv.Stop()
 	}()
 
 	log.Printf("IPC socket: %s", *socketPath)
@@ -123,7 +123,7 @@ func main() {
 	}
 	log.Println("Daemon ready. Waiting for IPC commands.")
 
-	if err := ipcSrv.Serve(ctx); err != nil {
+	if err := grpcSrv.Serve(lis); err != nil {
 		log.Printf("IPC server error: %v", err)
 	}
 }
@@ -158,7 +158,8 @@ func configureRuntimeLogging(component, rawLevel, format, filePath string) error
 	return nil
 }
 
-// daemon implements ipc.Handler and coordinates VPN subsystems.
+// daemon coordinates VPN subsystems; HandleIPC is the command mux the gRPC
+// service adapters (grpcserver.go) translate the proto RPCs onto.
 type daemon struct {
 	controlURL     string
 	keyPair        *wg.KeyPair

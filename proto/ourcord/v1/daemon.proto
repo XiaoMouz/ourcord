@@ -2,7 +2,10 @@ syntax = "proto3";
 
 package ourcord.v1;
 
-option go_package = "github.com/ourcord/ourcord/proto/gen/go/ourcord/v1;ourcordv1";
+// Go bindings are generated INTO the daemon module (and committed) because the
+// daemon and its clients now import them for the gRPC transport; CI regenerates
+// and diffs to keep them in sync with this schema.
+option go_package = "github.com/ourcord/ourcord/daemon/pkg/pb/ourcordv1;ourcordv1";
 
 // DaemonService is the stable local UI-to-daemon contract.
 //

@@ -1,9 +1,19 @@
 version: v2
 plugins:
+  # Go message + gRPC bindings are generated INTO the daemon module (committed):
+  # the daemon and daemon/pkg/client import them for the gRPC IPC transport.
+  # go_package minus the module= prefix places files at daemon/pkg/pb/ourcordv1.
+  # CI regenerates and `git diff --exit-code`s to keep them in sync.
   - remote: buf.build/protocolbuffers/go:v1.36.6
-    out: gen/go
+    out: ../daemon
     opt:
-      - paths=source_relative
+      - module=github.com/ourcord/ourcord/daemon
+  - remote: buf.build/grpc/go:v1.5.1
+    out: ../daemon
+    opt:
+      - module=github.com/ourcord/ourcord/daemon
+  # TS bindings remain build artifacts (gitignored gen/ts) until a TS consumer
+  # exists.
   - remote: buf.build/bufbuild/es:v2.2.3
     out: gen/ts
     opt:

@@ -26,8 +26,9 @@
 | `pkg/routing` | AllowedIPs 计算 + 中继链路由 |
 | `pkg/control` | 控制面 WebSocket 客户端 |
 | `pkg/media` | 语音/视频/远控（阶段三占位） |
-| `pkg/ipc` | gRPC IPC（给 UI）|
-| `pkg/client` | **UI 无关的客户端核心**：typed daemon IPC ops + 设备/诊断 + `Watch` view-model。CLI/TUI/未来 GUI 共用，禁止在 presenter 里写 daemon 逻辑 |
+| `pkg/ipc` | IPC 层：认证 UDS transport（peercred + HMAC 握手，之后才起 HTTP/2）、domain types、proto 转换（`conv.go`）|
+| `pkg/pb` | `proto/ourcord/v1` 生成的 Go bindings（**已提交**，勿手改；CI 重新生成并 diff 校验）|
+| `pkg/client` | **UI 无关的客户端核心**：typed daemon ops（gRPC）+ 设备/诊断 + `Watch` view-model。CLI/TUI/未来 GUI 共用，禁止在 presenter 里写 daemon 逻辑 |
 | `cmd/ourcordd` | daemon 入口 |
 | `cmd/ourcord-cli` | CLI presenter（含 `watch` 实时视图）|
 | `cmd/ourcord-tui` | 交互式 TUI presenter（Bubble Tea，基于 `pkg/client`）|

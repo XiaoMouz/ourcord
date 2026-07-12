@@ -172,12 +172,11 @@ Known gaps:
   private-call permission and UI flow still need full end-to-end validation.
 - Windows address assignment and route sync are implemented via winipcfg
   (`daemon/pkg/tun/addr_windows.go`), validated by the `windows-native` CI job.
-- UI remains a placeholder, but the client core is being separated from the
-  interaction layer: `daemon/pkg/client` exposes typed, UI-agnostic daemon
-  operations that the CLI (and a forthcoming TUI/GUIs) share.
-  `proto/ourcord/v1/daemon.proto` freezes the daemon ↔ UI v1 contract and CI
-  generates Go/TS bindings; the protobuf/gRPC wire-transport migration (replacing
-  the JSON IPC adapter) remains open.
+- Product GUIs remain Phase 4, but the client stack is ready for them: the
+  daemon serves `proto/ourcord/v1/daemon.proto` as gRPC over an authenticated
+  unix socket (the JSON IPC adapter is removed), and `daemon/pkg/client`
+  exposes typed, UI-agnostic operations that the CLI and TUI share today —
+  a GUI is another presenter over the same core, or a direct gRPC consumer.
 
 Implementation decisions to close:
 

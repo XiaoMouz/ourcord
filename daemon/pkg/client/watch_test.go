@@ -2,39 +2,18 @@ package client
 
 import (
 	"context"
-	"os"
 	"path/filepath"
 	"testing"
 	"time"
-
-	"github.com/ourcord/ourcord/daemon/pkg/ipc"
 )
 
 func TestWatchDeliversSnapshotsAndClosesOnCancel(t *testing.T) {
-	dir, err := os.MkdirTemp("", "oc")
-	if err != nil {
-		t.Fatalf("tempdir: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	sock := filepath.Join(dir, "s")
-	srv := ipc.NewServer(sock, stubHandler{})
-	if err := srv.Listen(); err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	sctx, scancel := context.WithCancel(context.Background())
-	t.Cleanup(scancel)
-	go srv.Serve(sctx)
-	time.Sleep(20 * time.Millisecond)
-
+	c := dialStub(t)
 	ctx, cancel := context.WithCancel(context.Background())
-	// Dial without the machine HMAC key (the stub server has none).
-	dial := func() (*Client, error) {
-		ic, err := ipc.NewClientWithSecret(sock, nil)
-		if err != nil {
-			return nil, err
-		}
-		return New(ic), nil
-	}
+	// Reuse one stub-backed client for every "dial" — Watch only needs a
+	// working Client; production Dial wiring is covered by
+	// TestDialAuthenticatedRoundTrip.
+	dial := func() (*Client, error) { return c, nil }
 	ch := watchWith(ctx, dial, 20*time.Millisecond)
 
 	// First snapshot is immediate and carries a decoded status.

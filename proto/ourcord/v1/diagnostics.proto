@@ -1,0 +1,32 @@
+syntax = "proto3";
+
+package ourcord.v1;
+
+import "ourcord/v1/daemon.proto";
+
+option go_package = "github.com/ourcord/ourcord/daemon/pkg/pb/ourcordv1;ourcordv1";
+
+// DaemonDiagnosticsService carries local diagnostic and testing operations that
+// are deliberately OUTSIDE the stable UI contract (DaemonService): they exist
+// for the CLI, smoke tests, and operators, and may change without the
+// compatibility guarantees of daemon.proto. UIs must not depend on them.
+service DaemonDiagnosticsService {
+  // Ping is a liveness check against the daemon's IPC endpoint.
+  rpc Ping(PingRequest) returns (PingResponse);
+  // ForceDERP forces a peer onto the DERP relay path to exercise the runtime
+  // fallback machinery in environments without real network impairment tools.
+  rpc ForceDERP(ForceDERPRequest) returns (ForceDERPResponse);
+}
+
+message PingRequest {}
+
+message PingResponse {}
+
+message ForceDERPRequest {
+  string peer_public_key = 1;
+  string reason = 2;
+}
+
+message ForceDERPResponse {
+  OperationResult result = 1;
+}

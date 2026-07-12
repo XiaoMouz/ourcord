@@ -2,86 +2,126 @@ package client
 
 import (
 	"context"
+	"errors"
+	"net"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/test/bufconn"
+
 	"github.com/ourcord/ourcord/daemon/pkg/ipc"
+	ourcordv1 "github.com/ourcord/ourcord/daemon/pkg/pb/ourcordv1"
 )
 
-// stubHandler is a minimal daemon IPC handler that returns typed payloads, so
-// the client's decode path is exercised against the real socket transport.
-type stubHandler struct{}
-
-func (stubHandler) HandleIPC(_ context.Context, req ipc.IPCRequest) ipc.IPCResponse {
-	switch req.Cmd {
-	case ipc.CmdStatus:
-		return ipc.IPCResponse{OK: true, Data: ipc.DaemonStatus{Running: true, VPNActive: true, IP4: "198.18.0.2", PeerCount: 1, PathSummary: "direct"}}
-	case ipc.CmdListPeers:
-		return ipc.IPCResponse{OK: true, Data: []ipc.ConnectedPeer{{PublicKey: "pk", Path: "direct", Direct: true}}}
-	case ipc.CmdConnect, ipc.CmdDisconnect, ipc.CmdLeaveNetwork, ipc.CmdPing:
-		return ipc.IPCResponse{OK: true}
-	case ipc.CmdEnterNetwork:
-		if req.Params["network_id"] == "" {
-			return ipc.IPCResponse{OK: false, Error: "network_id required"}
-		}
-		return ipc.IPCResponse{OK: true}
-	default:
-		return ipc.IPCResponse{OK: false, Error: "unknown cmd: " + req.Cmd}
-	}
+// stubServer implements both gRPC services with canned typed payloads, so the
+// client's conversion paths are exercised against the real gRPC transport.
+type stubServer struct {
+	ourcordv1.UnimplementedDaemonServiceServer
+	ourcordv1.UnimplementedDaemonDiagnosticsServiceServer
 }
 
-func dialTest(t *testing.T) *Client {
+func (stubServer) GetStatus(context.Context, *ourcordv1.GetStatusRequest) (*ourcordv1.GetStatusResponse, error) {
+	return &ourcordv1.GetStatusResponse{Status: &ourcordv1.DaemonStatus{
+		Running: true, VpnActive: true, Ipv4: "198.18.0.2", PeerCount: 1,
+		PathSummary: ourcordv1.Path_PATH_DIRECT, NetworkId: "lobby-x-voice",
+	}}, nil
+}
+
+func (stubServer) ListPeers(context.Context, *ourcordv1.ListPeersRequest) (*ourcordv1.ListPeersResponse, error) {
+	return &ourcordv1.ListPeersResponse{Peers: []*ourcordv1.ConnectedPeer{{
+		PublicKey: "pk", Path: ourcordv1.Path_PATH_DIRECT, Direct: true, Flapping: true, PathTransitions: 3,
+	}}}, nil
+}
+
+func (stubServer) Connect(context.Context, *ourcordv1.ConnectRequest) (*ourcordv1.ConnectResponse, error) {
+	return &ourcordv1.ConnectResponse{Result: &ourcordv1.OperationResult{Ok: true}}, nil
+}
+
+func (stubServer) Disconnect(context.Context, *ourcordv1.DisconnectRequest) (*ourcordv1.DisconnectResponse, error) {
+	return &ourcordv1.DisconnectResponse{Result: &ourcordv1.OperationResult{Ok: true}}, nil
+}
+
+func (stubServer) EnterNetwork(_ context.Context, req *ourcordv1.EnterNetworkRequest) (*ourcordv1.EnterNetworkResponse, error) {
+	if req.GetNetworkId() == "" {
+		return &ourcordv1.EnterNetworkResponse{Result: &ourcordv1.OperationResult{Ok: false, ErrorMessage: "network_id required"}}, nil
+	}
+	return &ourcordv1.EnterNetworkResponse{Result: &ourcordv1.OperationResult{Ok: true}}, nil
+}
+
+func (stubServer) LeaveNetwork(context.Context, *ourcordv1.LeaveNetworkRequest) (*ourcordv1.LeaveNetworkResponse, error) {
+	return &ourcordv1.LeaveNetworkResponse{Result: &ourcordv1.OperationResult{Ok: true}}, nil
+}
+
+func (stubServer) Ping(context.Context, *ourcordv1.PingRequest) (*ourcordv1.PingResponse, error) {
+	return &ourcordv1.PingResponse{}, nil
+}
+
+func (stubServer) ForceDERP(context.Context, *ourcordv1.ForceDERPRequest) (*ourcordv1.ForceDERPResponse, error) {
+	return &ourcordv1.ForceDERPResponse{Result: &ourcordv1.OperationResult{Ok: true}}, nil
+}
+
+// dialStub serves stubServer over an in-memory bufconn and returns a Client.
+func dialStub(t *testing.T) *Client {
 	t.Helper()
-	// Short prefix, not t.TempDir(): a long test name would overflow the ~104
-	// char unix-socket path limit on macOS/BSD.
-	dir, err := os.MkdirTemp("", "oc")
+	lis := bufconn.Listen(1 << 20)
+	srv := grpc.NewServer()
+	ourcordv1.RegisterDaemonServiceServer(srv, stubServer{})
+	ourcordv1.RegisterDaemonDiagnosticsServiceServer(srv, stubServer{})
+	go srv.Serve(lis)
+	t.Cleanup(srv.Stop)
+
+	conn, err := grpc.NewClient(
+		"passthrough:///bufconn",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) {
+			return lis.DialContext(ctx)
+		}),
+	)
 	if err != nil {
-		t.Fatalf("tempdir: %v", err)
+		t.Fatalf("bufconn client: %v", err)
 	}
-	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	sock := filepath.Join(dir, "s")
-	srv := ipc.NewServer(sock, stubHandler{})
-	if err := srv.Listen(); err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-	go srv.Serve(ctx)
-	time.Sleep(20 * time.Millisecond) // let Serve start accepting
-	ic, err := ipc.NewClientWithSecret(sock, nil)
-	if err != nil {
-		t.Fatalf("dial: %v", err)
-	}
-	c := New(ic)
-	t.Cleanup(func() { _ = c.Close() })
-	return c
+	t.Cleanup(func() { _ = conn.Close() })
+	return New(conn)
 }
 
 func TestStatusDecodesTyped(t *testing.T) {
-	st, err := dialTest(t).Status()
+	st, err := dialStub(t).Status()
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !st.VPNActive || st.IP4 != "198.18.0.2" || st.PathSummary != "direct" || st.PeerCount != 1 {
 		t.Fatalf("unexpected status: %+v", st)
 	}
+	// RoomID legacy alias mirrors NetworkID (proto omits room_id by design).
+	if st.RoomID != "lobby-x-voice" || st.NetworkID != "lobby-x-voice" {
+		t.Fatalf("network/room id mismatch: %+v", st)
+	}
 }
 
 func TestListPeersDecodesTyped(t *testing.T) {
-	peers, err := dialTest(t).ListPeers()
+	peers, err := dialStub(t).ListPeers()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(peers) != 1 || peers[0].Path != "direct" || !peers[0].Direct {
+	if len(peers) != 1 || peers[0].Path != "direct" || !peers[0].Direct || !peers[0].Flapping || peers[0].PathTransitions != 3 {
 		t.Fatalf("unexpected peers: %+v", peers)
 	}
 }
 
 func TestMutatingSucceeds(t *testing.T) {
-	c := dialTest(t)
-	for _, op := range []func() error{c.Connect, func() error { return c.EnterNetwork("lobby-x-voice") }, c.Ping, c.Disconnect} {
+	c := dialStub(t)
+	for _, op := range []func() error{
+		c.Connect,
+		func() error { return c.EnterNetwork("lobby-x-voice") },
+		c.Ping,
+		func() error { return c.ForceDERP("pk", "") },
+		c.LeaveNetwork,
+		c.Disconnect,
+	} {
 		if err := op(); err != nil {
 			t.Fatalf("mutating op: %v", err)
 		}
@@ -89,22 +129,76 @@ func TestMutatingSucceeds(t *testing.T) {
 }
 
 func TestDaemonRejectionSurfacesAsError(t *testing.T) {
-	err := dialTest(t).EnterNetwork("")
+	err := dialStub(t).EnterNetwork("")
 	if err == nil {
 		t.Fatal("expected an error for empty network_id")
 	}
 	var de *DaemonError
-	if !asDaemonError(err, &de) || de.Msg != "network_id required" {
+	if !errors.As(err, &de) || de.Msg != "network_id required" {
 		t.Fatalf("expected DaemonError with daemon message, got %v", err)
 	}
 }
 
-// asDaemonError is a tiny errors.As shim kept local to avoid an import just for
-// one assertion.
-func asDaemonError(err error, target **DaemonError) bool {
-	de, ok := err.(*DaemonError)
-	if ok {
-		*target = de
+// TestDialAuthenticatedRoundTrip proves the real path: HMAC handshake on the
+// raw unix socket, then gRPC on top — the exact production wiring.
+func TestDialAuthenticatedRoundTrip(t *testing.T) {
+	dir, err := os.MkdirTemp("", "oc")
+	if err != nil {
+		t.Fatal(err)
 	}
-	return ok
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	sock := filepath.Join(dir, "s")
+	secret, err := ipc.LoadOrCreateHMACKey(filepath.Join(dir, "ipc.key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	lis, err := ipc.ListenAuthenticated(sock, secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := grpc.NewServer()
+	ourcordv1.RegisterDaemonServiceServer(srv, stubServer{})
+	ourcordv1.RegisterDaemonDiagnosticsServiceServer(srv, stubServer{})
+	go srv.Serve(lis)
+	t.Cleanup(srv.Stop)
+
+	conn, err := grpc.NewClient(
+		"passthrough:///ourcordd",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) {
+			return ipc.DialAuthenticated(ctx, sock, secret)
+		}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	c := New(conn)
+
+	st, err := c.Status()
+	if err != nil || !st.VPNActive {
+		t.Fatalf("status over authenticated socket: %+v err=%v", st, err)
+	}
+
+	// A client with the wrong key is rejected: the server closes silently after
+	// the invalid HMAC (the client does not wait for an ack), so the failure
+	// surfaces on the first RPC rather than at dial time.
+	wrong := make([]byte, ipc.HMACKeyLen)
+	badConn, err := grpc.NewClient(
+		"passthrough:///ourcordd",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) {
+			return ipc.DialAuthenticated(ctx, sock, wrong)
+		}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = badConn.Close() })
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if _, err := ourcordv1.NewDaemonServiceClient(badConn).GetStatus(ctx, &ourcordv1.GetStatusRequest{}); err == nil {
+		t.Fatal("RPC with wrong IPC key must fail")
+	}
 }

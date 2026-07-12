@@ -17,37 +17,29 @@ protobuf. Lobby, message, and file APIs remain JSON HTTP APIs. Media controls
 will be added in a later `ourcord.v1` file after their session model is
 designed.
 
-## Current wire compatibility
+## Current wire transport
 
-The running daemon currently uses authenticated NDJSON over a Unix socket, not
-gRPC. Its JSON names map to this contract as follows:
+The daemon serves this contract as **gRPC over an authenticated unix socket**:
+`daemon/pkg/ipc` runs the SO_PEERCRED check and the W3 HMAC challenge-response
+on the raw connection before HTTP/2 starts, then hands the conn to gRPC. The
+JSON NDJSON transport has been removed; `daemon/pkg/client` is the only
+supported way to drive the daemon and presenters (CLI/TUI/GUI) go through it.
 
-| Legacy JSON | Stable proto field / RPC |
+Domain-type mapping (in `daemon/pkg/ipc/conv.go`, the single conversion point):
+
+| Domain (`daemon/pkg/ipc`) | Proto |
 | --- | --- |
-| `status` | `DaemonService.GetStatus` / `GetStatusResponse.status` |
-| `list_peers` | `DaemonService.ListPeers` / `ListPeersResponse` |
-| `connect`, `disconnect` | corresponding `*Response.result` operation result |
-| `enter_network` | `EnterNetworkRequest.network_id` |
-| `leave_network` | `LeaveNetwork` |
-| string paths (`direct`, `derp`, `next-hop`, …) | `Path` enum |
-| `ip4`, `ip6` | `ipv4`, `ipv6` |
-| `next_hop` | `next_hop_public_key` |
-| `last_seen_secs` | `last_seen_seconds` |
-| `path_transitions`, `path_dwell_secs`, `flapping` | `ConnectedPeer.path_transitions` / `path_dwell_seconds` / `flapping` |
-| `path_flaps_total` | `DaemonStatus.path_flaps_total` |
-| `room_id` | *(none — intentionally omitted)* |
+| `DaemonStatus` / `ConnectedPeer` string paths | `Path` enum (unknown ⇒ `PATH_UNSPECIFIED` ⇒ `""`) |
+| `IP4`, `IP6` | `ipv4`, `ipv6` |
+| `NextHop` | `next_hop_public_key` |
+| `LastSeenSecs` / `PathDwellSecs` | `last_seen_seconds` / `path_dwell_seconds` |
+| `RoomID` | *(none — mirrors `network_id`; legacy field slated for removal)* |
 
-The JSON `DaemonStatus.room_id` is a legacy field kept only for older callers
-and is deliberately **not** represented in the proto: the stable identifier is
-`network_id` (`DaemonStatus.network_id`), which carries the room's
-`vpn_namespace` or a `pair:` id. New clients must read `network_id`; `room_id`
-will be dropped from the JSON adapter once no caller depends on it. The adapter
-being a superset of the frozen schema here is expected, not schema drift.
-
-`enter_room`, `leave_room`, `force_derp`, and `ping` are legacy CLI or
-diagnostic commands. They are intentionally absent from the stable UI API.
-`enter_room` remains a compatibility alias in the daemon until callers have
-migrated to the room's `vpn_namespace` and `EnterNetwork`.
+`ping` and `force_derp` are diagnostic operations and live in
+`ourcord/v1/diagnostics.proto` (`DaemonDiagnosticsService`), which is
+**outside** the stable UI contract and may change freely. `enter_room` is a
+client-side alias for `EnterNetwork` (the daemon resolves both identifiers
+through the same path).
 
 ## Compatibility rules
 
@@ -56,27 +48,29 @@ migrated to the room's `vpn_namespace` and `EnterNetwork`.
    must ignore fields and enum values they do not recognise.
 3. A semantic change to an existing field requires a new field or `v2`; do not
    silently reinterpret it.
-4. Generated Go/TypeScript bindings must replace the handwritten daemon IPC
-   types in the same change that switches the wire transport. Until then,
-   `daemon/pkg/ipc/types.go` is the compatibility adapter and must remain
-   field-equivalent to this schema.
+4. Generated bindings are the wire types. The domain structs in
+   `daemon/pkg/ipc/types.go` are what the daemon core and presenters use;
+   `daemon/pkg/ipc/conv.go` is the single mapping point between them and the
+   generated types, and must stay complete when fields are added.
 
 ## Generation
 
 The directory is a Buf module (`buf.yaml`); `buf.gen.yaml` defines Go and
-TypeScript generation. Once `buf` is available in the build image, run:
+TypeScript generation:
 
 ```bash
 cd proto
 buf lint
+buf format --diff
 buf generate
-# Enable after this initial schema has landed on main:
-buf breaking --against '../.git#branch=main'
+buf breaking --against '../.git#branch=main,subdir=proto'
 ```
 
-Bindings are written to the ignored `proto/gen/` build directory. We do not
-commit hand-written `.pb.go` files: generated bindings must come from the
-checked-in schema. CI should generate them and verify schema compatibility
-before the JSON compatibility adapter is replaced. The first introduction of a
-schema cannot run `buf breaking` against an empty `main`; enable that check on
-the next schema-changing pull request.
+**Go bindings are generated into the daemon module and committed**
+(`daemon/pkg/pb/ourcordv1`): the daemon's gRPC services and `daemon/pkg/client`
+import them, so they must exist at build time. Never edit them by hand — CI
+regenerates and fails on any diff, so the committed bindings always match the
+checked-in schema. TypeScript bindings remain build artifacts (gitignored
+`gen/ts`) until a TS consumer exists. `buf breaking` ignores
+`FILE_SAME_GO_PACKAGE` because the Go codegen location intentionally moved once
+when the gRPC transport landed (see `buf.yaml`).

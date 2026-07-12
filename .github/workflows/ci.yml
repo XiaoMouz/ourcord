@@ -63,6 +63,11 @@ jobs:
           buf lint
           buf format --diff
           buf generate
+      # Go bindings are generated into the daemon module and committed (the
+      # daemon imports them for the gRPC IPC transport). Regeneration above
+      # must be a no-op, or the schema and the committed bindings have drifted.
+      - name: Verify committed Go bindings match the schema
+        run: git diff --exit-code -- daemon/pkg/pb
 
   cross-compile:
     name: Cross-compile daemon
