@@ -48,9 +48,14 @@ device/control-plane ops, diagnostics, and the `Watch` view-model. `ourcord-cli`
 and `ourcord-tui` contain only presentation. A future GUI is a third presenter
 over the same package.
 
+The TUI has two screens over the same core: the live network view
+(`client.Watch` + IPC ops) and a device-management screen (`[D]`) that reuses
+`client.ListDevices` / `client.RevokeDevice` — proving the *control-plane* ops
+are presenter-agnostic too, not just the daemon IPC ops.
+
 ## Next steps
 
-1. Richer TUI: scrollable peer list, per-peer detail, device management screen.
+1. Richer TUI: scrollable peer list, per-peer detail.
 2. When the gRPC transport replaces the JSON IPC adapter, only `daemon/pkg/ipc` +
    `daemon/pkg/client` internals change — presenters are untouched (proto contract
    `proto/ourcord/v1/daemon.proto` stays the field source of truth).

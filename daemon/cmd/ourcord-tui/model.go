@@ -48,18 +48,32 @@ func doOp(socket, label string, op func(*client.Client) error) tea.Cmd {
 }
 
 type model struct {
-	socket   string
-	sub      <-chan client.Snapshot
-	snap     client.Snapshot
-	haveSnap bool
-	entering bool // network-id input mode
-	input    string
-	msg      string
-	width    int
+	socket     string
+	controlURL string
+	userToken  string
+	sub        <-chan client.Snapshot
+	snap       client.Snapshot
+	haveSnap   bool
+	entering   bool // network-id input mode
+	input      string
+	msg        string
+	width      int
+
+	// devices view (control-plane device management)
+	view       string // viewNet | viewDevices
+	devices    []client.DeviceRecord
+	devErr     error
+	devCursor  int
+	devLoading bool
 }
 
-func newModel(socket string, sub <-chan client.Snapshot) model {
-	return model{socket: socket, sub: sub, width: 80}
+const (
+	viewNet     = "net"
+	viewDevices = "devices"
+)
+
+func newModel(socket, controlURL, userToken string, sub <-chan client.Snapshot) model {
+	return model{socket: socket, controlURL: controlURL, userToken: userToken, sub: sub, width: 80, view: viewNet}
 }
 
 func (m model) Init() tea.Cmd { return waitForSnapshot(m.sub) }
@@ -79,6 +93,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.msg = msg.label + ": ok"
 		}
 		return m, nil
+	case devicesMsg:
+		m.devices, m.devErr, m.devLoading = msg.devices, msg.err, false
+		if m.devCursor >= len(m.devices) {
+			m.devCursor = maxInt(0, len(m.devices)-1)
+		}
+		return m, nil
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		return m, nil
@@ -89,6 +109,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.view == viewDevices {
+		return m.handleDevicesKey(msg)
+	}
 	if m.entering {
 		switch msg.String() {
 		case "esc":
@@ -121,6 +144,11 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, doOp(m.socket, "leave-network", func(c *client.Client) error { return c.LeaveNetwork() })
 	case "n":
 		m.entering, m.input = true, ""
+	case "D":
+		m.view, m.devLoading, m.msg = viewDevices, m.userToken != "", ""
+		if m.userToken != "" {
+			return m, loadDevicesCmd(m.controlURL, m.userToken)
+		}
 	}
 	return m, nil
 }
@@ -135,6 +163,9 @@ var (
 )
 
 func (m model) View() string {
+	if m.view == viewDevices {
+		return m.devicesView()
+	}
 	var b strings.Builder
 	b.WriteString(titleStyle.Render("OurCord") + "\n\n")
 
@@ -169,7 +200,7 @@ func (m model) View() string {
 		}
 		b.WriteString(style.Render(m.msg) + "\n")
 	}
-	b.WriteString(helpStyle.Render("[c]onnect  [d]isconnect  enter-[n]etwork  [l]eave  [q]uit"))
+	b.WriteString(helpStyle.Render("[c]onnect  [d]isconnect  enter-[n]etwork  [l]eave  [D]evices  [q]uit"))
 	return b.String()
 }
 

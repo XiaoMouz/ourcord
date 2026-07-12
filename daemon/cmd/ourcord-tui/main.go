@@ -22,13 +22,15 @@ import (
 func main() {
 	socket := flag.String("socket", ipc.DefaultSocketPath(), "daemon IPC socket path")
 	interval := flag.Duration("interval", 2*time.Second, "status poll interval")
+	controlURL := flag.String("control-url", client.DefaultControlURL, "control plane URL (device management)")
+	userToken := flag.String("user-token", os.Getenv("OURCORD_USER_JWT"), "user JWT for device management (or OURCORD_USER_JWT)")
 	flag.Parse()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	sub := client.Watch(ctx, *socket, *interval)
 
-	p := tea.NewProgram(newModel(*socket, sub), tea.WithAltScreen())
+	p := tea.NewProgram(newModel(*socket, *controlURL, *userToken, sub), tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "tui:", err)
 		os.Exit(1)

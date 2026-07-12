@@ -11,7 +11,7 @@ import (
 )
 
 func TestSnapshotMsgUpdatesModel(t *testing.T) {
-	m := newModel("/tmp/x.sock", nil)
+	m := newModel("/tmp/x.sock", "", "", nil)
 	updated, _ := m.Update(snapshotMsg(client.Snapshot{
 		Status: ipc.DaemonStatus{VPNActive: true, IP4: "198.18.0.2", PathSummary: "direct"},
 		Peers:  []ipc.ConnectedPeer{{IP4: "198.18.0.3", Path: "direct", Direct: true}},
@@ -27,7 +27,7 @@ func TestSnapshotMsgUpdatesModel(t *testing.T) {
 }
 
 func TestEnterNetworkInputMode(t *testing.T) {
-	m := newModel("/tmp/x.sock", nil)
+	m := newModel("/tmp/x.sock", "", "", nil)
 	// 'n' opens the input prompt.
 	u, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
 	m = u.(model)
@@ -61,7 +61,7 @@ func TestEnterNetworkInputMode(t *testing.T) {
 }
 
 func TestQuitKey(t *testing.T) {
-	m := newModel("/tmp/x.sock", nil)
+	m := newModel("/tmp/x.sock", "", "", nil)
 	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
 	if cmd == nil {
 		t.Fatal("q should return a quit command")
@@ -69,7 +69,7 @@ func TestQuitKey(t *testing.T) {
 }
 
 func TestErrorSnapshotRendersUnavailable(t *testing.T) {
-	m := newModel("/tmp/x.sock", nil)
+	m := newModel("/tmp/x.sock", "", "", nil)
 	u, _ := m.Update(snapshotMsg(client.Snapshot{Err: errFake("boom")}))
 	if !strings.Contains(u.(model).View(), "daemon unavailable: boom") {
 		t.Fatalf("expected unavailable message:\n%s", u.(model).View())
