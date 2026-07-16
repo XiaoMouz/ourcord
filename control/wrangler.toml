@@ -2,16 +2,19 @@ name = "ourcord-control"
 main = "src/index.ts"
 compatibility_date = "2024-01-01"
 compatibility_flags = ["nodejs_compat"]
+routes = [
+  { pattern = "control.ourcord.mou.best", custom_domain = true }
+]
 
 [[d1_databases]]
 binding = "DB"
 database_name = "ourcord-control"
-database_id = "placeholder-replace-on-deploy"
+database_id = "9d16d880-a9ea-465a-b113-abfd6d74c6bc"
 migrations_dir = "migrations"
 
 [[kv_namespaces]]
 binding = "KV"
-id = "placeholder-replace-on-deploy"
+id = "7e3cdef27fb9433ab6fa91332cd0f64a"
 
 [durable_objects]
 bindings = [
@@ -20,7 +23,10 @@ bindings = [
 
 [[migrations]]
 tag = "v1"
-new_classes = ["SignalDO"]
+new_sqlite_classes = ["SignalDO"]
 
 [vars]
-ENVIRONMENT = "development"
+ENVIRONMENT = "production"
+SERVICE_URL = "https://service.ourcord.mou.best"
+EMAIL_FROM = "OurCord <ourcord@mou.best>"
+EMAIL_RATE_LIMIT_PER_DAY = "10"

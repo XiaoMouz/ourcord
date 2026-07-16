@@ -2,23 +2,26 @@ name = "ourcord-service"
 main = "src/index.ts"
 compatibility_date = "2024-01-01"
 compatibility_flags = ["nodejs_compat"]
+routes = [
+  { pattern = "service.ourcord.mou.best", custom_domain = true }
+]
 
 [[d1_databases]]
 binding = "DB"
 database_name = "ourcord-service"
-database_id = "placeholder-replace-on-deploy"
+database_id = "23a652af-b18c-4ce3-b2aa-a1cbb980d1ff"
 migrations_dir = "migrations"
 
 [[kv_namespaces]]
 binding = "KV"
-id = "placeholder-replace-on-deploy"
+id = "348d924ec4054f9ea5a7b006350558e6"
 
 [[r2_buckets]]
 binding = "FILES"
 bucket_name = "ourcord-files"
 
 [vars]
-ENVIRONMENT = "development"
+ENVIRONMENT = "production"
 
 # Hourly R2 cleanup of expired file records (see scheduled handler in src/index.ts).
 [triggers]
