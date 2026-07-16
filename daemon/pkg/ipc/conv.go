@@ -107,6 +107,8 @@ func StatusFromProto(p *ourcordv1.DaemonStatus) DaemonStatus {
 func PeerToProto(c ConnectedPeer) *ourcordv1.ConnectedPeer {
 	return &ourcordv1.ConnectedPeer{
 		PublicKey:         c.PublicKey,
+		UserId:            c.UserID,
+		DisplayName:       c.DisplayName,
 		Name:              c.Name,
 		Ipv4:              c.IP4,
 		Ipv6:              c.IP6,
@@ -132,6 +134,8 @@ func PeerFromProto(p *ourcordv1.ConnectedPeer) ConnectedPeer {
 	}
 	return ConnectedPeer{
 		PublicKey:         p.GetPublicKey(),
+		UserID:            p.GetUserId(),
+		DisplayName:       p.GetDisplayName(),
 		Name:              p.GetName(),
 		IP4:               p.GetIpv4(),
 		IP6:               p.GetIpv6(),
@@ -167,6 +171,17 @@ func PeersFromProto(ps []*ourcordv1.ConnectedPeer) []ConnectedPeer {
 	return out
 }
 
+func LocalProfileToProto(p LocalProfile) *ourcordv1.LocalProfile {
+	return &ourcordv1.LocalProfile{PublicKey: p.PublicKey, Enrolled: p.Enrolled, DeviceId: p.DeviceID, DeviceName: p.DeviceName, UserId: p.UserID}
+}
+
+func LocalProfileFromProto(p *ourcordv1.LocalProfile) LocalProfile {
+	if p == nil {
+		return LocalProfile{}
+	}
+	return LocalProfile{PublicKey: p.GetPublicKey(), Enrolled: p.GetEnrolled(), DeviceID: p.GetDeviceId(), DeviceName: p.GetDeviceName(), UserID: p.GetUserId()}
+}
+
 // VoiceStatusToProto converts a voice status snapshot to its wire form.
 func VoiceStatusToProto(v VoiceStatus) *ourcordv1.VoiceStatus {
 	parts := make([]*ourcordv1.VoiceParticipant, 0, len(v.Participants))
@@ -182,12 +197,15 @@ func VoiceStatusToProto(v VoiceStatus) *ourcordv1.VoiceStatus {
 		})
 	}
 	return &ourcordv1.VoiceStatus{
-		Joined:       v.Joined,
-		Muted:        v.Muted,
-		Deafened:     v.Deafened,
-		NetworkId:    v.NetworkID,
-		Codec:        v.Codec,
-		Participants: parts,
+		Joined:        v.Joined,
+		Muted:         v.Muted,
+		Deafened:      v.Deafened,
+		NetworkId:     v.NetworkID,
+		Codec:         v.Codec,
+		Participants:  parts,
+		InputMode:     voiceInputModeToProto(v.InputMode),
+		LocalSpeaking: v.LocalSpeaking,
+		Transmitting:  v.Transmitting,
 	}
 }
 
@@ -209,12 +227,41 @@ func VoiceStatusFromProto(p *ourcordv1.VoiceStatus) VoiceStatus {
 		})
 	}
 	return VoiceStatus{
-		Joined:       p.GetJoined(),
-		Muted:        p.GetMuted(),
-		Deafened:     p.GetDeafened(),
-		NetworkID:    p.GetNetworkId(),
-		Codec:        p.GetCodec(),
-		Participants: parts,
+		Joined:        p.GetJoined(),
+		Muted:         p.GetMuted(),
+		Deafened:      p.GetDeafened(),
+		NetworkID:     p.GetNetworkId(),
+		Codec:         p.GetCodec(),
+		Participants:  parts,
+		InputMode:     VoiceInputModeFromProto(p.GetInputMode()),
+		LocalSpeaking: p.GetLocalSpeaking(),
+		Transmitting:  p.GetTransmitting(),
+	}
+}
+
+func voiceInputModeToProto(mode string) ourcordv1.VoiceInputMode {
+	switch mode {
+	case "voice_activity":
+		return ourcordv1.VoiceInputMode_VOICE_INPUT_MODE_VOICE_ACTIVITY
+	case "push_to_talk":
+		return ourcordv1.VoiceInputMode_VOICE_INPUT_MODE_PUSH_TO_TALK
+	case "open_mic":
+		return ourcordv1.VoiceInputMode_VOICE_INPUT_MODE_OPEN_MIC
+	default:
+		return ourcordv1.VoiceInputMode_VOICE_INPUT_MODE_UNSPECIFIED
+	}
+}
+
+func VoiceInputModeFromProto(mode ourcordv1.VoiceInputMode) string {
+	switch mode {
+	case ourcordv1.VoiceInputMode_VOICE_INPUT_MODE_VOICE_ACTIVITY:
+		return "voice_activity"
+	case ourcordv1.VoiceInputMode_VOICE_INPUT_MODE_PUSH_TO_TALK:
+		return "push_to_talk"
+	case ourcordv1.VoiceInputMode_VOICE_INPUT_MODE_OPEN_MIC:
+		return "open_mic"
+	default:
+		return ""
 	}
 }
 

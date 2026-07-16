@@ -186,6 +186,52 @@ func TestWrongKeyPeerCannotDecrypt(t *testing.T) {
 	}
 }
 
+func TestVoiceActivityGateKeepsPreRollAndHangover(t *testing.T) {
+	e := &Engine{inputMode: InputModeVoiceActivity, vadThreshold: -45, vadHangover: 300 * time.Millisecond}
+	silence := make([]int16, FrameSamples)
+	voice := make([]int16, FrameSamples)
+	for i := range voice {
+		voice[i] = 4000
+	}
+	for i := 0; i < preRollFrames-1; i++ {
+		if got := e.captureFrames(silence); got != nil {
+			t.Fatalf("silence frame %d unexpectedly transmitted", i)
+		}
+	}
+	got := e.captureFrames(voice)
+	if len(got) != preRollFrames {
+		t.Fatalf("activation sent %d frames, want %d-frame pre-roll", len(got), preRollFrames)
+	}
+	if !e.localSpeaking || !e.transmitting {
+		t.Fatalf("unexpected active status: speaking=%v transmitting=%v", e.localSpeaking, e.transmitting)
+	}
+	if got := e.captureFrames(silence); len(got) != 1 {
+		t.Fatalf("hangover should keep transmitting, got %d frames", len(got))
+	}
+}
+
+func TestPushToTalkGateAndMuteOverride(t *testing.T) {
+	e := &Engine{inputMode: InputModePushToTalk, vadThreshold: -45, vadHangover: 300 * time.Millisecond}
+	voice := make([]int16, FrameSamples)
+	for i := range voice {
+		voice[i] = 4000
+	}
+	if got := e.captureFrames(voice); got != nil {
+		t.Fatal("PTT transmitted before press")
+	}
+	e.SetPushToTalk(true)
+	if got := e.captureFrames(voice); len(got) == 0 {
+		t.Fatal("PTT did not transmit while pressed")
+	}
+	e.SetMute(true)
+	if got := e.captureFrames(voice); got != nil {
+		t.Fatal("mute must override PTT")
+	}
+	if e.transmitting || e.localSpeaking {
+		t.Fatalf("muted status still active: speaking=%v transmitting=%v", e.localSpeaking, e.transmitting)
+	}
+}
+
 // idleCapture is a never-sending capture source: it pins the null device for a
 // receiver-only engine so tests never touch real audio hardware, even under the
 // voice build tag.

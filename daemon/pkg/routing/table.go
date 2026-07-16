@@ -19,6 +19,8 @@ type PeerRoute struct {
 	PublicKey   wgtypes.Key
 	ID          string
 	Name        string
+	UserID      string
+	DisplayName string
 	VPN4        netip.Addr      // peer's VPN IPv4
 	VPN6        netip.Addr      // peer's VPN IPv6
 	NextHop     *wgtypes.Key    // nil = direct, non-nil = route via this intermediate peer

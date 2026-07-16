@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -28,6 +29,7 @@ import (
 	"google.golang.org/grpc"
 	"tailscale.com/types/key"
 
+	daemonclient "github.com/ourcord/ourcord/daemon/pkg/client"
 	"github.com/ourcord/ourcord/daemon/pkg/control"
 	ourderp "github.com/ourcord/ourcord/daemon/pkg/derp"
 	ourice "github.com/ourcord/ourcord/daemon/pkg/ice"
@@ -90,9 +92,12 @@ func main() {
 	// W3: load (or create) shared HMAC secret used by IPC clients (CLI, GUI)
 	// to prove they have read access to the same file the daemon does. This
 	// stacks on top of the SO_PEERCRED uid check.
-	hmacKey, err := ipc.LoadOrCreateHMACKey(ipc.DefaultHMACKeyPath())
-	if err != nil {
-		log.Fatalf("Load IPC HMAC key: %v", err)
+	var hmacKey []byte
+	if ipc.UsesHMACAuth() {
+		hmacKey, err = ipc.LoadOrCreateHMACKey(ipc.DefaultHMACKeyPath())
+		if err != nil {
+			log.Fatalf("Load IPC HMAC key: %v", err)
+		}
 	}
 
 	// IPC server: gRPC over the authenticated unix socket (peercred + W3 HMAC
@@ -215,8 +220,11 @@ type daemon struct {
 	voice *media.Engine
 	// selected audio device IDs ("" = system default), applied on voice join
 	// and on a live device change. Guarded by connMu.
-	voiceCaptureID  string
-	voicePlaybackID string
+	voiceCaptureID    string
+	voicePlaybackID   string
+	voiceInputMode    media.InputMode
+	voiceVADThreshold float64
+	voiceVADHangover  time.Duration
 
 	// Injectable factories (test seam). nil → real implementations.
 	newTun    func(name string, addrs []netip.Prefix) (tunIface, error)
@@ -357,6 +365,14 @@ func (d *daemon) HandleIPC(ctx context.Context, req ipc.IPCRequest) ipc.IPCRespo
 		return ipc.IPCResponse{OK: true}
 	case ipc.CmdPing:
 		return ipc.IPCResponse{OK: true, Data: map[string]string{"pong": "ok"}}
+	case ipc.CmdLocalProfile:
+		return ipc.IPCResponse{OK: true, Data: d.localProfile()}
+	case ipc.CmdEnrollDevice:
+		profile, err := d.enrollLocalDevice(ctx, req.Params["access_token"], req.Params["user_id"], req.Params["device_name"])
+		if err != nil {
+			return ipc.IPCResponse{OK: false, Error: err.Error()}
+		}
+		return ipc.IPCResponse{OK: true, Data: profile}
 	case ipc.CmdVoiceJoin:
 		if err := d.voiceJoin(); err != nil {
 			return ipc.IPCResponse{OK: false, Error: err.Error()}
@@ -388,9 +404,77 @@ func (d *daemon) HandleIPC(ctx context.Context, req ipc.IPCRequest) ipc.IPCRespo
 			return ipc.IPCResponse{OK: false, Error: err.Error()}
 		}
 		return ipc.IPCResponse{OK: true}
+	case ipc.CmdVoiceInputMode:
+		mode := media.InputMode(req.Params["mode"])
+		if mode != media.InputModeVoiceActivity && mode != media.InputModePushToTalk && mode != media.InputModeOpenMic {
+			return ipc.IPCResponse{OK: false, Error: "invalid voice input mode"}
+		}
+		threshold, err := strconv.ParseFloat(req.Params["threshold_dbfs"], 64)
+		if err != nil || threshold < -60 || threshold > -20 {
+			return ipc.IPCResponse{OK: false, Error: "threshold_dbfs must be between -60 and -20"}
+		}
+		hangoverMS, err := strconv.Atoi(req.Params["hangover_ms"])
+		if err != nil || hangoverMS < 100 || hangoverMS > 2000 {
+			return ipc.IPCResponse{OK: false, Error: "hangover_ms must be between 100 and 2000"}
+		}
+		d.connMu.Lock()
+		d.voiceInputMode, d.voiceVADThreshold, d.voiceVADHangover = mode, threshold, time.Duration(hangoverMS)*time.Millisecond
+		eng := d.voice
+		d.connMu.Unlock()
+		if eng != nil {
+			eng.SetInputMode(mode, threshold, time.Duration(hangoverMS)*time.Millisecond)
+		}
+		return ipc.IPCResponse{OK: true}
+	case ipc.CmdVoicePushToTalk:
+		if err := d.voiceSet(func(e *media.Engine) { e.SetPushToTalk(req.Params["pressed"] == "true") }); err != nil {
+			return ipc.IPCResponse{OK: false, Error: err.Error()}
+		}
+		return ipc.IPCResponse{OK: true}
 	default:
 		return ipc.IPCResponse{OK: false, Error: fmt.Sprintf("unknown command: %s", req.Cmd)}
 	}
+}
+
+func (d *daemon) localProfile() ipc.LocalProfile {
+	profile := ipc.LocalProfile{PublicKey: d.keyPair.PublicKeyBase64(), Enrolled: loadDeviceToken(d.stateDir) != ""}
+	data, err := os.ReadFile(filepath.Join(d.stateDir, "profile.json"))
+	if err == nil {
+		_ = json.Unmarshal(data, &profile)
+	}
+	profile.PublicKey = d.keyPair.PublicKeyBase64()
+	profile.Enrolled = loadDeviceToken(d.stateDir) != ""
+	return profile
+}
+
+func (d *daemon) enrollLocalDevice(ctx context.Context, accessToken, userID, deviceName string) (ipc.LocalProfile, error) {
+	accessToken, userID, deviceName = strings.TrimSpace(accessToken), strings.TrimSpace(userID), strings.TrimSpace(deviceName)
+	if accessToken == "" || userID == "" {
+		return ipc.LocalProfile{}, errors.New("access_token and user_id required")
+	}
+	if len(deviceName) > 80 {
+		return ipc.LocalProfile{}, errors.New("device_name too long")
+	}
+	existing := d.localProfile()
+	if existing.Enrolled {
+		if existing.UserID != "" && existing.UserID != userID {
+			return ipc.LocalProfile{}, errors.New("device is enrolled to another account")
+		}
+		return existing, nil
+	}
+	result, err := daemonclient.EnrollDevice(ctx, nil, d.controlURL, d.stateDir, accessToken, deviceName)
+	if err != nil {
+		return ipc.LocalProfile{}, fmt.Errorf("enroll device: %w", err)
+	}
+	profile := ipc.LocalProfile{PublicKey: d.keyPair.PublicKeyBase64(), Enrolled: true, DeviceID: result.ID, DeviceName: result.Name, UserID: userID}
+	data, _ := json.Marshal(profile)
+	tmp := filepath.Join(d.stateDir, "profile.json.tmp")
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return ipc.LocalProfile{}, fmt.Errorf("store local profile: %w", err)
+	}
+	if err := os.Rename(tmp, filepath.Join(d.stateDir, "profile.json")); err != nil {
+		return ipc.LocalProfile{}, fmt.Errorf("store local profile: %w", err)
+	}
+	return profile, nil
 }
 
 // voiceJoin starts the voice engine for the current network. Requires an active
@@ -421,11 +505,26 @@ func (d *daemon) voiceJoin() error {
 // startVoiceLocked builds an engine bound to vpn4 with the current device
 // selection. Caller holds connMu.
 func (d *daemon) startVoiceLocked(vpn4 netip.Addr) (*media.Engine, error) {
+	mode := d.voiceInputMode
+	if mode == "" {
+		mode = media.InputModeVoiceActivity
+	}
+	threshold := d.voiceVADThreshold
+	if threshold == 0 {
+		threshold = -45
+	}
+	hangover := d.voiceVADHangover
+	if hangover == 0 {
+		hangover = 300 * time.Millisecond
+	}
 	return media.Start(media.Config{
-		SelfKey:   d.keyPair.Private,
-		VPN4:      vpn4,
-		NetworkID: d.activeRoom,
-		Devices:   media.AudioSelection{CaptureID: d.voiceCaptureID, PlaybackID: d.voicePlaybackID},
+		SelfKey:      d.keyPair.Private,
+		VPN4:         vpn4,
+		NetworkID:    d.activeRoom,
+		Devices:      media.AudioSelection{CaptureID: d.voiceCaptureID, PlaybackID: d.voicePlaybackID},
+		InputMode:    mode,
+		VADThreshold: threshold,
+		VADHangover:  hangover,
 	})
 }
 
@@ -499,7 +598,8 @@ func (d *daemon) voiceStatus() ipc.VoiceStatus {
 	s := eng.Status()
 	out := ipc.VoiceStatus{
 		Joined: true, Muted: s.Muted, Deafened: s.Deafened,
-		NetworkID: s.NetworkID, Codec: s.Codec,
+		NetworkID: s.NetworkID, Codec: s.Codec, InputMode: string(s.InputMode),
+		LocalSpeaking: s.LocalSpeaking, Transmitting: s.Transmitting,
 	}
 	for _, p := range s.Participants {
 		out.Participants = append(out.Participants, ipc.VoiceParticipant{
@@ -593,6 +693,8 @@ func connectedPeers(routes []*routing.PeerRoute) []ipc.ConnectedPeer {
 		path := routePath(r)
 		peer := ipc.ConnectedPeer{
 			PublicKey:    r.PublicKey.String(),
+			UserID:       r.UserID,
+			DisplayName:  r.DisplayName,
 			Name:         r.Name,
 			IP4:          addrString(r.VPN4),
 			IP6:          addrString(r.VPN6),
@@ -1675,6 +1777,8 @@ func applyConfig(iface tunIface, table *routing.Table, priv wgtypes.Key, cfg *co
 			PublicKey:   pk,
 			ID:          p.ID,
 			Name:        p.Name,
+			UserID:      p.UserID,
+			DisplayName: p.DisplayName,
 			VPN4:        ip4,
 			VPN6:        ip6,
 			DERPURL:     p.DERPURL,

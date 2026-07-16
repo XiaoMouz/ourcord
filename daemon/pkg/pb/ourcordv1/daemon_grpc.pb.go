@@ -19,12 +19,14 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	DaemonService_GetStatus_FullMethodName    = "/ourcord.v1.DaemonService/GetStatus"
-	DaemonService_ListPeers_FullMethodName    = "/ourcord.v1.DaemonService/ListPeers"
-	DaemonService_Connect_FullMethodName      = "/ourcord.v1.DaemonService/Connect"
-	DaemonService_Disconnect_FullMethodName   = "/ourcord.v1.DaemonService/Disconnect"
-	DaemonService_EnterNetwork_FullMethodName = "/ourcord.v1.DaemonService/EnterNetwork"
-	DaemonService_LeaveNetwork_FullMethodName = "/ourcord.v1.DaemonService/LeaveNetwork"
+	DaemonService_GetStatus_FullMethodName       = "/ourcord.v1.DaemonService/GetStatus"
+	DaemonService_ListPeers_FullMethodName       = "/ourcord.v1.DaemonService/ListPeers"
+	DaemonService_Connect_FullMethodName         = "/ourcord.v1.DaemonService/Connect"
+	DaemonService_Disconnect_FullMethodName      = "/ourcord.v1.DaemonService/Disconnect"
+	DaemonService_EnterNetwork_FullMethodName    = "/ourcord.v1.DaemonService/EnterNetwork"
+	DaemonService_LeaveNetwork_FullMethodName    = "/ourcord.v1.DaemonService/LeaveNetwork"
+	DaemonService_GetLocalProfile_FullMethodName = "/ourcord.v1.DaemonService/GetLocalProfile"
+	DaemonService_EnrollDevice_FullMethodName    = "/ourcord.v1.DaemonService/EnrollDevice"
 )
 
 // DaemonServiceClient is the client API for DaemonService service.
@@ -43,6 +45,8 @@ type DaemonServiceClient interface {
 	Disconnect(ctx context.Context, in *DisconnectRequest, opts ...grpc.CallOption) (*DisconnectResponse, error)
 	EnterNetwork(ctx context.Context, in *EnterNetworkRequest, opts ...grpc.CallOption) (*EnterNetworkResponse, error)
 	LeaveNetwork(ctx context.Context, in *LeaveNetworkRequest, opts ...grpc.CallOption) (*LeaveNetworkResponse, error)
+	GetLocalProfile(ctx context.Context, in *GetLocalProfileRequest, opts ...grpc.CallOption) (*GetLocalProfileResponse, error)
+	EnrollDevice(ctx context.Context, in *EnrollDeviceRequest, opts ...grpc.CallOption) (*EnrollDeviceResponse, error)
 }
 
 type daemonServiceClient struct {
@@ -113,6 +117,26 @@ func (c *daemonServiceClient) LeaveNetwork(ctx context.Context, in *LeaveNetwork
 	return out, nil
 }
 
+func (c *daemonServiceClient) GetLocalProfile(ctx context.Context, in *GetLocalProfileRequest, opts ...grpc.CallOption) (*GetLocalProfileResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetLocalProfileResponse)
+	err := c.cc.Invoke(ctx, DaemonService_GetLocalProfile_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) EnrollDevice(ctx context.Context, in *EnrollDeviceRequest, opts ...grpc.CallOption) (*EnrollDeviceResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(EnrollDeviceResponse)
+	err := c.cc.Invoke(ctx, DaemonService_EnrollDevice_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // DaemonServiceServer is the server API for DaemonService service.
 // All implementations must embed UnimplementedDaemonServiceServer
 // for forward compatibility.
@@ -129,6 +153,8 @@ type DaemonServiceServer interface {
 	Disconnect(context.Context, *DisconnectRequest) (*DisconnectResponse, error)
 	EnterNetwork(context.Context, *EnterNetworkRequest) (*EnterNetworkResponse, error)
 	LeaveNetwork(context.Context, *LeaveNetworkRequest) (*LeaveNetworkResponse, error)
+	GetLocalProfile(context.Context, *GetLocalProfileRequest) (*GetLocalProfileResponse, error)
+	EnrollDevice(context.Context, *EnrollDeviceRequest) (*EnrollDeviceResponse, error)
 	mustEmbedUnimplementedDaemonServiceServer()
 }
 
@@ -156,6 +182,12 @@ func (UnimplementedDaemonServiceServer) EnterNetwork(context.Context, *EnterNetw
 }
 func (UnimplementedDaemonServiceServer) LeaveNetwork(context.Context, *LeaveNetworkRequest) (*LeaveNetworkResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method LeaveNetwork not implemented")
+}
+func (UnimplementedDaemonServiceServer) GetLocalProfile(context.Context, *GetLocalProfileRequest) (*GetLocalProfileResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetLocalProfile not implemented")
+}
+func (UnimplementedDaemonServiceServer) EnrollDevice(context.Context, *EnrollDeviceRequest) (*EnrollDeviceResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method EnrollDevice not implemented")
 }
 func (UnimplementedDaemonServiceServer) mustEmbedUnimplementedDaemonServiceServer() {}
 func (UnimplementedDaemonServiceServer) testEmbeddedByValue()                       {}
@@ -286,6 +318,42 @@ func _DaemonService_LeaveNetwork_Handler(srv interface{}, ctx context.Context, d
 	return interceptor(ctx, in, info, handler)
 }
 
+func _DaemonService_GetLocalProfile_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetLocalProfileRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).GetLocalProfile(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_GetLocalProfile_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).GetLocalProfile(ctx, req.(*GetLocalProfileRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_EnrollDevice_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(EnrollDeviceRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).EnrollDevice(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_EnrollDevice_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).EnrollDevice(ctx, req.(*EnrollDeviceRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // DaemonService_ServiceDesc is the grpc.ServiceDesc for DaemonService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -316,6 +384,14 @@ var DaemonService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "LeaveNetwork",
 			Handler:    _DaemonService_LeaveNetwork_Handler,
+		},
+		{
+			MethodName: "GetLocalProfile",
+			Handler:    _DaemonService_GetLocalProfile_Handler,
+		},
+		{
+			MethodName: "EnrollDevice",
+			Handler:    _DaemonService_EnrollDevice_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

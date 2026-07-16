@@ -28,7 +28,7 @@ func TestStatusRoundTrip(t *testing.T) {
 
 func TestPeerRoundTrip(t *testing.T) {
 	in := ConnectedPeer{
-		PublicKey: "pk", Name: "peer-b", IP4: "198.18.0.3", IP6: "fd00::3",
+		PublicKey: "pk", UserID: "u1", DisplayName: "Alice", Name: "peer-b", IP4: "198.18.0.3", IP6: "fd00::3",
 		Direct: true, Path: "direct", Endpoint: "ice", CandidateEndpoint: "1.2.3.4:5",
 		RelayURL: "http://r/derp", NextHop: "pk2", LatencyMs: 1.5, LastSeenSecs: 42,
 		LastError: "boom", PathTransitions: 4, PathDwellSecs: 9, Flapping: true,

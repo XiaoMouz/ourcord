@@ -23,6 +23,8 @@ service DaemonVoiceService {
   // hardware audio layer (the `voice` build tag); otherwise ok=false.
   rpc ListAudioDevices(ListAudioDevicesRequest) returns (ListAudioDevicesResponse);
   rpc SetAudioDevices(SetAudioDevicesRequest) returns (SetAudioDevicesResponse);
+  rpc SetVoiceInputMode(SetVoiceInputModeRequest) returns (SetVoiceInputModeResponse);
+  rpc SetPushToTalk(SetPushToTalkRequest) returns (SetPushToTalkResponse);
 }
 
 message VoiceJoinRequest {}
@@ -70,6 +72,36 @@ message VoiceStatus {
   // build; "opus" when built with the voice tag).
   string codec = 5;
   repeated VoiceParticipant participants = 6;
+  VoiceInputMode input_mode = 7;
+  bool local_speaking = 8;
+  bool transmitting = 9;
+}
+
+enum VoiceInputMode {
+  VOICE_INPUT_MODE_UNSPECIFIED = 0;
+  VOICE_INPUT_MODE_VOICE_ACTIVITY = 1;
+  VOICE_INPUT_MODE_PUSH_TO_TALK = 2;
+  VOICE_INPUT_MODE_OPEN_MIC = 3;
+}
+
+message SetVoiceInputModeRequest {
+  VoiceInputMode mode = 1;
+  // Valid range is -60..-20 dBFS. Zero selects the daemon default (-45).
+  double vad_threshold_dbfs = 2;
+  // Valid range is 100..2000 ms. Zero selects the daemon default (300).
+  uint32 vad_hangover_ms = 3;
+}
+
+message SetVoiceInputModeResponse {
+  OperationResult result = 1;
+}
+
+message SetPushToTalkRequest {
+  bool pressed = 1;
+}
+
+message SetPushToTalkResponse {
+  OperationResult result = 1;
 }
 
 message VoiceParticipant {

@@ -446,6 +446,276 @@ func (x *LeaveNetworkResponse) GetResult() *OperationResult {
 	return nil
 }
 
+type GetLocalProfileRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetLocalProfileRequest) Reset() {
+	*x = GetLocalProfileRequest{}
+	mi := &file_ourcord_v1_daemon_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetLocalProfileRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetLocalProfileRequest) ProtoMessage() {}
+
+func (x *GetLocalProfileRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_ourcord_v1_daemon_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetLocalProfileRequest.ProtoReflect.Descriptor instead.
+func (*GetLocalProfileRequest) Descriptor() ([]byte, []int) {
+	return file_ourcord_v1_daemon_proto_rawDescGZIP(), []int{9}
+}
+
+type LocalProfile struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	PublicKey     string                 `protobuf:"bytes,1,opt,name=public_key,json=publicKey,proto3" json:"public_key,omitempty"`
+	Enrolled      bool                   `protobuf:"varint,2,opt,name=enrolled,proto3" json:"enrolled,omitempty"`
+	DeviceId      string                 `protobuf:"bytes,3,opt,name=device_id,json=deviceId,proto3" json:"device_id,omitempty"`
+	DeviceName    string                 `protobuf:"bytes,4,opt,name=device_name,json=deviceName,proto3" json:"device_name,omitempty"`
+	UserId        string                 `protobuf:"bytes,5,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *LocalProfile) Reset() {
+	*x = LocalProfile{}
+	mi := &file_ourcord_v1_daemon_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *LocalProfile) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*LocalProfile) ProtoMessage() {}
+
+func (x *LocalProfile) ProtoReflect() protoreflect.Message {
+	mi := &file_ourcord_v1_daemon_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use LocalProfile.ProtoReflect.Descriptor instead.
+func (*LocalProfile) Descriptor() ([]byte, []int) {
+	return file_ourcord_v1_daemon_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *LocalProfile) GetPublicKey() string {
+	if x != nil {
+		return x.PublicKey
+	}
+	return ""
+}
+
+func (x *LocalProfile) GetEnrolled() bool {
+	if x != nil {
+		return x.Enrolled
+	}
+	return false
+}
+
+func (x *LocalProfile) GetDeviceId() string {
+	if x != nil {
+		return x.DeviceId
+	}
+	return ""
+}
+
+func (x *LocalProfile) GetDeviceName() string {
+	if x != nil {
+		return x.DeviceName
+	}
+	return ""
+}
+
+func (x *LocalProfile) GetUserId() string {
+	if x != nil {
+		return x.UserId
+	}
+	return ""
+}
+
+type GetLocalProfileResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Profile       *LocalProfile          `protobuf:"bytes,1,opt,name=profile,proto3" json:"profile,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetLocalProfileResponse) Reset() {
+	*x = GetLocalProfileResponse{}
+	mi := &file_ourcord_v1_daemon_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetLocalProfileResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetLocalProfileResponse) ProtoMessage() {}
+
+func (x *GetLocalProfileResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_ourcord_v1_daemon_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetLocalProfileResponse.ProtoReflect.Descriptor instead.
+func (*GetLocalProfileResponse) Descriptor() ([]byte, []int) {
+	return file_ourcord_v1_daemon_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *GetLocalProfileResponse) GetProfile() *LocalProfile {
+	if x != nil {
+		return x.Profile
+	}
+	return nil
+}
+
+type EnrollDeviceRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Short-lived user JWT. It is consumed locally and must never be logged or
+	// returned; the daemon persists only the resulting device credential.
+	AccessToken   string `protobuf:"bytes,1,opt,name=access_token,json=accessToken,proto3" json:"access_token,omitempty"`
+	UserId        string `protobuf:"bytes,2,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	DeviceName    string `protobuf:"bytes,3,opt,name=device_name,json=deviceName,proto3" json:"device_name,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *EnrollDeviceRequest) Reset() {
+	*x = EnrollDeviceRequest{}
+	mi := &file_ourcord_v1_daemon_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *EnrollDeviceRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*EnrollDeviceRequest) ProtoMessage() {}
+
+func (x *EnrollDeviceRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_ourcord_v1_daemon_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use EnrollDeviceRequest.ProtoReflect.Descriptor instead.
+func (*EnrollDeviceRequest) Descriptor() ([]byte, []int) {
+	return file_ourcord_v1_daemon_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *EnrollDeviceRequest) GetAccessToken() string {
+	if x != nil {
+		return x.AccessToken
+	}
+	return ""
+}
+
+func (x *EnrollDeviceRequest) GetUserId() string {
+	if x != nil {
+		return x.UserId
+	}
+	return ""
+}
+
+func (x *EnrollDeviceRequest) GetDeviceName() string {
+	if x != nil {
+		return x.DeviceName
+	}
+	return ""
+}
+
+type EnrollDeviceResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Result        *OperationResult       `protobuf:"bytes,1,opt,name=result,proto3" json:"result,omitempty"`
+	Profile       *LocalProfile          `protobuf:"bytes,2,opt,name=profile,proto3" json:"profile,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *EnrollDeviceResponse) Reset() {
+	*x = EnrollDeviceResponse{}
+	mi := &file_ourcord_v1_daemon_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *EnrollDeviceResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*EnrollDeviceResponse) ProtoMessage() {}
+
+func (x *EnrollDeviceResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_ourcord_v1_daemon_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use EnrollDeviceResponse.ProtoReflect.Descriptor instead.
+func (*EnrollDeviceResponse) Descriptor() ([]byte, []int) {
+	return file_ourcord_v1_daemon_proto_rawDescGZIP(), []int{13}
+}
+
+func (x *EnrollDeviceResponse) GetResult() *OperationResult {
+	if x != nil {
+		return x.Result
+	}
+	return nil
+}
+
+func (x *EnrollDeviceResponse) GetProfile() *LocalProfile {
+	if x != nil {
+		return x.Profile
+	}
+	return nil
+}
+
 // OperationResult is used for state-changing requests. Transport-level errors
 // (unauthenticated, unavailable, invalid request) belong to the RPC status;
 // an operation-specific failure is represented by ok=false and error_code.
@@ -460,7 +730,7 @@ type OperationResult struct {
 
 func (x *OperationResult) Reset() {
 	*x = OperationResult{}
-	mi := &file_ourcord_v1_daemon_proto_msgTypes[9]
+	mi := &file_ourcord_v1_daemon_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -472,7 +742,7 @@ func (x *OperationResult) String() string {
 func (*OperationResult) ProtoMessage() {}
 
 func (x *OperationResult) ProtoReflect() protoreflect.Message {
-	mi := &file_ourcord_v1_daemon_proto_msgTypes[9]
+	mi := &file_ourcord_v1_daemon_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -485,7 +755,7 @@ func (x *OperationResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OperationResult.ProtoReflect.Descriptor instead.
 func (*OperationResult) Descriptor() ([]byte, []int) {
-	return file_ourcord_v1_daemon_proto_rawDescGZIP(), []int{9}
+	return file_ourcord_v1_daemon_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *OperationResult) GetOk() bool {
@@ -520,7 +790,7 @@ type EnterNetworkRequest struct {
 
 func (x *EnterNetworkRequest) Reset() {
 	*x = EnterNetworkRequest{}
-	mi := &file_ourcord_v1_daemon_proto_msgTypes[10]
+	mi := &file_ourcord_v1_daemon_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -532,7 +802,7 @@ func (x *EnterNetworkRequest) String() string {
 func (*EnterNetworkRequest) ProtoMessage() {}
 
 func (x *EnterNetworkRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ourcord_v1_daemon_proto_msgTypes[10]
+	mi := &file_ourcord_v1_daemon_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -545,7 +815,7 @@ func (x *EnterNetworkRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EnterNetworkRequest.ProtoReflect.Descriptor instead.
 func (*EnterNetworkRequest) Descriptor() ([]byte, []int) {
-	return file_ourcord_v1_daemon_proto_rawDescGZIP(), []int{10}
+	return file_ourcord_v1_daemon_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *EnterNetworkRequest) GetNetworkId() string {
@@ -564,7 +834,7 @@ type EnterNetworkResponse struct {
 
 func (x *EnterNetworkResponse) Reset() {
 	*x = EnterNetworkResponse{}
-	mi := &file_ourcord_v1_daemon_proto_msgTypes[11]
+	mi := &file_ourcord_v1_daemon_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -576,7 +846,7 @@ func (x *EnterNetworkResponse) String() string {
 func (*EnterNetworkResponse) ProtoMessage() {}
 
 func (x *EnterNetworkResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_ourcord_v1_daemon_proto_msgTypes[11]
+	mi := &file_ourcord_v1_daemon_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -589,7 +859,7 @@ func (x *EnterNetworkResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EnterNetworkResponse.ProtoReflect.Descriptor instead.
 func (*EnterNetworkResponse) Descriptor() ([]byte, []int) {
-	return file_ourcord_v1_daemon_proto_rawDescGZIP(), []int{11}
+	return file_ourcord_v1_daemon_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *EnterNetworkResponse) GetResult() *OperationResult {
@@ -620,7 +890,7 @@ type DaemonStatus struct {
 
 func (x *DaemonStatus) Reset() {
 	*x = DaemonStatus{}
-	mi := &file_ourcord_v1_daemon_proto_msgTypes[12]
+	mi := &file_ourcord_v1_daemon_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -632,7 +902,7 @@ func (x *DaemonStatus) String() string {
 func (*DaemonStatus) ProtoMessage() {}
 
 func (x *DaemonStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_ourcord_v1_daemon_proto_msgTypes[12]
+	mi := &file_ourcord_v1_daemon_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -645,7 +915,7 @@ func (x *DaemonStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DaemonStatus.ProtoReflect.Descriptor instead.
 func (*DaemonStatus) Descriptor() ([]byte, []int) {
-	return file_ourcord_v1_daemon_proto_rawDescGZIP(), []int{12}
+	return file_ourcord_v1_daemon_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *DaemonStatus) GetRunning() bool {
@@ -734,7 +1004,7 @@ type ListPeersResponse struct {
 
 func (x *ListPeersResponse) Reset() {
 	*x = ListPeersResponse{}
-	mi := &file_ourcord_v1_daemon_proto_msgTypes[13]
+	mi := &file_ourcord_v1_daemon_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -746,7 +1016,7 @@ func (x *ListPeersResponse) String() string {
 func (*ListPeersResponse) ProtoMessage() {}
 
 func (x *ListPeersResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_ourcord_v1_daemon_proto_msgTypes[13]
+	mi := &file_ourcord_v1_daemon_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -759,7 +1029,7 @@ func (x *ListPeersResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListPeersResponse.ProtoReflect.Descriptor instead.
 func (*ListPeersResponse) Descriptor() ([]byte, []int) {
-	return file_ourcord_v1_daemon_proto_rawDescGZIP(), []int{13}
+	return file_ourcord_v1_daemon_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *ListPeersResponse) GetPeers() []*ConnectedPeer {
@@ -789,14 +1059,18 @@ type ConnectedPeer struct {
 	// Seconds the peer has held its current path label (dwell time).
 	PathDwellSeconds int64 `protobuf:"varint,15,opt,name=path_dwell_seconds,json=pathDwellSeconds,proto3" json:"path_dwell_seconds,omitempty"`
 	// True when the peer's path is churning (>= threshold transitions in window).
-	Flapping      bool `protobuf:"varint,16,opt,name=flapping,proto3" json:"flapping,omitempty"`
+	Flapping bool `protobuf:"varint,16,opt,name=flapping,proto3" json:"flapping,omitempty"`
+	// Stable account identity and safe public nickname. `name` remains the
+	// device name so clients can render "nickname · device" without guessing.
+	UserId        string `protobuf:"bytes,17,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	DisplayName   string `protobuf:"bytes,18,opt,name=display_name,json=displayName,proto3" json:"display_name,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ConnectedPeer) Reset() {
 	*x = ConnectedPeer{}
-	mi := &file_ourcord_v1_daemon_proto_msgTypes[14]
+	mi := &file_ourcord_v1_daemon_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -808,7 +1082,7 @@ func (x *ConnectedPeer) String() string {
 func (*ConnectedPeer) ProtoMessage() {}
 
 func (x *ConnectedPeer) ProtoReflect() protoreflect.Message {
-	mi := &file_ourcord_v1_daemon_proto_msgTypes[14]
+	mi := &file_ourcord_v1_daemon_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -821,7 +1095,7 @@ func (x *ConnectedPeer) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ConnectedPeer.ProtoReflect.Descriptor instead.
 func (*ConnectedPeer) Descriptor() ([]byte, []int) {
-	return file_ourcord_v1_daemon_proto_rawDescGZIP(), []int{14}
+	return file_ourcord_v1_daemon_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *ConnectedPeer) GetPublicKey() string {
@@ -936,6 +1210,20 @@ func (x *ConnectedPeer) GetFlapping() bool {
 	return false
 }
 
+func (x *ConnectedPeer) GetUserId() string {
+	if x != nil {
+		return x.UserId
+	}
+	return ""
+}
+
+func (x *ConnectedPeer) GetDisplayName() string {
+	if x != nil {
+		return x.DisplayName
+	}
+	return ""
+}
+
 type TransportStats struct {
 	state                 protoimpl.MessageState `protogen:"open.v1"`
 	Mtu                   uint32                 `protobuf:"varint,1,opt,name=mtu,proto3" json:"mtu,omitempty"`
@@ -963,7 +1251,7 @@ type TransportStats struct {
 
 func (x *TransportStats) Reset() {
 	*x = TransportStats{}
-	mi := &file_ourcord_v1_daemon_proto_msgTypes[15]
+	mi := &file_ourcord_v1_daemon_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -975,7 +1263,7 @@ func (x *TransportStats) String() string {
 func (*TransportStats) ProtoMessage() {}
 
 func (x *TransportStats) ProtoReflect() protoreflect.Message {
-	mi := &file_ourcord_v1_daemon_proto_msgTypes[15]
+	mi := &file_ourcord_v1_daemon_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -988,7 +1276,7 @@ func (x *TransportStats) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TransportStats.ProtoReflect.Descriptor instead.
 func (*TransportStats) Descriptor() ([]byte, []int) {
-	return file_ourcord_v1_daemon_proto_rawDescGZIP(), []int{15}
+	return file_ourcord_v1_daemon_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *TransportStats) GetMtu() uint32 {
@@ -1142,7 +1430,26 @@ const file_ourcord_v1_daemon_proto_rawDesc = "" +
 	"\x06result\x18\x01 \x01(\v2\x1b.ourcord.v1.OperationResultR\x06result\"\x15\n" +
 	"\x13LeaveNetworkRequest\"K\n" +
 	"\x14LeaveNetworkResponse\x123\n" +
-	"\x06result\x18\x01 \x01(\v2\x1b.ourcord.v1.OperationResultR\x06result\"e\n" +
+	"\x06result\x18\x01 \x01(\v2\x1b.ourcord.v1.OperationResultR\x06result\"\x18\n" +
+	"\x16GetLocalProfileRequest\"\xa0\x01\n" +
+	"\fLocalProfile\x12\x1d\n" +
+	"\n" +
+	"public_key\x18\x01 \x01(\tR\tpublicKey\x12\x1a\n" +
+	"\benrolled\x18\x02 \x01(\bR\benrolled\x12\x1b\n" +
+	"\tdevice_id\x18\x03 \x01(\tR\bdeviceId\x12\x1f\n" +
+	"\vdevice_name\x18\x04 \x01(\tR\n" +
+	"deviceName\x12\x17\n" +
+	"\auser_id\x18\x05 \x01(\tR\x06userId\"M\n" +
+	"\x17GetLocalProfileResponse\x122\n" +
+	"\aprofile\x18\x01 \x01(\v2\x18.ourcord.v1.LocalProfileR\aprofile\"r\n" +
+	"\x13EnrollDeviceRequest\x12!\n" +
+	"\faccess_token\x18\x01 \x01(\tR\vaccessToken\x12\x17\n" +
+	"\auser_id\x18\x02 \x01(\tR\x06userId\x12\x1f\n" +
+	"\vdevice_name\x18\x03 \x01(\tR\n" +
+	"deviceName\"\x7f\n" +
+	"\x14EnrollDeviceResponse\x123\n" +
+	"\x06result\x18\x01 \x01(\v2\x1b.ourcord.v1.OperationResultR\x06result\x122\n" +
+	"\aprofile\x18\x02 \x01(\v2\x18.ourcord.v1.LocalProfileR\aprofile\"e\n" +
 	"\x0fOperationResult\x12\x0e\n" +
 	"\x02ok\x18\x01 \x01(\bR\x02ok\x12\x1d\n" +
 	"\n" +
@@ -1171,7 +1478,7 @@ const file_ourcord_v1_daemon_proto_rawDesc = "" +
 	" \x01(\v2\x1a.ourcord.v1.TransportStatsR\ttransport\x12(\n" +
 	"\x10path_flaps_total\x18\v \x01(\x04R\x0epathFlapsTotal\"D\n" +
 	"\x11ListPeersResponse\x12/\n" +
-	"\x05peers\x18\x01 \x03(\v2\x19.ourcord.v1.ConnectedPeerR\x05peers\"\x9e\x04\n" +
+	"\x05peers\x18\x01 \x03(\v2\x19.ourcord.v1.ConnectedPeerR\x05peers\"\xda\x04\n" +
 	"\rConnectedPeer\x12\x1d\n" +
 	"\n" +
 	"public_key\x18\x01 \x01(\tR\tpublicKey\x12\x12\n" +
@@ -1192,7 +1499,9 @@ const file_ourcord_v1_daemon_proto_rawDesc = "" +
 	"last_error\x18\r \x01(\tR\tlastError\x12)\n" +
 	"\x10path_transitions\x18\x0e \x01(\x04R\x0fpathTransitions\x12,\n" +
 	"\x12path_dwell_seconds\x18\x0f \x01(\x03R\x10pathDwellSeconds\x12\x1a\n" +
-	"\bflapping\x18\x10 \x01(\bR\bflapping\"\xbe\x06\n" +
+	"\bflapping\x18\x10 \x01(\bR\bflapping\x12\x17\n" +
+	"\auser_id\x18\x11 \x01(\tR\x06userId\x12!\n" +
+	"\fdisplay_name\x18\x12 \x01(\tR\vdisplayName\"\xbe\x06\n" +
 	"\x0eTransportStats\x12\x10\n" +
 	"\x03mtu\x18\x01 \x01(\rR\x03mtu\x12(\n" +
 	"\x10ice_sent_packets\x18\x02 \x01(\x04R\x0eiceSentPackets\x12(\n" +
@@ -1223,7 +1532,7 @@ const file_ourcord_v1_daemon_proto_rawDesc = "" +
 	"\tPATH_DERP\x10\x05\x12\x11\n" +
 	"\rPATH_NEXT_HOP\x10\x06\x12\x11\n" +
 	"\rPATH_DEGRADED\x10\a\x12\x13\n" +
-	"\x0fPATH_UNRESOLVED\x10\b2\xda\x03\n" +
+	"\x0fPATH_UNRESOLVED\x10\b2\x89\x05\n" +
 	"\rDaemonService\x12H\n" +
 	"\tGetStatus\x12\x1c.ourcord.v1.GetStatusRequest\x1a\x1d.ourcord.v1.GetStatusResponse\x12H\n" +
 	"\tListPeers\x12\x1c.ourcord.v1.ListPeersRequest\x1a\x1d.ourcord.v1.ListPeersResponse\x12B\n" +
@@ -1231,7 +1540,9 @@ const file_ourcord_v1_daemon_proto_rawDesc = "" +
 	"\n" +
 	"Disconnect\x12\x1d.ourcord.v1.DisconnectRequest\x1a\x1e.ourcord.v1.DisconnectResponse\x12Q\n" +
 	"\fEnterNetwork\x12\x1f.ourcord.v1.EnterNetworkRequest\x1a .ourcord.v1.EnterNetworkResponse\x12Q\n" +
-	"\fLeaveNetwork\x12\x1f.ourcord.v1.LeaveNetworkRequest\x1a .ourcord.v1.LeaveNetworkResponseB>Z<github.com/ourcord/ourcord/daemon/pkg/pb/ourcordv1;ourcordv1b\x06proto3"
+	"\fLeaveNetwork\x12\x1f.ourcord.v1.LeaveNetworkRequest\x1a .ourcord.v1.LeaveNetworkResponse\x12Z\n" +
+	"\x0fGetLocalProfile\x12\".ourcord.v1.GetLocalProfileRequest\x1a#.ourcord.v1.GetLocalProfileResponse\x12Q\n" +
+	"\fEnrollDevice\x12\x1f.ourcord.v1.EnrollDeviceRequest\x1a .ourcord.v1.EnrollDeviceResponseB>Z<github.com/ourcord/ourcord/daemon/pkg/pb/ourcordv1;ourcordv1b\x06proto3"
 
 var (
 	file_ourcord_v1_daemon_proto_rawDescOnce sync.Once
@@ -1246,53 +1557,65 @@ func file_ourcord_v1_daemon_proto_rawDescGZIP() []byte {
 }
 
 var file_ourcord_v1_daemon_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_ourcord_v1_daemon_proto_msgTypes = make([]protoimpl.MessageInfo, 16)
+var file_ourcord_v1_daemon_proto_msgTypes = make([]protoimpl.MessageInfo, 21)
 var file_ourcord_v1_daemon_proto_goTypes = []any{
-	(Path)(0),                    // 0: ourcord.v1.Path
-	(*GetStatusRequest)(nil),     // 1: ourcord.v1.GetStatusRequest
-	(*GetStatusResponse)(nil),    // 2: ourcord.v1.GetStatusResponse
-	(*ListPeersRequest)(nil),     // 3: ourcord.v1.ListPeersRequest
-	(*ConnectRequest)(nil),       // 4: ourcord.v1.ConnectRequest
-	(*ConnectResponse)(nil),      // 5: ourcord.v1.ConnectResponse
-	(*DisconnectRequest)(nil),    // 6: ourcord.v1.DisconnectRequest
-	(*DisconnectResponse)(nil),   // 7: ourcord.v1.DisconnectResponse
-	(*LeaveNetworkRequest)(nil),  // 8: ourcord.v1.LeaveNetworkRequest
-	(*LeaveNetworkResponse)(nil), // 9: ourcord.v1.LeaveNetworkResponse
-	(*OperationResult)(nil),      // 10: ourcord.v1.OperationResult
-	(*EnterNetworkRequest)(nil),  // 11: ourcord.v1.EnterNetworkRequest
-	(*EnterNetworkResponse)(nil), // 12: ourcord.v1.EnterNetworkResponse
-	(*DaemonStatus)(nil),         // 13: ourcord.v1.DaemonStatus
-	(*ListPeersResponse)(nil),    // 14: ourcord.v1.ListPeersResponse
-	(*ConnectedPeer)(nil),        // 15: ourcord.v1.ConnectedPeer
-	(*TransportStats)(nil),       // 16: ourcord.v1.TransportStats
+	(Path)(0),                       // 0: ourcord.v1.Path
+	(*GetStatusRequest)(nil),        // 1: ourcord.v1.GetStatusRequest
+	(*GetStatusResponse)(nil),       // 2: ourcord.v1.GetStatusResponse
+	(*ListPeersRequest)(nil),        // 3: ourcord.v1.ListPeersRequest
+	(*ConnectRequest)(nil),          // 4: ourcord.v1.ConnectRequest
+	(*ConnectResponse)(nil),         // 5: ourcord.v1.ConnectResponse
+	(*DisconnectRequest)(nil),       // 6: ourcord.v1.DisconnectRequest
+	(*DisconnectResponse)(nil),      // 7: ourcord.v1.DisconnectResponse
+	(*LeaveNetworkRequest)(nil),     // 8: ourcord.v1.LeaveNetworkRequest
+	(*LeaveNetworkResponse)(nil),    // 9: ourcord.v1.LeaveNetworkResponse
+	(*GetLocalProfileRequest)(nil),  // 10: ourcord.v1.GetLocalProfileRequest
+	(*LocalProfile)(nil),            // 11: ourcord.v1.LocalProfile
+	(*GetLocalProfileResponse)(nil), // 12: ourcord.v1.GetLocalProfileResponse
+	(*EnrollDeviceRequest)(nil),     // 13: ourcord.v1.EnrollDeviceRequest
+	(*EnrollDeviceResponse)(nil),    // 14: ourcord.v1.EnrollDeviceResponse
+	(*OperationResult)(nil),         // 15: ourcord.v1.OperationResult
+	(*EnterNetworkRequest)(nil),     // 16: ourcord.v1.EnterNetworkRequest
+	(*EnterNetworkResponse)(nil),    // 17: ourcord.v1.EnterNetworkResponse
+	(*DaemonStatus)(nil),            // 18: ourcord.v1.DaemonStatus
+	(*ListPeersResponse)(nil),       // 19: ourcord.v1.ListPeersResponse
+	(*ConnectedPeer)(nil),           // 20: ourcord.v1.ConnectedPeer
+	(*TransportStats)(nil),          // 21: ourcord.v1.TransportStats
 }
 var file_ourcord_v1_daemon_proto_depIdxs = []int32{
-	13, // 0: ourcord.v1.GetStatusResponse.status:type_name -> ourcord.v1.DaemonStatus
-	10, // 1: ourcord.v1.ConnectResponse.result:type_name -> ourcord.v1.OperationResult
-	10, // 2: ourcord.v1.DisconnectResponse.result:type_name -> ourcord.v1.OperationResult
-	10, // 3: ourcord.v1.LeaveNetworkResponse.result:type_name -> ourcord.v1.OperationResult
-	10, // 4: ourcord.v1.EnterNetworkResponse.result:type_name -> ourcord.v1.OperationResult
-	0,  // 5: ourcord.v1.DaemonStatus.path_summary:type_name -> ourcord.v1.Path
-	16, // 6: ourcord.v1.DaemonStatus.transport:type_name -> ourcord.v1.TransportStats
-	15, // 7: ourcord.v1.ListPeersResponse.peers:type_name -> ourcord.v1.ConnectedPeer
-	0,  // 8: ourcord.v1.ConnectedPeer.path:type_name -> ourcord.v1.Path
-	1,  // 9: ourcord.v1.DaemonService.GetStatus:input_type -> ourcord.v1.GetStatusRequest
-	3,  // 10: ourcord.v1.DaemonService.ListPeers:input_type -> ourcord.v1.ListPeersRequest
-	4,  // 11: ourcord.v1.DaemonService.Connect:input_type -> ourcord.v1.ConnectRequest
-	6,  // 12: ourcord.v1.DaemonService.Disconnect:input_type -> ourcord.v1.DisconnectRequest
-	11, // 13: ourcord.v1.DaemonService.EnterNetwork:input_type -> ourcord.v1.EnterNetworkRequest
-	8,  // 14: ourcord.v1.DaemonService.LeaveNetwork:input_type -> ourcord.v1.LeaveNetworkRequest
-	2,  // 15: ourcord.v1.DaemonService.GetStatus:output_type -> ourcord.v1.GetStatusResponse
-	14, // 16: ourcord.v1.DaemonService.ListPeers:output_type -> ourcord.v1.ListPeersResponse
-	5,  // 17: ourcord.v1.DaemonService.Connect:output_type -> ourcord.v1.ConnectResponse
-	7,  // 18: ourcord.v1.DaemonService.Disconnect:output_type -> ourcord.v1.DisconnectResponse
-	12, // 19: ourcord.v1.DaemonService.EnterNetwork:output_type -> ourcord.v1.EnterNetworkResponse
-	9,  // 20: ourcord.v1.DaemonService.LeaveNetwork:output_type -> ourcord.v1.LeaveNetworkResponse
-	15, // [15:21] is the sub-list for method output_type
-	9,  // [9:15] is the sub-list for method input_type
-	9,  // [9:9] is the sub-list for extension type_name
-	9,  // [9:9] is the sub-list for extension extendee
-	0,  // [0:9] is the sub-list for field type_name
+	18, // 0: ourcord.v1.GetStatusResponse.status:type_name -> ourcord.v1.DaemonStatus
+	15, // 1: ourcord.v1.ConnectResponse.result:type_name -> ourcord.v1.OperationResult
+	15, // 2: ourcord.v1.DisconnectResponse.result:type_name -> ourcord.v1.OperationResult
+	15, // 3: ourcord.v1.LeaveNetworkResponse.result:type_name -> ourcord.v1.OperationResult
+	11, // 4: ourcord.v1.GetLocalProfileResponse.profile:type_name -> ourcord.v1.LocalProfile
+	15, // 5: ourcord.v1.EnrollDeviceResponse.result:type_name -> ourcord.v1.OperationResult
+	11, // 6: ourcord.v1.EnrollDeviceResponse.profile:type_name -> ourcord.v1.LocalProfile
+	15, // 7: ourcord.v1.EnterNetworkResponse.result:type_name -> ourcord.v1.OperationResult
+	0,  // 8: ourcord.v1.DaemonStatus.path_summary:type_name -> ourcord.v1.Path
+	21, // 9: ourcord.v1.DaemonStatus.transport:type_name -> ourcord.v1.TransportStats
+	20, // 10: ourcord.v1.ListPeersResponse.peers:type_name -> ourcord.v1.ConnectedPeer
+	0,  // 11: ourcord.v1.ConnectedPeer.path:type_name -> ourcord.v1.Path
+	1,  // 12: ourcord.v1.DaemonService.GetStatus:input_type -> ourcord.v1.GetStatusRequest
+	3,  // 13: ourcord.v1.DaemonService.ListPeers:input_type -> ourcord.v1.ListPeersRequest
+	4,  // 14: ourcord.v1.DaemonService.Connect:input_type -> ourcord.v1.ConnectRequest
+	6,  // 15: ourcord.v1.DaemonService.Disconnect:input_type -> ourcord.v1.DisconnectRequest
+	16, // 16: ourcord.v1.DaemonService.EnterNetwork:input_type -> ourcord.v1.EnterNetworkRequest
+	8,  // 17: ourcord.v1.DaemonService.LeaveNetwork:input_type -> ourcord.v1.LeaveNetworkRequest
+	10, // 18: ourcord.v1.DaemonService.GetLocalProfile:input_type -> ourcord.v1.GetLocalProfileRequest
+	13, // 19: ourcord.v1.DaemonService.EnrollDevice:input_type -> ourcord.v1.EnrollDeviceRequest
+	2,  // 20: ourcord.v1.DaemonService.GetStatus:output_type -> ourcord.v1.GetStatusResponse
+	19, // 21: ourcord.v1.DaemonService.ListPeers:output_type -> ourcord.v1.ListPeersResponse
+	5,  // 22: ourcord.v1.DaemonService.Connect:output_type -> ourcord.v1.ConnectResponse
+	7,  // 23: ourcord.v1.DaemonService.Disconnect:output_type -> ourcord.v1.DisconnectResponse
+	17, // 24: ourcord.v1.DaemonService.EnterNetwork:output_type -> ourcord.v1.EnterNetworkResponse
+	9,  // 25: ourcord.v1.DaemonService.LeaveNetwork:output_type -> ourcord.v1.LeaveNetworkResponse
+	12, // 26: ourcord.v1.DaemonService.GetLocalProfile:output_type -> ourcord.v1.GetLocalProfileResponse
+	14, // 27: ourcord.v1.DaemonService.EnrollDevice:output_type -> ourcord.v1.EnrollDeviceResponse
+	20, // [20:28] is the sub-list for method output_type
+	12, // [12:20] is the sub-list for method input_type
+	12, // [12:12] is the sub-list for extension type_name
+	12, // [12:12] is the sub-list for extension extendee
+	0,  // [0:12] is the sub-list for field type_name
 }
 
 func init() { file_ourcord_v1_daemon_proto_init() }
@@ -1306,7 +1629,7 @@ func file_ourcord_v1_daemon_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_ourcord_v1_daemon_proto_rawDesc), len(file_ourcord_v1_daemon_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   16,
+			NumMessages:   21,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

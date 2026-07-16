@@ -21,6 +21,58 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+type VoiceInputMode int32
+
+const (
+	VoiceInputMode_VOICE_INPUT_MODE_UNSPECIFIED    VoiceInputMode = 0
+	VoiceInputMode_VOICE_INPUT_MODE_VOICE_ACTIVITY VoiceInputMode = 1
+	VoiceInputMode_VOICE_INPUT_MODE_PUSH_TO_TALK   VoiceInputMode = 2
+	VoiceInputMode_VOICE_INPUT_MODE_OPEN_MIC       VoiceInputMode = 3
+)
+
+// Enum value maps for VoiceInputMode.
+var (
+	VoiceInputMode_name = map[int32]string{
+		0: "VOICE_INPUT_MODE_UNSPECIFIED",
+		1: "VOICE_INPUT_MODE_VOICE_ACTIVITY",
+		2: "VOICE_INPUT_MODE_PUSH_TO_TALK",
+		3: "VOICE_INPUT_MODE_OPEN_MIC",
+	}
+	VoiceInputMode_value = map[string]int32{
+		"VOICE_INPUT_MODE_UNSPECIFIED":    0,
+		"VOICE_INPUT_MODE_VOICE_ACTIVITY": 1,
+		"VOICE_INPUT_MODE_PUSH_TO_TALK":   2,
+		"VOICE_INPUT_MODE_OPEN_MIC":       3,
+	}
+)
+
+func (x VoiceInputMode) Enum() *VoiceInputMode {
+	p := new(VoiceInputMode)
+	*p = x
+	return p
+}
+
+func (x VoiceInputMode) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (VoiceInputMode) Descriptor() protoreflect.EnumDescriptor {
+	return file_ourcord_v1_media_proto_enumTypes[0].Descriptor()
+}
+
+func (VoiceInputMode) Type() protoreflect.EnumType {
+	return &file_ourcord_v1_media_proto_enumTypes[0]
+}
+
+func (x VoiceInputMode) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use VoiceInputMode.Descriptor instead.
+func (VoiceInputMode) EnumDescriptor() ([]byte, []int) {
+	return file_ourcord_v1_media_proto_rawDescGZIP(), []int{0}
+}
+
 type VoiceJoinRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -449,6 +501,9 @@ type VoiceStatus struct {
 	// build; "opus" when built with the voice tag).
 	Codec         string              `protobuf:"bytes,5,opt,name=codec,proto3" json:"codec,omitempty"`
 	Participants  []*VoiceParticipant `protobuf:"bytes,6,rep,name=participants,proto3" json:"participants,omitempty"`
+	InputMode     VoiceInputMode      `protobuf:"varint,7,opt,name=input_mode,json=inputMode,proto3,enum=ourcord.v1.VoiceInputMode" json:"input_mode,omitempty"`
+	LocalSpeaking bool                `protobuf:"varint,8,opt,name=local_speaking,json=localSpeaking,proto3" json:"local_speaking,omitempty"`
+	Transmitting  bool                `protobuf:"varint,9,opt,name=transmitting,proto3" json:"transmitting,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -525,6 +580,221 @@ func (x *VoiceStatus) GetParticipants() []*VoiceParticipant {
 	return nil
 }
 
+func (x *VoiceStatus) GetInputMode() VoiceInputMode {
+	if x != nil {
+		return x.InputMode
+	}
+	return VoiceInputMode_VOICE_INPUT_MODE_UNSPECIFIED
+}
+
+func (x *VoiceStatus) GetLocalSpeaking() bool {
+	if x != nil {
+		return x.LocalSpeaking
+	}
+	return false
+}
+
+func (x *VoiceStatus) GetTransmitting() bool {
+	if x != nil {
+		return x.Transmitting
+	}
+	return false
+}
+
+type SetVoiceInputModeRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Mode  VoiceInputMode         `protobuf:"varint,1,opt,name=mode,proto3,enum=ourcord.v1.VoiceInputMode" json:"mode,omitempty"`
+	// Valid range is -60..-20 dBFS. Zero selects the daemon default (-45).
+	VadThresholdDbfs float64 `protobuf:"fixed64,2,opt,name=vad_threshold_dbfs,json=vadThresholdDbfs,proto3" json:"vad_threshold_dbfs,omitempty"`
+	// Valid range is 100..2000 ms. Zero selects the daemon default (300).
+	VadHangoverMs uint32 `protobuf:"varint,3,opt,name=vad_hangover_ms,json=vadHangoverMs,proto3" json:"vad_hangover_ms,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SetVoiceInputModeRequest) Reset() {
+	*x = SetVoiceInputModeRequest{}
+	mi := &file_ourcord_v1_media_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SetVoiceInputModeRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SetVoiceInputModeRequest) ProtoMessage() {}
+
+func (x *SetVoiceInputModeRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_ourcord_v1_media_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SetVoiceInputModeRequest.ProtoReflect.Descriptor instead.
+func (*SetVoiceInputModeRequest) Descriptor() ([]byte, []int) {
+	return file_ourcord_v1_media_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *SetVoiceInputModeRequest) GetMode() VoiceInputMode {
+	if x != nil {
+		return x.Mode
+	}
+	return VoiceInputMode_VOICE_INPUT_MODE_UNSPECIFIED
+}
+
+func (x *SetVoiceInputModeRequest) GetVadThresholdDbfs() float64 {
+	if x != nil {
+		return x.VadThresholdDbfs
+	}
+	return 0
+}
+
+func (x *SetVoiceInputModeRequest) GetVadHangoverMs() uint32 {
+	if x != nil {
+		return x.VadHangoverMs
+	}
+	return 0
+}
+
+type SetVoiceInputModeResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Result        *OperationResult       `protobuf:"bytes,1,opt,name=result,proto3" json:"result,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SetVoiceInputModeResponse) Reset() {
+	*x = SetVoiceInputModeResponse{}
+	mi := &file_ourcord_v1_media_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SetVoiceInputModeResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SetVoiceInputModeResponse) ProtoMessage() {}
+
+func (x *SetVoiceInputModeResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_ourcord_v1_media_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SetVoiceInputModeResponse.ProtoReflect.Descriptor instead.
+func (*SetVoiceInputModeResponse) Descriptor() ([]byte, []int) {
+	return file_ourcord_v1_media_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *SetVoiceInputModeResponse) GetResult() *OperationResult {
+	if x != nil {
+		return x.Result
+	}
+	return nil
+}
+
+type SetPushToTalkRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Pressed       bool                   `protobuf:"varint,1,opt,name=pressed,proto3" json:"pressed,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SetPushToTalkRequest) Reset() {
+	*x = SetPushToTalkRequest{}
+	mi := &file_ourcord_v1_media_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SetPushToTalkRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SetPushToTalkRequest) ProtoMessage() {}
+
+func (x *SetPushToTalkRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_ourcord_v1_media_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SetPushToTalkRequest.ProtoReflect.Descriptor instead.
+func (*SetPushToTalkRequest) Descriptor() ([]byte, []int) {
+	return file_ourcord_v1_media_proto_rawDescGZIP(), []int{13}
+}
+
+func (x *SetPushToTalkRequest) GetPressed() bool {
+	if x != nil {
+		return x.Pressed
+	}
+	return false
+}
+
+type SetPushToTalkResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Result        *OperationResult       `protobuf:"bytes,1,opt,name=result,proto3" json:"result,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SetPushToTalkResponse) Reset() {
+	*x = SetPushToTalkResponse{}
+	mi := &file_ourcord_v1_media_proto_msgTypes[14]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SetPushToTalkResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SetPushToTalkResponse) ProtoMessage() {}
+
+func (x *SetPushToTalkResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_ourcord_v1_media_proto_msgTypes[14]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SetPushToTalkResponse.ProtoReflect.Descriptor instead.
+func (*SetPushToTalkResponse) Descriptor() ([]byte, []int) {
+	return file_ourcord_v1_media_proto_rawDescGZIP(), []int{14}
+}
+
+func (x *SetPushToTalkResponse) GetResult() *OperationResult {
+	if x != nil {
+		return x.Result
+	}
+	return nil
+}
+
 type VoiceParticipant struct {
 	state     protoimpl.MessageState `protogen:"open.v1"`
 	PublicKey string                 `protobuf:"bytes,1,opt,name=public_key,json=publicKey,proto3" json:"public_key,omitempty"`
@@ -543,7 +813,7 @@ type VoiceParticipant struct {
 
 func (x *VoiceParticipant) Reset() {
 	*x = VoiceParticipant{}
-	mi := &file_ourcord_v1_media_proto_msgTypes[11]
+	mi := &file_ourcord_v1_media_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -555,7 +825,7 @@ func (x *VoiceParticipant) String() string {
 func (*VoiceParticipant) ProtoMessage() {}
 
 func (x *VoiceParticipant) ProtoReflect() protoreflect.Message {
-	mi := &file_ourcord_v1_media_proto_msgTypes[11]
+	mi := &file_ourcord_v1_media_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -568,7 +838,7 @@ func (x *VoiceParticipant) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VoiceParticipant.ProtoReflect.Descriptor instead.
 func (*VoiceParticipant) Descriptor() ([]byte, []int) {
-	return file_ourcord_v1_media_proto_rawDescGZIP(), []int{11}
+	return file_ourcord_v1_media_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *VoiceParticipant) GetPublicKey() string {
@@ -631,7 +901,7 @@ type AudioDevice struct {
 
 func (x *AudioDevice) Reset() {
 	*x = AudioDevice{}
-	mi := &file_ourcord_v1_media_proto_msgTypes[12]
+	mi := &file_ourcord_v1_media_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -643,7 +913,7 @@ func (x *AudioDevice) String() string {
 func (*AudioDevice) ProtoMessage() {}
 
 func (x *AudioDevice) ProtoReflect() protoreflect.Message {
-	mi := &file_ourcord_v1_media_proto_msgTypes[12]
+	mi := &file_ourcord_v1_media_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -656,7 +926,7 @@ func (x *AudioDevice) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AudioDevice.ProtoReflect.Descriptor instead.
 func (*AudioDevice) Descriptor() ([]byte, []int) {
-	return file_ourcord_v1_media_proto_rawDescGZIP(), []int{12}
+	return file_ourcord_v1_media_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *AudioDevice) GetId() string {
@@ -688,7 +958,7 @@ type ListAudioDevicesRequest struct {
 
 func (x *ListAudioDevicesRequest) Reset() {
 	*x = ListAudioDevicesRequest{}
-	mi := &file_ourcord_v1_media_proto_msgTypes[13]
+	mi := &file_ourcord_v1_media_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -700,7 +970,7 @@ func (x *ListAudioDevicesRequest) String() string {
 func (*ListAudioDevicesRequest) ProtoMessage() {}
 
 func (x *ListAudioDevicesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ourcord_v1_media_proto_msgTypes[13]
+	mi := &file_ourcord_v1_media_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -713,7 +983,7 @@ func (x *ListAudioDevicesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListAudioDevicesRequest.ProtoReflect.Descriptor instead.
 func (*ListAudioDevicesRequest) Descriptor() ([]byte, []int) {
-	return file_ourcord_v1_media_proto_rawDescGZIP(), []int{13}
+	return file_ourcord_v1_media_proto_rawDescGZIP(), []int{17}
 }
 
 type ListAudioDevicesResponse struct {
@@ -727,7 +997,7 @@ type ListAudioDevicesResponse struct {
 
 func (x *ListAudioDevicesResponse) Reset() {
 	*x = ListAudioDevicesResponse{}
-	mi := &file_ourcord_v1_media_proto_msgTypes[14]
+	mi := &file_ourcord_v1_media_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -739,7 +1009,7 @@ func (x *ListAudioDevicesResponse) String() string {
 func (*ListAudioDevicesResponse) ProtoMessage() {}
 
 func (x *ListAudioDevicesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_ourcord_v1_media_proto_msgTypes[14]
+	mi := &file_ourcord_v1_media_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -752,7 +1022,7 @@ func (x *ListAudioDevicesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListAudioDevicesResponse.ProtoReflect.Descriptor instead.
 func (*ListAudioDevicesResponse) Descriptor() ([]byte, []int) {
-	return file_ourcord_v1_media_proto_rawDescGZIP(), []int{14}
+	return file_ourcord_v1_media_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *ListAudioDevicesResponse) GetResult() *OperationResult {
@@ -786,7 +1056,7 @@ type SetAudioDevicesRequest struct {
 
 func (x *SetAudioDevicesRequest) Reset() {
 	*x = SetAudioDevicesRequest{}
-	mi := &file_ourcord_v1_media_proto_msgTypes[15]
+	mi := &file_ourcord_v1_media_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -798,7 +1068,7 @@ func (x *SetAudioDevicesRequest) String() string {
 func (*SetAudioDevicesRequest) ProtoMessage() {}
 
 func (x *SetAudioDevicesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ourcord_v1_media_proto_msgTypes[15]
+	mi := &file_ourcord_v1_media_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -811,7 +1081,7 @@ func (x *SetAudioDevicesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetAudioDevicesRequest.ProtoReflect.Descriptor instead.
 func (*SetAudioDevicesRequest) Descriptor() ([]byte, []int) {
-	return file_ourcord_v1_media_proto_rawDescGZIP(), []int{15}
+	return file_ourcord_v1_media_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *SetAudioDevicesRequest) GetCaptureId() string {
@@ -837,7 +1107,7 @@ type SetAudioDevicesResponse struct {
 
 func (x *SetAudioDevicesResponse) Reset() {
 	*x = SetAudioDevicesResponse{}
-	mi := &file_ourcord_v1_media_proto_msgTypes[16]
+	mi := &file_ourcord_v1_media_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -849,7 +1119,7 @@ func (x *SetAudioDevicesResponse) String() string {
 func (*SetAudioDevicesResponse) ProtoMessage() {}
 
 func (x *SetAudioDevicesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_ourcord_v1_media_proto_msgTypes[16]
+	mi := &file_ourcord_v1_media_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -862,7 +1132,7 @@ func (x *SetAudioDevicesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetAudioDevicesResponse.ProtoReflect.Descriptor instead.
 func (*SetAudioDevicesResponse) Descriptor() ([]byte, []int) {
-	return file_ourcord_v1_media_proto_rawDescGZIP(), []int{16}
+	return file_ourcord_v1_media_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *SetAudioDevicesResponse) GetResult() *OperationResult {
@@ -894,7 +1164,7 @@ const file_ourcord_v1_media_proto_rawDesc = "" +
 	"\x06result\x18\x01 \x01(\v2\x1b.ourcord.v1.OperationResultR\x06result\"\x17\n" +
 	"\x15GetVoiceStatusRequest\"I\n" +
 	"\x16GetVoiceStatusResponse\x12/\n" +
-	"\x06status\x18\x01 \x01(\v2\x17.ourcord.v1.VoiceStatusR\x06status\"\xce\x01\n" +
+	"\x06status\x18\x01 \x01(\v2\x17.ourcord.v1.VoiceStatusR\x06status\"\xd4\x02\n" +
 	"\vVoiceStatus\x12\x16\n" +
 	"\x06joined\x18\x01 \x01(\bR\x06joined\x12\x14\n" +
 	"\x05muted\x18\x02 \x01(\bR\x05muted\x12\x1a\n" +
@@ -902,7 +1172,21 @@ const file_ourcord_v1_media_proto_rawDesc = "" +
 	"\n" +
 	"network_id\x18\x04 \x01(\tR\tnetworkId\x12\x14\n" +
 	"\x05codec\x18\x05 \x01(\tR\x05codec\x12@\n" +
-	"\fparticipants\x18\x06 \x03(\v2\x1c.ourcord.v1.VoiceParticipantR\fparticipants\"\xe3\x01\n" +
+	"\fparticipants\x18\x06 \x03(\v2\x1c.ourcord.v1.VoiceParticipantR\fparticipants\x129\n" +
+	"\n" +
+	"input_mode\x18\a \x01(\x0e2\x1a.ourcord.v1.VoiceInputModeR\tinputMode\x12%\n" +
+	"\x0elocal_speaking\x18\b \x01(\bR\rlocalSpeaking\x12\"\n" +
+	"\ftransmitting\x18\t \x01(\bR\ftransmitting\"\xa0\x01\n" +
+	"\x18SetVoiceInputModeRequest\x12.\n" +
+	"\x04mode\x18\x01 \x01(\x0e2\x1a.ourcord.v1.VoiceInputModeR\x04mode\x12,\n" +
+	"\x12vad_threshold_dbfs\x18\x02 \x01(\x01R\x10vadThresholdDbfs\x12&\n" +
+	"\x0fvad_hangover_ms\x18\x03 \x01(\rR\rvadHangoverMs\"P\n" +
+	"\x19SetVoiceInputModeResponse\x123\n" +
+	"\x06result\x18\x01 \x01(\v2\x1b.ourcord.v1.OperationResultR\x06result\"0\n" +
+	"\x14SetPushToTalkRequest\x12\x18\n" +
+	"\apressed\x18\x01 \x01(\bR\apressed\"L\n" +
+	"\x15SetPushToTalkResponse\x123\n" +
+	"\x06result\x18\x01 \x01(\v2\x1b.ourcord.v1.OperationResultR\x06result\"\xe3\x01\n" +
 	"\x10VoiceParticipant\x12\x1d\n" +
 	"\n" +
 	"public_key\x18\x01 \x01(\tR\tpublicKey\x12\x1a\n" +
@@ -930,7 +1214,12 @@ const file_ourcord_v1_media_proto_rawDesc = "" +
 	"\vplayback_id\x18\x02 \x01(\tR\n" +
 	"playbackId\"N\n" +
 	"\x17SetAudioDevicesResponse\x123\n" +
-	"\x06result\x18\x01 \x01(\v2\x1b.ourcord.v1.OperationResultR\x06result2\xcd\x04\n" +
+	"\x06result\x18\x01 \x01(\v2\x1b.ourcord.v1.OperationResultR\x06result*\x99\x01\n" +
+	"\x0eVoiceInputMode\x12 \n" +
+	"\x1cVOICE_INPUT_MODE_UNSPECIFIED\x10\x00\x12#\n" +
+	"\x1fVOICE_INPUT_MODE_VOICE_ACTIVITY\x10\x01\x12!\n" +
+	"\x1dVOICE_INPUT_MODE_PUSH_TO_TALK\x10\x02\x12\x1d\n" +
+	"\x19VOICE_INPUT_MODE_OPEN_MIC\x10\x032\x85\x06\n" +
 	"\x12DaemonVoiceService\x12H\n" +
 	"\tVoiceJoin\x12\x1c.ourcord.v1.VoiceJoinRequest\x1a\x1d.ourcord.v1.VoiceJoinResponse\x12K\n" +
 	"\n" +
@@ -939,7 +1228,9 @@ const file_ourcord_v1_media_proto_rawDesc = "" +
 	"\tSetDeafen\x12\x1c.ourcord.v1.SetDeafenRequest\x1a\x1d.ourcord.v1.SetDeafenResponse\x12W\n" +
 	"\x0eGetVoiceStatus\x12!.ourcord.v1.GetVoiceStatusRequest\x1a\".ourcord.v1.GetVoiceStatusResponse\x12]\n" +
 	"\x10ListAudioDevices\x12#.ourcord.v1.ListAudioDevicesRequest\x1a$.ourcord.v1.ListAudioDevicesResponse\x12Z\n" +
-	"\x0fSetAudioDevices\x12\".ourcord.v1.SetAudioDevicesRequest\x1a#.ourcord.v1.SetAudioDevicesResponseB>Z<github.com/ourcord/ourcord/daemon/pkg/pb/ourcordv1;ourcordv1b\x06proto3"
+	"\x0fSetAudioDevices\x12\".ourcord.v1.SetAudioDevicesRequest\x1a#.ourcord.v1.SetAudioDevicesResponse\x12`\n" +
+	"\x11SetVoiceInputMode\x12$.ourcord.v1.SetVoiceInputModeRequest\x1a%.ourcord.v1.SetVoiceInputModeResponse\x12T\n" +
+	"\rSetPushToTalk\x12 .ourcord.v1.SetPushToTalkRequest\x1a!.ourcord.v1.SetPushToTalkResponseB>Z<github.com/ourcord/ourcord/daemon/pkg/pb/ourcordv1;ourcordv1b\x06proto3"
 
 var (
 	file_ourcord_v1_media_proto_rawDescOnce sync.Once
@@ -953,57 +1244,71 @@ func file_ourcord_v1_media_proto_rawDescGZIP() []byte {
 	return file_ourcord_v1_media_proto_rawDescData
 }
 
-var file_ourcord_v1_media_proto_msgTypes = make([]protoimpl.MessageInfo, 17)
+var file_ourcord_v1_media_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
+var file_ourcord_v1_media_proto_msgTypes = make([]protoimpl.MessageInfo, 21)
 var file_ourcord_v1_media_proto_goTypes = []any{
-	(*VoiceJoinRequest)(nil),         // 0: ourcord.v1.VoiceJoinRequest
-	(*VoiceJoinResponse)(nil),        // 1: ourcord.v1.VoiceJoinResponse
-	(*VoiceLeaveRequest)(nil),        // 2: ourcord.v1.VoiceLeaveRequest
-	(*VoiceLeaveResponse)(nil),       // 3: ourcord.v1.VoiceLeaveResponse
-	(*SetMuteRequest)(nil),           // 4: ourcord.v1.SetMuteRequest
-	(*SetMuteResponse)(nil),          // 5: ourcord.v1.SetMuteResponse
-	(*SetDeafenRequest)(nil),         // 6: ourcord.v1.SetDeafenRequest
-	(*SetDeafenResponse)(nil),        // 7: ourcord.v1.SetDeafenResponse
-	(*GetVoiceStatusRequest)(nil),    // 8: ourcord.v1.GetVoiceStatusRequest
-	(*GetVoiceStatusResponse)(nil),   // 9: ourcord.v1.GetVoiceStatusResponse
-	(*VoiceStatus)(nil),              // 10: ourcord.v1.VoiceStatus
-	(*VoiceParticipant)(nil),         // 11: ourcord.v1.VoiceParticipant
-	(*AudioDevice)(nil),              // 12: ourcord.v1.AudioDevice
-	(*ListAudioDevicesRequest)(nil),  // 13: ourcord.v1.ListAudioDevicesRequest
-	(*ListAudioDevicesResponse)(nil), // 14: ourcord.v1.ListAudioDevicesResponse
-	(*SetAudioDevicesRequest)(nil),   // 15: ourcord.v1.SetAudioDevicesRequest
-	(*SetAudioDevicesResponse)(nil),  // 16: ourcord.v1.SetAudioDevicesResponse
-	(*OperationResult)(nil),          // 17: ourcord.v1.OperationResult
+	(VoiceInputMode)(0),               // 0: ourcord.v1.VoiceInputMode
+	(*VoiceJoinRequest)(nil),          // 1: ourcord.v1.VoiceJoinRequest
+	(*VoiceJoinResponse)(nil),         // 2: ourcord.v1.VoiceJoinResponse
+	(*VoiceLeaveRequest)(nil),         // 3: ourcord.v1.VoiceLeaveRequest
+	(*VoiceLeaveResponse)(nil),        // 4: ourcord.v1.VoiceLeaveResponse
+	(*SetMuteRequest)(nil),            // 5: ourcord.v1.SetMuteRequest
+	(*SetMuteResponse)(nil),           // 6: ourcord.v1.SetMuteResponse
+	(*SetDeafenRequest)(nil),          // 7: ourcord.v1.SetDeafenRequest
+	(*SetDeafenResponse)(nil),         // 8: ourcord.v1.SetDeafenResponse
+	(*GetVoiceStatusRequest)(nil),     // 9: ourcord.v1.GetVoiceStatusRequest
+	(*GetVoiceStatusResponse)(nil),    // 10: ourcord.v1.GetVoiceStatusResponse
+	(*VoiceStatus)(nil),               // 11: ourcord.v1.VoiceStatus
+	(*SetVoiceInputModeRequest)(nil),  // 12: ourcord.v1.SetVoiceInputModeRequest
+	(*SetVoiceInputModeResponse)(nil), // 13: ourcord.v1.SetVoiceInputModeResponse
+	(*SetPushToTalkRequest)(nil),      // 14: ourcord.v1.SetPushToTalkRequest
+	(*SetPushToTalkResponse)(nil),     // 15: ourcord.v1.SetPushToTalkResponse
+	(*VoiceParticipant)(nil),          // 16: ourcord.v1.VoiceParticipant
+	(*AudioDevice)(nil),               // 17: ourcord.v1.AudioDevice
+	(*ListAudioDevicesRequest)(nil),   // 18: ourcord.v1.ListAudioDevicesRequest
+	(*ListAudioDevicesResponse)(nil),  // 19: ourcord.v1.ListAudioDevicesResponse
+	(*SetAudioDevicesRequest)(nil),    // 20: ourcord.v1.SetAudioDevicesRequest
+	(*SetAudioDevicesResponse)(nil),   // 21: ourcord.v1.SetAudioDevicesResponse
+	(*OperationResult)(nil),           // 22: ourcord.v1.OperationResult
 }
 var file_ourcord_v1_media_proto_depIdxs = []int32{
-	17, // 0: ourcord.v1.VoiceJoinResponse.result:type_name -> ourcord.v1.OperationResult
-	17, // 1: ourcord.v1.VoiceLeaveResponse.result:type_name -> ourcord.v1.OperationResult
-	17, // 2: ourcord.v1.SetMuteResponse.result:type_name -> ourcord.v1.OperationResult
-	17, // 3: ourcord.v1.SetDeafenResponse.result:type_name -> ourcord.v1.OperationResult
-	10, // 4: ourcord.v1.GetVoiceStatusResponse.status:type_name -> ourcord.v1.VoiceStatus
-	11, // 5: ourcord.v1.VoiceStatus.participants:type_name -> ourcord.v1.VoiceParticipant
-	17, // 6: ourcord.v1.ListAudioDevicesResponse.result:type_name -> ourcord.v1.OperationResult
-	12, // 7: ourcord.v1.ListAudioDevicesResponse.capture:type_name -> ourcord.v1.AudioDevice
-	12, // 8: ourcord.v1.ListAudioDevicesResponse.playback:type_name -> ourcord.v1.AudioDevice
-	17, // 9: ourcord.v1.SetAudioDevicesResponse.result:type_name -> ourcord.v1.OperationResult
-	0,  // 10: ourcord.v1.DaemonVoiceService.VoiceJoin:input_type -> ourcord.v1.VoiceJoinRequest
-	2,  // 11: ourcord.v1.DaemonVoiceService.VoiceLeave:input_type -> ourcord.v1.VoiceLeaveRequest
-	4,  // 12: ourcord.v1.DaemonVoiceService.SetMute:input_type -> ourcord.v1.SetMuteRequest
-	6,  // 13: ourcord.v1.DaemonVoiceService.SetDeafen:input_type -> ourcord.v1.SetDeafenRequest
-	8,  // 14: ourcord.v1.DaemonVoiceService.GetVoiceStatus:input_type -> ourcord.v1.GetVoiceStatusRequest
-	13, // 15: ourcord.v1.DaemonVoiceService.ListAudioDevices:input_type -> ourcord.v1.ListAudioDevicesRequest
-	15, // 16: ourcord.v1.DaemonVoiceService.SetAudioDevices:input_type -> ourcord.v1.SetAudioDevicesRequest
-	1,  // 17: ourcord.v1.DaemonVoiceService.VoiceJoin:output_type -> ourcord.v1.VoiceJoinResponse
-	3,  // 18: ourcord.v1.DaemonVoiceService.VoiceLeave:output_type -> ourcord.v1.VoiceLeaveResponse
-	5,  // 19: ourcord.v1.DaemonVoiceService.SetMute:output_type -> ourcord.v1.SetMuteResponse
-	7,  // 20: ourcord.v1.DaemonVoiceService.SetDeafen:output_type -> ourcord.v1.SetDeafenResponse
-	9,  // 21: ourcord.v1.DaemonVoiceService.GetVoiceStatus:output_type -> ourcord.v1.GetVoiceStatusResponse
-	14, // 22: ourcord.v1.DaemonVoiceService.ListAudioDevices:output_type -> ourcord.v1.ListAudioDevicesResponse
-	16, // 23: ourcord.v1.DaemonVoiceService.SetAudioDevices:output_type -> ourcord.v1.SetAudioDevicesResponse
-	17, // [17:24] is the sub-list for method output_type
-	10, // [10:17] is the sub-list for method input_type
-	10, // [10:10] is the sub-list for extension type_name
-	10, // [10:10] is the sub-list for extension extendee
-	0,  // [0:10] is the sub-list for field type_name
+	22, // 0: ourcord.v1.VoiceJoinResponse.result:type_name -> ourcord.v1.OperationResult
+	22, // 1: ourcord.v1.VoiceLeaveResponse.result:type_name -> ourcord.v1.OperationResult
+	22, // 2: ourcord.v1.SetMuteResponse.result:type_name -> ourcord.v1.OperationResult
+	22, // 3: ourcord.v1.SetDeafenResponse.result:type_name -> ourcord.v1.OperationResult
+	11, // 4: ourcord.v1.GetVoiceStatusResponse.status:type_name -> ourcord.v1.VoiceStatus
+	16, // 5: ourcord.v1.VoiceStatus.participants:type_name -> ourcord.v1.VoiceParticipant
+	0,  // 6: ourcord.v1.VoiceStatus.input_mode:type_name -> ourcord.v1.VoiceInputMode
+	0,  // 7: ourcord.v1.SetVoiceInputModeRequest.mode:type_name -> ourcord.v1.VoiceInputMode
+	22, // 8: ourcord.v1.SetVoiceInputModeResponse.result:type_name -> ourcord.v1.OperationResult
+	22, // 9: ourcord.v1.SetPushToTalkResponse.result:type_name -> ourcord.v1.OperationResult
+	22, // 10: ourcord.v1.ListAudioDevicesResponse.result:type_name -> ourcord.v1.OperationResult
+	17, // 11: ourcord.v1.ListAudioDevicesResponse.capture:type_name -> ourcord.v1.AudioDevice
+	17, // 12: ourcord.v1.ListAudioDevicesResponse.playback:type_name -> ourcord.v1.AudioDevice
+	22, // 13: ourcord.v1.SetAudioDevicesResponse.result:type_name -> ourcord.v1.OperationResult
+	1,  // 14: ourcord.v1.DaemonVoiceService.VoiceJoin:input_type -> ourcord.v1.VoiceJoinRequest
+	3,  // 15: ourcord.v1.DaemonVoiceService.VoiceLeave:input_type -> ourcord.v1.VoiceLeaveRequest
+	5,  // 16: ourcord.v1.DaemonVoiceService.SetMute:input_type -> ourcord.v1.SetMuteRequest
+	7,  // 17: ourcord.v1.DaemonVoiceService.SetDeafen:input_type -> ourcord.v1.SetDeafenRequest
+	9,  // 18: ourcord.v1.DaemonVoiceService.GetVoiceStatus:input_type -> ourcord.v1.GetVoiceStatusRequest
+	18, // 19: ourcord.v1.DaemonVoiceService.ListAudioDevices:input_type -> ourcord.v1.ListAudioDevicesRequest
+	20, // 20: ourcord.v1.DaemonVoiceService.SetAudioDevices:input_type -> ourcord.v1.SetAudioDevicesRequest
+	12, // 21: ourcord.v1.DaemonVoiceService.SetVoiceInputMode:input_type -> ourcord.v1.SetVoiceInputModeRequest
+	14, // 22: ourcord.v1.DaemonVoiceService.SetPushToTalk:input_type -> ourcord.v1.SetPushToTalkRequest
+	2,  // 23: ourcord.v1.DaemonVoiceService.VoiceJoin:output_type -> ourcord.v1.VoiceJoinResponse
+	4,  // 24: ourcord.v1.DaemonVoiceService.VoiceLeave:output_type -> ourcord.v1.VoiceLeaveResponse
+	6,  // 25: ourcord.v1.DaemonVoiceService.SetMute:output_type -> ourcord.v1.SetMuteResponse
+	8,  // 26: ourcord.v1.DaemonVoiceService.SetDeafen:output_type -> ourcord.v1.SetDeafenResponse
+	10, // 27: ourcord.v1.DaemonVoiceService.GetVoiceStatus:output_type -> ourcord.v1.GetVoiceStatusResponse
+	19, // 28: ourcord.v1.DaemonVoiceService.ListAudioDevices:output_type -> ourcord.v1.ListAudioDevicesResponse
+	21, // 29: ourcord.v1.DaemonVoiceService.SetAudioDevices:output_type -> ourcord.v1.SetAudioDevicesResponse
+	13, // 30: ourcord.v1.DaemonVoiceService.SetVoiceInputMode:output_type -> ourcord.v1.SetVoiceInputModeResponse
+	15, // 31: ourcord.v1.DaemonVoiceService.SetPushToTalk:output_type -> ourcord.v1.SetPushToTalkResponse
+	23, // [23:32] is the sub-list for method output_type
+	14, // [14:23] is the sub-list for method input_type
+	14, // [14:14] is the sub-list for extension type_name
+	14, // [14:14] is the sub-list for extension extendee
+	0,  // [0:14] is the sub-list for field type_name
 }
 
 func init() { file_ourcord_v1_media_proto_init() }
@@ -1017,13 +1322,14 @@ func file_ourcord_v1_media_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_ourcord_v1_media_proto_rawDesc), len(file_ourcord_v1_media_proto_rawDesc)),
-			NumEnums:      0,
-			NumMessages:   17,
+			NumEnums:      1,
+			NumMessages:   21,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
 		GoTypes:           file_ourcord_v1_media_proto_goTypes,
 		DependencyIndexes: file_ourcord_v1_media_proto_depIdxs,
+		EnumInfos:         file_ourcord_v1_media_proto_enumTypes,
 		MessageInfos:      file_ourcord_v1_media_proto_msgTypes,
 	}.Build()
 	File_ourcord_v1_media_proto = out.File

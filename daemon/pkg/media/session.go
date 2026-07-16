@@ -2,6 +2,7 @@ package media
 
 import (
 	"context"
+	"math"
 	"net/netip"
 	"sync"
 	"time"
@@ -12,6 +13,20 @@ import (
 // speakingWindow is how recently a peer's packet must have arrived to count as
 // "speaking" (and, for the sender, how we bound liveness display).
 const speakingWindow = 500 * time.Millisecond
+
+type InputMode string
+
+const (
+	InputModeVoiceActivity InputMode = "voice_activity"
+	InputModePushToTalk    InputMode = "push_to_talk"
+	InputModeOpenMic       InputMode = "open_mic"
+)
+
+const (
+	defaultVADThreshold = -45.0
+	defaultVADHangover  = 300 * time.Millisecond
+	preRollFrames       = 5 // 100ms at the codec's 20ms frame size
+)
 
 // PeerInfo is a voice participant: their WireGuard public key and current VPN
 // IPv4. The engine keeps voice membership in sync with the mesh via UpdatePeers.
@@ -31,6 +46,9 @@ type Config struct {
 	Conn          packetConn     // nil ⇒ bind VoicePort on VPN4
 	CaptureSource <-chan []int16 // nil ⇒ build default device's capture
 	Devices       AudioSelection // selected capture/playback hardware (voice build)
+	InputMode     InputMode
+	VADThreshold  float64
+	VADHangover   time.Duration
 }
 
 // Engine is one voice session. It captures locally, encodes+encrypts once per
@@ -48,13 +66,21 @@ type Engine struct {
 	cancel    context.CancelFunc
 	wg        sync.WaitGroup
 
-	mu       sync.Mutex
-	peers    map[wgtypes.Key]*peerState
-	byAddr   map[netip.Addr]*peerState
-	muted    bool
-	deafened bool
-	seq      uint16
-	ts       uint32
+	mu            sync.Mutex
+	peers         map[wgtypes.Key]*peerState
+	byAddr        map[netip.Addr]*peerState
+	muted         bool
+	deafened      bool
+	inputMode     InputMode
+	vadThreshold  float64
+	vadHangover   time.Duration
+	vadUntil      time.Time
+	pttPressed    bool
+	localSpeaking bool
+	transmitting  bool
+	preRoll       [][]int16
+	seq           uint16
+	ts            uint32
 }
 
 type peerState struct {
@@ -94,17 +120,32 @@ func Start(cfg Config) (*Engine, error) {
 		return nil, err
 	}
 	ctx, cancel := context.WithCancel(context.Background())
+	mode := cfg.InputMode
+	if mode == "" {
+		mode = InputModeOpenMic
+	}
+	threshold := cfg.VADThreshold
+	if threshold == 0 {
+		threshold = defaultVADThreshold
+	}
+	hangover := cfg.VADHangover
+	if hangover == 0 {
+		hangover = defaultVADHangover
+	}
 	e := &Engine{
-		cfg:       cfg,
-		codec:     codec,
-		codecName: codec.Name(),
-		enc:       enc,
-		dev:       dev,
-		conn:      conn,
-		ssrc:      ssrcFor(cfg.SelfKey.PublicKey()),
-		cancel:    cancel,
-		peers:     make(map[wgtypes.Key]*peerState),
-		byAddr:    make(map[netip.Addr]*peerState),
+		cfg:          cfg,
+		codec:        codec,
+		codecName:    codec.Name(),
+		enc:          enc,
+		dev:          dev,
+		conn:         conn,
+		ssrc:         ssrcFor(cfg.SelfKey.PublicKey()),
+		cancel:       cancel,
+		peers:        make(map[wgtypes.Key]*peerState),
+		byAddr:       make(map[netip.Addr]*peerState),
+		inputMode:    mode,
+		vadThreshold: threshold,
+		vadHangover:  hangover,
 	}
 	e.wg.Add(2)
 	go e.sendLoop(ctx)
@@ -179,6 +220,39 @@ const defaultJitterDepth = 3
 func (e *Engine) SetMute(muted bool) {
 	e.mu.Lock()
 	e.muted = muted
+	if muted {
+		e.transmitting, e.localSpeaking = false, false
+	}
+	e.mu.Unlock()
+}
+
+// SetInputMode changes the local capture gate without restarting the audio
+// device. thresholdDBFS and hangover are validated by the IPC layer too, but
+// clamp here because Engine is also a reusable package API.
+func (e *Engine) SetInputMode(mode InputMode, thresholdDBFS float64, hangover time.Duration) {
+	if mode != InputModeVoiceActivity && mode != InputModePushToTalk && mode != InputModeOpenMic {
+		mode = InputModeVoiceActivity
+	}
+	if thresholdDBFS < -60 || thresholdDBFS > -20 {
+		thresholdDBFS = defaultVADThreshold
+	}
+	if hangover < 100*time.Millisecond || hangover > 2*time.Second {
+		hangover = defaultVADHangover
+	}
+	e.mu.Lock()
+	e.inputMode, e.vadThreshold, e.vadHangover = mode, thresholdDBFS, hangover
+	e.vadUntil = time.Time{}
+	e.transmitting, e.localSpeaking = false, false
+	e.preRoll = nil
+	e.mu.Unlock()
+}
+
+func (e *Engine) SetPushToTalk(pressed bool) {
+	e.mu.Lock()
+	e.pttPressed = pressed
+	if !pressed && e.inputMode == InputModePushToTalk {
+		e.transmitting, e.localSpeaking = false, false
+	}
 	e.mu.Unlock()
 }
 
@@ -201,9 +275,70 @@ func (e *Engine) sendLoop(ctx context.Context) {
 			if !ok {
 				return
 			}
-			e.broadcast(pcm)
+			for _, frame := range e.captureFrames(pcm) {
+				e.broadcast(frame)
+			}
 		}
 	}
+}
+
+func (e *Engine) captureFrames(pcm []int16) [][]int16 {
+	now := time.Now()
+	level := pcmDBFS(pcm)
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	wasTransmitting := e.transmitting
+	active := level >= e.vadThreshold
+	if !wasTransmitting {
+		copyFrame := append([]int16(nil), pcm...)
+		e.preRoll = append(e.preRoll, copyFrame)
+		if len(e.preRoll) > preRollFrames {
+			e.preRoll = e.preRoll[len(e.preRoll)-preRollFrames:]
+		}
+	}
+	if e.muted {
+		e.localSpeaking, e.transmitting = false, false
+		return nil
+	}
+	switch e.inputMode {
+	case InputModePushToTalk:
+		e.transmitting = e.pttPressed
+		e.localSpeaking = e.pttPressed && active
+	case InputModeVoiceActivity:
+		if active {
+			e.vadUntil = now.Add(e.vadHangover)
+		}
+		e.transmitting = active || now.Before(e.vadUntil)
+		e.localSpeaking = active
+	default:
+		e.transmitting = true
+		e.localSpeaking = active
+	}
+	if !e.transmitting {
+		return nil
+	}
+	if !wasTransmitting {
+		out := e.preRoll
+		e.preRoll = nil
+		return out
+	}
+	return [][]int16{pcm}
+}
+
+func pcmDBFS(pcm []int16) float64 {
+	if len(pcm) == 0 {
+		return -120
+	}
+	var sum float64
+	for _, sample := range pcm {
+		v := float64(sample) / 32768
+		sum += v * v
+	}
+	rms := math.Sqrt(sum / float64(len(pcm)))
+	if rms <= 1e-9 {
+		return -120
+	}
+	return 20 * math.Log10(rms)
 }
 
 func (e *Engine) broadcast(pcm []int16) {
@@ -318,11 +453,14 @@ type Participant struct {
 
 // Status is a snapshot of the whole session.
 type Status struct {
-	Muted        bool
-	Deafened     bool
-	NetworkID    string
-	Codec        string
-	Participants []Participant
+	Muted         bool
+	Deafened      bool
+	NetworkID     string
+	Codec         string
+	Participants  []Participant
+	InputMode     InputMode
+	LocalSpeaking bool
+	Transmitting  bool
 }
 
 // Status returns the current session snapshot.
@@ -342,10 +480,13 @@ func (e *Engine) Status() Status {
 		})
 	}
 	return Status{
-		Muted:        e.muted,
-		Deafened:     e.deafened,
-		NetworkID:    e.cfg.NetworkID,
-		Codec:        e.codec.Name(),
-		Participants: parts,
+		Muted:         e.muted,
+		Deafened:      e.deafened,
+		NetworkID:     e.cfg.NetworkID,
+		Codec:         e.codec.Name(),
+		Participants:  parts,
+		InputMode:     e.inputMode,
+		LocalSpeaking: e.localSpeaking,
+		Transmitting:  e.transmitting,
 	}
 }

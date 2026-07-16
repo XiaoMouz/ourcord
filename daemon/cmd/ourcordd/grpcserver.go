@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"strconv"
 
 	"github.com/ourcord/ourcord/daemon/pkg/ipc"
 	ourcordv1 "github.com/ourcord/ourcord/daemon/pkg/pb/ourcordv1"
@@ -61,6 +62,24 @@ func (s *daemonService) EnterNetwork(ctx context.Context, req *ourcordv1.EnterNe
 
 func (s *daemonService) LeaveNetwork(ctx context.Context, _ *ourcordv1.LeaveNetworkRequest) (*ourcordv1.LeaveNetworkResponse, error) {
 	return &ourcordv1.LeaveNetworkResponse{Result: s.op(ctx, ipc.CmdLeaveNetwork, nil)}, nil
+}
+
+func (s *daemonService) GetLocalProfile(ctx context.Context, _ *ourcordv1.GetLocalProfileRequest) (*ourcordv1.GetLocalProfileResponse, error) {
+	resp := s.d.HandleIPC(ctx, ipc.IPCRequest{Cmd: ipc.CmdLocalProfile})
+	profile, ok := resp.Data.(ipc.LocalProfile)
+	if !resp.OK || !ok {
+		return nil, status.Error(codes.Internal, orMsg(resp.Error, "local profile unavailable"))
+	}
+	return &ourcordv1.GetLocalProfileResponse{Profile: ipc.LocalProfileToProto(profile)}, nil
+}
+
+func (s *daemonService) EnrollDevice(ctx context.Context, req *ourcordv1.EnrollDeviceRequest) (*ourcordv1.EnrollDeviceResponse, error) {
+	resp := s.d.HandleIPC(ctx, ipc.IPCRequest{Cmd: ipc.CmdEnrollDevice, Params: map[string]string{
+		"access_token": req.GetAccessToken(), "user_id": req.GetUserId(), "device_name": req.GetDeviceName(),
+	}})
+	result := &ourcordv1.OperationResult{Ok: resp.OK, ErrorMessage: resp.Error}
+	profile, _ := resp.Data.(ipc.LocalProfile)
+	return &ourcordv1.EnrollDeviceResponse{Result: result, Profile: ipc.LocalProfileToProto(profile)}, nil
 }
 
 // op runs a mutating command and folds the outcome into an OperationResult.
@@ -133,6 +152,29 @@ func (s *voiceService) ListAudioDevices(ctx context.Context, _ *ourcordv1.ListAu
 func (s *voiceService) SetAudioDevices(ctx context.Context, req *ourcordv1.SetAudioDevicesRequest) (*ourcordv1.SetAudioDevicesResponse, error) {
 	params := map[string]string{"capture_id": req.GetCaptureId(), "playback_id": req.GetPlaybackId()}
 	return &ourcordv1.SetAudioDevicesResponse{Result: s.op(ctx, ipc.CmdVoiceSetDevices, params)}, nil
+}
+
+func (s *voiceService) SetVoiceInputMode(ctx context.Context, req *ourcordv1.SetVoiceInputModeRequest) (*ourcordv1.SetVoiceInputModeResponse, error) {
+	mode := ipc.VoiceInputModeFromProto(req.GetMode())
+	threshold := req.GetVadThresholdDbfs()
+	if threshold == 0 {
+		threshold = -45
+	}
+	hangover := req.GetVadHangoverMs()
+	if hangover == 0 {
+		hangover = 300
+	}
+	params := map[string]string{
+		"mode":           mode,
+		"threshold_dbfs": strconv.FormatFloat(threshold, 'f', -1, 64),
+		"hangover_ms":    strconv.FormatUint(uint64(hangover), 10),
+	}
+	return &ourcordv1.SetVoiceInputModeResponse{Result: s.op(ctx, ipc.CmdVoiceInputMode, params)}, nil
+}
+
+func (s *voiceService) SetPushToTalk(ctx context.Context, req *ourcordv1.SetPushToTalkRequest) (*ourcordv1.SetPushToTalkResponse, error) {
+	params := map[string]string{"pressed": strconv.FormatBool(req.GetPressed())}
+	return &ourcordv1.SetPushToTalkResponse{Result: s.op(ctx, ipc.CmdVoicePushToTalk, params)}, nil
 }
 
 func (s *voiceService) op(ctx context.Context, cmd string, params map[string]string) *ourcordv1.OperationResult {

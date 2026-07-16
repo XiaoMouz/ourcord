@@ -48,6 +48,8 @@ type TransportStats struct {
 // ConnectedPeer is the JSON compatibility shape for ourcord.v1.ConnectedPeer.
 type ConnectedPeer struct {
 	PublicKey         string  `json:"public_key"`
+	UserID            string  `json:"user_id,omitempty"`
+	DisplayName       string  `json:"display_name,omitempty"`
 	Name              string  `json:"name"`
 	IP4               string  `json:"ip4"`
 	IP6               string  `json:"ip6"`
@@ -67,12 +69,15 @@ type ConnectedPeer struct {
 
 // VoiceStatus is the domain shape for ourcord.v1.VoiceStatus.
 type VoiceStatus struct {
-	Joined       bool               `json:"joined"`
-	Muted        bool               `json:"muted"`
-	Deafened     bool               `json:"deafened"`
-	NetworkID    string             `json:"network_id,omitempty"`
-	Codec        string             `json:"codec,omitempty"`
-	Participants []VoiceParticipant `json:"participants,omitempty"`
+	Joined        bool               `json:"joined"`
+	Muted         bool               `json:"muted"`
+	Deafened      bool               `json:"deafened"`
+	NetworkID     string             `json:"network_id,omitempty"`
+	Codec         string             `json:"codec,omitempty"`
+	Participants  []VoiceParticipant `json:"participants,omitempty"`
+	InputMode     string             `json:"input_mode,omitempty"`
+	LocalSpeaking bool               `json:"local_speaking"`
+	Transmitting  bool               `json:"transmitting"`
 }
 
 // AudioDevice is the domain shape for ourcord.v1.AudioDevice.
@@ -88,6 +93,14 @@ type AudioDevice struct {
 type AudioDeviceList struct {
 	Capture  []AudioDevice `json:"capture"`
 	Playback []AudioDevice `json:"playback"`
+}
+
+type LocalProfile struct {
+	PublicKey  string `json:"public_key"`
+	Enrolled   bool   `json:"enrolled"`
+	DeviceID   string `json:"device_id,omitempty"`
+	DeviceName string `json:"device_name,omitempty"`
+	UserID     string `json:"user_id,omitempty"`
 }
 
 // VoiceParticipant is the domain shape for ourcord.v1.VoiceParticipant.
@@ -115,6 +128,8 @@ const (
 	CmdLeaveNetwork = "leave_network"
 	CmdForceDERP    = "force_derp"
 	CmdPing         = "ping"
+	CmdLocalProfile = "local_profile"
+	CmdEnrollDevice = "enroll_device"
 
 	CmdVoiceJoin        = "voice_join"
 	CmdVoiceLeave       = "voice_leave"
@@ -123,6 +138,8 @@ const (
 	CmdVoiceStatus      = "voice_status"
 	CmdVoiceListDevices = "voice_list_devices"
 	CmdVoiceSetDevices  = "voice_set_devices"
+	CmdVoiceInputMode   = "voice_input_mode"
+	CmdVoicePushToTalk  = "voice_push_to_talk"
 )
 
 // IPCRequest is the daemon's internal command envelope (HandleIPC mux input).

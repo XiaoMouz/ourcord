@@ -19,13 +19,15 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	DaemonVoiceService_VoiceJoin_FullMethodName        = "/ourcord.v1.DaemonVoiceService/VoiceJoin"
-	DaemonVoiceService_VoiceLeave_FullMethodName       = "/ourcord.v1.DaemonVoiceService/VoiceLeave"
-	DaemonVoiceService_SetMute_FullMethodName          = "/ourcord.v1.DaemonVoiceService/SetMute"
-	DaemonVoiceService_SetDeafen_FullMethodName        = "/ourcord.v1.DaemonVoiceService/SetDeafen"
-	DaemonVoiceService_GetVoiceStatus_FullMethodName   = "/ourcord.v1.DaemonVoiceService/GetVoiceStatus"
-	DaemonVoiceService_ListAudioDevices_FullMethodName = "/ourcord.v1.DaemonVoiceService/ListAudioDevices"
-	DaemonVoiceService_SetAudioDevices_FullMethodName  = "/ourcord.v1.DaemonVoiceService/SetAudioDevices"
+	DaemonVoiceService_VoiceJoin_FullMethodName         = "/ourcord.v1.DaemonVoiceService/VoiceJoin"
+	DaemonVoiceService_VoiceLeave_FullMethodName        = "/ourcord.v1.DaemonVoiceService/VoiceLeave"
+	DaemonVoiceService_SetMute_FullMethodName           = "/ourcord.v1.DaemonVoiceService/SetMute"
+	DaemonVoiceService_SetDeafen_FullMethodName         = "/ourcord.v1.DaemonVoiceService/SetDeafen"
+	DaemonVoiceService_GetVoiceStatus_FullMethodName    = "/ourcord.v1.DaemonVoiceService/GetVoiceStatus"
+	DaemonVoiceService_ListAudioDevices_FullMethodName  = "/ourcord.v1.DaemonVoiceService/ListAudioDevices"
+	DaemonVoiceService_SetAudioDevices_FullMethodName   = "/ourcord.v1.DaemonVoiceService/SetAudioDevices"
+	DaemonVoiceService_SetVoiceInputMode_FullMethodName = "/ourcord.v1.DaemonVoiceService/SetVoiceInputMode"
+	DaemonVoiceService_SetPushToTalk_FullMethodName     = "/ourcord.v1.DaemonVoiceService/SetPushToTalk"
 )
 
 // DaemonVoiceServiceClient is the client API for DaemonVoiceService service.
@@ -49,6 +51,8 @@ type DaemonVoiceServiceClient interface {
 	// hardware audio layer (the `voice` build tag); otherwise ok=false.
 	ListAudioDevices(ctx context.Context, in *ListAudioDevicesRequest, opts ...grpc.CallOption) (*ListAudioDevicesResponse, error)
 	SetAudioDevices(ctx context.Context, in *SetAudioDevicesRequest, opts ...grpc.CallOption) (*SetAudioDevicesResponse, error)
+	SetVoiceInputMode(ctx context.Context, in *SetVoiceInputModeRequest, opts ...grpc.CallOption) (*SetVoiceInputModeResponse, error)
+	SetPushToTalk(ctx context.Context, in *SetPushToTalkRequest, opts ...grpc.CallOption) (*SetPushToTalkResponse, error)
 }
 
 type daemonVoiceServiceClient struct {
@@ -129,6 +133,26 @@ func (c *daemonVoiceServiceClient) SetAudioDevices(ctx context.Context, in *SetA
 	return out, nil
 }
 
+func (c *daemonVoiceServiceClient) SetVoiceInputMode(ctx context.Context, in *SetVoiceInputModeRequest, opts ...grpc.CallOption) (*SetVoiceInputModeResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SetVoiceInputModeResponse)
+	err := c.cc.Invoke(ctx, DaemonVoiceService_SetVoiceInputMode_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonVoiceServiceClient) SetPushToTalk(ctx context.Context, in *SetPushToTalkRequest, opts ...grpc.CallOption) (*SetPushToTalkResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SetPushToTalkResponse)
+	err := c.cc.Invoke(ctx, DaemonVoiceService_SetPushToTalk_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // DaemonVoiceServiceServer is the server API for DaemonVoiceService service.
 // All implementations must embed UnimplementedDaemonVoiceServiceServer
 // for forward compatibility.
@@ -150,6 +174,8 @@ type DaemonVoiceServiceServer interface {
 	// hardware audio layer (the `voice` build tag); otherwise ok=false.
 	ListAudioDevices(context.Context, *ListAudioDevicesRequest) (*ListAudioDevicesResponse, error)
 	SetAudioDevices(context.Context, *SetAudioDevicesRequest) (*SetAudioDevicesResponse, error)
+	SetVoiceInputMode(context.Context, *SetVoiceInputModeRequest) (*SetVoiceInputModeResponse, error)
+	SetPushToTalk(context.Context, *SetPushToTalkRequest) (*SetPushToTalkResponse, error)
 	mustEmbedUnimplementedDaemonVoiceServiceServer()
 }
 
@@ -180,6 +206,12 @@ func (UnimplementedDaemonVoiceServiceServer) ListAudioDevices(context.Context, *
 }
 func (UnimplementedDaemonVoiceServiceServer) SetAudioDevices(context.Context, *SetAudioDevicesRequest) (*SetAudioDevicesResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method SetAudioDevices not implemented")
+}
+func (UnimplementedDaemonVoiceServiceServer) SetVoiceInputMode(context.Context, *SetVoiceInputModeRequest) (*SetVoiceInputModeResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SetVoiceInputMode not implemented")
+}
+func (UnimplementedDaemonVoiceServiceServer) SetPushToTalk(context.Context, *SetPushToTalkRequest) (*SetPushToTalkResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SetPushToTalk not implemented")
 }
 func (UnimplementedDaemonVoiceServiceServer) mustEmbedUnimplementedDaemonVoiceServiceServer() {}
 func (UnimplementedDaemonVoiceServiceServer) testEmbeddedByValue()                            {}
@@ -328,6 +360,42 @@ func _DaemonVoiceService_SetAudioDevices_Handler(srv interface{}, ctx context.Co
 	return interceptor(ctx, in, info, handler)
 }
 
+func _DaemonVoiceService_SetVoiceInputMode_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetVoiceInputModeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonVoiceServiceServer).SetVoiceInputMode(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonVoiceService_SetVoiceInputMode_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonVoiceServiceServer).SetVoiceInputMode(ctx, req.(*SetVoiceInputModeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonVoiceService_SetPushToTalk_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetPushToTalkRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonVoiceServiceServer).SetPushToTalk(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonVoiceService_SetPushToTalk_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonVoiceServiceServer).SetPushToTalk(ctx, req.(*SetPushToTalkRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // DaemonVoiceService_ServiceDesc is the grpc.ServiceDesc for DaemonVoiceService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -362,6 +430,14 @@ var DaemonVoiceService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "SetAudioDevices",
 			Handler:    _DaemonVoiceService_SetAudioDevices_Handler,
+		},
+		{
+			MethodName: "SetVoiceInputMode",
+			Handler:    _DaemonVoiceService_SetVoiceInputMode_Handler,
+		},
+		{
+			MethodName: "SetPushToTalk",
+			Handler:    _DaemonVoiceService_SetPushToTalk_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

@@ -19,6 +19,8 @@ service DaemonService {
   rpc Disconnect(DisconnectRequest) returns (DisconnectResponse);
   rpc EnterNetwork(EnterNetworkRequest) returns (EnterNetworkResponse);
   rpc LeaveNetwork(LeaveNetworkRequest) returns (LeaveNetworkResponse);
+  rpc GetLocalProfile(GetLocalProfileRequest) returns (GetLocalProfileResponse);
+  rpc EnrollDevice(EnrollDeviceRequest) returns (EnrollDeviceResponse);
 }
 
 message GetStatusRequest {}
@@ -45,6 +47,33 @@ message LeaveNetworkRequest {}
 
 message LeaveNetworkResponse {
   OperationResult result = 1;
+}
+
+message GetLocalProfileRequest {}
+
+message LocalProfile {
+  string public_key = 1;
+  bool enrolled = 2;
+  string device_id = 3;
+  string device_name = 4;
+  string user_id = 5;
+}
+
+message GetLocalProfileResponse {
+  LocalProfile profile = 1;
+}
+
+message EnrollDeviceRequest {
+  // Short-lived user JWT. It is consumed locally and must never be logged or
+  // returned; the daemon persists only the resulting device credential.
+  string access_token = 1;
+  string user_id = 2;
+  string device_name = 3;
+}
+
+message EnrollDeviceResponse {
+  OperationResult result = 1;
+  LocalProfile profile = 2;
 }
 
 // OperationResult is used for state-changing requests. Transport-level errors
@@ -106,6 +135,10 @@ message ConnectedPeer {
   int64 path_dwell_seconds = 15;
   // True when the peer's path is churning (>= threshold transitions in window).
   bool flapping = 16;
+  // Stable account identity and safe public nickname. `name` remains the
+  // device name so clients can render "nickname · device" without guessing.
+  string user_id = 17;
+  string display_name = 18;
 }
 
 // PATH_UNSPECIFIED is mandatory for absent or unrecognised values. Clients

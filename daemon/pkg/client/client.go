@@ -83,6 +83,9 @@ func (c *Client) Close() error {
 }
 
 func loadHMACKey() []byte {
+	if !ipc.UsesHMACAuth() {
+		return nil
+	}
 	key, err := ipc.LoadOrCreateHMACKey(ipc.DefaultHMACKeyPath())
 	if err != nil {
 		return nil
@@ -171,6 +174,25 @@ func (c *Client) LeaveNetwork() error {
 	return opErr("leave-network", resp.GetResult(), err)
 }
 
+func (c *Client) LocalProfile() (ipc.LocalProfile, error) {
+	resp, err := c.svc.GetLocalProfile(context.Background(), &ourcordv1.GetLocalProfileRequest{})
+	if err != nil {
+		return ipc.LocalProfile{}, rpcErr("local-profile", err)
+	}
+	return ipc.LocalProfileFromProto(resp.GetProfile()), nil
+}
+
+func (c *Client) EnrollLocalDevice(accessToken, userID, deviceName string) (ipc.LocalProfile, error) {
+	resp, err := c.svc.EnrollDevice(context.Background(), &ourcordv1.EnrollDeviceRequest{AccessToken: accessToken, UserId: userID, DeviceName: deviceName})
+	if err != nil {
+		return ipc.LocalProfile{}, rpcErr("enroll-device", err)
+	}
+	if err := opErr("enroll-device", resp.GetResult(), nil); err != nil {
+		return ipc.LocalProfile{}, err
+	}
+	return ipc.LocalProfileFromProto(resp.GetProfile()), nil
+}
+
 // EnterRoom is the legacy room-id alias for EnterNetwork. The daemon resolves
 // both identifiers through the same path; prefer EnterNetwork with the room's
 // vpn_namespace.
@@ -254,4 +276,28 @@ func (c *Client) SetAudioDevices(captureID, playbackID string) error {
 		PlaybackId: playbackID,
 	})
 	return opErr("voice-set-devices", resp.GetResult(), err)
+}
+
+// SetVoiceInputMode configures daemon-side VAD/PTT capture gating.
+func (c *Client) SetVoiceInputMode(mode string, thresholdDBFS float64, hangoverMS uint32) error {
+	protoMode := ourcordv1.VoiceInputMode_VOICE_INPUT_MODE_UNSPECIFIED
+	switch mode {
+	case "voice_activity":
+		protoMode = ourcordv1.VoiceInputMode_VOICE_INPUT_MODE_VOICE_ACTIVITY
+	case "push_to_talk":
+		protoMode = ourcordv1.VoiceInputMode_VOICE_INPUT_MODE_PUSH_TO_TALK
+	case "open_mic":
+		protoMode = ourcordv1.VoiceInputMode_VOICE_INPUT_MODE_OPEN_MIC
+	default:
+		return &DaemonError{Cmd: "voice-input-mode", Msg: "invalid voice input mode"}
+	}
+	resp, err := c.voice.SetVoiceInputMode(context.Background(), &ourcordv1.SetVoiceInputModeRequest{
+		Mode: protoMode, VadThresholdDbfs: thresholdDBFS, VadHangoverMs: hangoverMS,
+	})
+	return opErr("voice-input-mode", resp.GetResult(), err)
+}
+
+func (c *Client) SetPushToTalk(pressed bool) error {
+	resp, err := c.voice.SetPushToTalk(context.Background(), &ourcordv1.SetPushToTalkRequest{Pressed: pressed})
+	return opErr("voice-push-to-talk", resp.GetResult(), err)
 }

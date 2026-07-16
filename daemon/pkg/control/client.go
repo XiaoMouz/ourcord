@@ -299,12 +299,14 @@ type PeerConfig struct {
 }
 
 type RemotePeer struct {
-	ID        string `json:"id"`
-	PublicKey string `json:"public_key"`
-	IP4       string `json:"ip4"`
-	IP6       string `json:"ip6"`
-	Name      string `json:"name"`
-	LastSeen  int64  `json:"last_seen,omitempty"`
+	ID          string `json:"id"`
+	UserID      string `json:"user_id,omitempty"`
+	PublicKey   string `json:"public_key"`
+	IP4         string `json:"ip4"`
+	IP6         string `json:"ip6"`
+	Name        string `json:"name"`
+	DisplayName string `json:"display_name,omitempty"`
+	LastSeen    int64  `json:"last_seen,omitempty"`
 	// DERPNodeKey is the peer's Tailscale DERP node key
 	// (tailcfg.NodePublic.String(), "nodekey:..."). It is distinct from the
 	// WireGuard public key and is used only by DERP fallback transport.
