@@ -35,7 +35,18 @@ type DBStep = { first?: unknown; all?: unknown; run?: unknown };
 function makeDB(plan: DBStep[]): D1Database {
   let i = 0;
   return {
-    prepare: vi.fn(() => {
+    prepare: vi.fn((sql: string) => {
+      // verifyInternalRequest occasionally prunes expired nonces. That
+      // housekeeping statement is intentionally nondeterministic and must not
+      // consume the ordered handler fixtures below, otherwise this test flakes
+      // whenever Math.random() selects the prune path.
+      if (sql.startsWith("DELETE FROM internal_nonces")) {
+        const cleanup: any = {
+          bind: vi.fn(() => cleanup),
+          run: vi.fn(async () => ({ meta: { changes: 0 } })),
+        };
+        return cleanup as D1PreparedStatement;
+      }
       const idx = i++;
       const step = () => plan[idx] || {};
       const s: any = {
