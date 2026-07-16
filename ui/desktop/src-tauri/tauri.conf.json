@@ -1,0 +1,25 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "OurCord",
+  "version": "0.1.0-beta.1",
+  "identifier": "app.ourcord.desktop",
+  "build": {
+    "beforeDevCommand": "pnpm dev",
+    "devUrl": "http://127.0.0.1:1420",
+    "beforeBuildCommand": "pnpm build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [{ "title": "OurCord", "width": 1280, "height": 800, "minWidth": 920, "minHeight": 620, "resizable": true, "fullscreen": false }],
+    "security": { "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost; img-src 'self' data:; style-src 'self' 'unsafe-inline'" }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "createUpdaterArtifacts": true,
+    "externalBin": ["binaries/ourcord-desktop-bridge"],
+    "resources": ["binaries/ourcord-service.exe", "binaries/ourcordd.exe", "binaries/wintun.dll", "binaries/libopus-0.dll"],
+    "windows": { "nsis": { "installMode": "perMachine", "displayLanguageSelector": true, "installerHooks": "./windows/installer-hooks.nsh" } }
+  },
+  "plugins": { "deep-link": { "desktop": { "schemes": ["ourcord"] } } }
+}

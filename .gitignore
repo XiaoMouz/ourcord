@@ -3,6 +3,17 @@ node_modules/
 dist/
 .wrangler/
 .smoke-tmp/
+ui/desktop/dist/
+ui/desktop/node_modules/
+ui/desktop/src-tauri/target/
+ui/desktop/src-tauri/gen/
+ui/desktop/src-tauri/binaries/*
+!ui/desktop/src-tauri/binaries/.gitkeep
+ui/desktop/*.tsbuildinfo
+ui/desktop/vite.config.js
+ui/desktop/vite.config.d.ts
+ui/desktop/src-tauri/icons/android/
+ui/desktop/src-tauri/icons/ios/
 
 # Go
 relay/ourcord-relay
