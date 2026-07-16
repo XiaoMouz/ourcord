@@ -1,0 +1,160 @@
+name: Desktop public beta
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["desktop-v*-beta.*"]
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  windows-x64:
+    runs-on: windows-2025
+    environment: desktop-beta
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: pnpm
+          cache-dependency-path: ui/desktop/pnpm-lock.yaml
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: daemon/go.mod
+          cache: true
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: msys2/setup-msys2@v2
+        with:
+          install: mingw-w64-x86_64-gcc mingw-w64-x86_64-opus mingw-w64-x86_64-pkgconf
+      - uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Install dependencies
+        working-directory: ui/desktop
+        run: |
+          corepack enable
+          corepack prepare pnpm@9.15.9 --activate
+          pnpm install --frozen-lockfile
+      - name: Configure signed beta update channel
+        shell: pwsh
+        env:
+          UPDATER_PUBLIC_KEY: ${{ secrets.TAURI_UPDATER_PUBLIC_KEY }}
+        run: |
+          if (-not $env:UPDATER_PUBLIC_KEY) { throw "TAURI_UPDATER_PUBLIC_KEY is required" }
+          $config = @{
+            plugins = @{
+              updater = @{
+                pubkey = $env:UPDATER_PUBLIC_KEY
+                endpoints = @("https://github.com/${{ github.repository }}/releases/download/desktop-beta/latest.json")
+              }
+            }
+          }
+          $config | ConvertTo-Json -Depth 8 | Set-Content ui/desktop/src-tauri/tauri.windows.conf.json
+      - name: Build native resources
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force ui/desktop/src-tauri/binaries | Out-Null
+          Push-Location daemon
+          go build -o ../ui/desktop/src-tauri/binaries/ourcord-desktop-bridge-x86_64-pc-windows-msvc.exe ./cmd/ourcord-desktop-bridge
+          $env:CGO_ENABLED = "1"
+          $env:CC = "C:\msys64\mingw64\bin\gcc.exe"
+          $env:PKG_CONFIG = "C:\msys64\mingw64\bin\pkg-config.exe"
+          $env:Path = "C:\msys64\mingw64\bin;$env:Path"
+          go build -tags voice -o ../ui/desktop/src-tauri/binaries/ourcordd.exe ./cmd/ourcordd
+          go build -o ../ui/desktop/src-tauri/binaries/ourcord-service.exe ./cmd/ourcord-service
+          Pop-Location
+          Invoke-WebRequest https://www.wintun.net/builds/wintun-0.14.1.zip -OutFile wintun.zip
+          if ((Get-FileHash wintun.zip -Algorithm SHA256).Hash.ToLower() -ne "07c256185d6ee3652e09fa55c0b673e2624b565e02c4b9091c79ca7d2f24ef51") { throw "wintun checksum mismatch" }
+          Expand-Archive wintun.zip -DestinationPath wintun-dist
+          Copy-Item wintun-dist/wintun/bin/amd64/wintun.dll ui/desktop/src-tauri/binaries/wintun.dll
+          Copy-Item C:\msys64\mingw64\bin\libopus-0.dll ui/desktop/src-tauri/binaries/libopus-0.dll
+      - name: Sign bridge, daemon and Wintun
+        uses: azure/artifact-signing-action@v2
+        with:
+          endpoint: ${{ vars.AZURE_ARTIFACT_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.AZURE_ARTIFACT_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.AZURE_ARTIFACT_SIGNING_PROFILE }}
+          files-folder: ${{ github.workspace }}\ui\desktop\src-tauri\binaries
+          files-folder-filter: exe,dll
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+      - name: Compile application
+        working-directory: ui/desktop
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: pnpm tauri build --no-bundle
+      - name: Sign application executable
+        uses: azure/artifact-signing-action@v2
+        with:
+          endpoint: ${{ vars.AZURE_ARTIFACT_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.AZURE_ARTIFACT_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.AZURE_ARTIFACT_SIGNING_PROFILE }}
+          files: ${{ github.workspace }}\ui\desktop\src-tauri\target\release\ourcord-desktop.exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+      - name: Bundle NSIS and updater artifacts
+        working-directory: ui/desktop
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: pnpm tauri bundle --bundles nsis
+      - name: Sign installer
+        uses: azure/artifact-signing-action@v2
+        with:
+          endpoint: ${{ vars.AZURE_ARTIFACT_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.AZURE_ARTIFACT_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.AZURE_ARTIFACT_SIGNING_PROFILE }}
+          files-folder: ${{ github.workspace }}\ui\desktop\src-tauri\target\release\bundle\nsis
+          files-folder-filter: exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+      - name: Re-sign updater payload and create manifest
+        working-directory: ui/desktop
+        shell: pwsh
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          $installer = Get-ChildItem src-tauri/target/release/bundle/nsis/*.exe | Select-Object -First 1
+          if (-not $installer) { throw "NSIS installer not found" }
+          pnpm tauri signer sign $installer.FullName
+          $signature = (Get-Content "$($installer.FullName).sig" -Raw).Trim()
+          $version = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+          $asset = [uri]::EscapeDataString($installer.Name)
+          $manifest = @{
+            version = $version
+            notes = "OurCord Windows public beta"
+            pub_date = (Get-Date).ToUniversalTime().ToString("o")
+            platforms = @{
+              "windows-x86_64" = @{
+                signature = $signature
+                url = "https://github.com/${{ github.repository }}/releases/download/desktop-beta/$asset"
+              }
+            }
+          }
+          $manifest | ConvertTo-Json -Depth 8 | Set-Content src-tauri/target/release/bundle/nsis/latest.json
+      - name: Verify Authenticode signatures
+        shell: pwsh
+        run: |
+          Get-ChildItem ui/desktop/src-tauri/target/release/bundle/nsis/*.exe | ForEach-Object {
+            if ((Get-AuthenticodeSignature $_).Status -ne "Valid") { throw "invalid signature: $($_.FullName)" }
+          }
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: desktop-beta
+          name: OurCord Desktop Beta
+          prerelease: true
+          generate_release_notes: true
+          files: |
+            ui/desktop/src-tauri/target/release/bundle/nsis/*.exe
+            ui/desktop/src-tauri/target/release/bundle/nsis/*.zip
+            ui/desktop/src-tauri/target/release/bundle/nsis/*.sig
+            ui/desktop/src-tauri/target/release/bundle/nsis/latest.json

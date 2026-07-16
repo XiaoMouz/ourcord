@@ -151,8 +151,8 @@ go build -o ourcord-tui ./cmd/ourcord-tui
 
 - [x] **阶段一** — VPN 核心 + 控制层 + DERP 节点 + daemon 连接管线已闭环（per-peer ICE 自动直连、startup/runtime DERP fallback、指数退避重试、1:1 pair network、service `vpn_namespace`、A-B-C next-hop 数据面与 next-hop 后直达恢复均已用真实 control/service/relay/daemon + OrbStack 验证；`tests/e2e/smoke_abc_netns.sh` 保留为自动 A-B-C 回归入口）
 - [x] **阶段二** — 网络完整性与自治主线已闭环（A-B-C 拓扑、设备级凭证、control↔service HMAC、room-scoped peer refresh、CLI/TUI、自治文件后端、Windows Wintun、路径抖动遥测/降噪与发布验收均已落地）
-- [ ] **阶段三** — 媒体层进行中：语音 v1 已实现（逐 peer E2E、jitter/loss、mute/deafen、真 Opus + 音频设备选择）；视频、屏幕共享、远控和正式语音 UI 待实现
-- [ ] **阶段四** — 分发与产品化（Tauri/Flutter/React UI、安装器、更新、运营监控）
+- [ ] **阶段三** — 媒体层进行中：语音 v1 已实现（逐 peer E2E、jitter/loss、mute/deafen、真 Opus + 音频设备选择），Windows 桌面端已接入正式语音 UI、VAD/PTT；视频、屏幕共享和远控待实现
+- [ ] **阶段四** — 分发与产品化进行中：Windows Tauri/React 客户端、NSIS 安装器、SCM 服务包装和签名 beta 更新流水线已落地；Windows 真机发布验收、其他桌面/移动端与运营监控待完成
 
 内部设备接入、运行日志与诊断包操作见 [docs/ops/internal-operations.md](docs/ops/internal-operations.md)。
 

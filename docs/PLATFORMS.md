@@ -217,7 +217,9 @@ Windows 没有内置 TUN，需要 [Wintun](https://www.wintun.net/) 驱动（Wir
 
 ### 4.2 权限
 
-**必须以 Administrator 运行**——Wintun 适配器创建走 SetupAPI，路由表写入走 IP Helper API，二者都要管理员令牌。
+安装版由 LocalSystem 身份的 `OurCordDaemon` Windows 服务运行 daemon，桌面 UI
+不需要管理员权限。仅在手工运行 `ourcordd.exe` 时必须使用 Administrator——Wintun
+适配器创建走 SetupAPI，路由表写入走 IP Helper API，二者都要管理员令牌。
 
 `Run as Administrator` 启动 PowerShell 后：
 
@@ -227,22 +229,18 @@ Windows 没有内置 TUN，需要 [Wintun](https://www.wintun.net/) 驱动（Wir
 
 ### 4.3 服务安装
 
-**`sc.exe` 内置：**
+正式 Windows 包使用 per-machine NSIS 安装器。安装器部署 `ourcord-service.exe` 服务包装、
+`ourcordd.exe`、Wintun 与 Opus，并注册自动启动及失败恢复；卸载时会停止并删除服务。
+桌面端与服务通过 `\\.\pipe\ourcordd` 通信，pipe DACL 允许已认证本机用户读写，
+daemon 账户凭证仍由本地 enrollment profile 管理。
+
+手工调试也可以直接注册服务包装：
 
 ```powershell
-sc.exe create ourcordd binPath= "C:\Program Files\OurCord\ourcordd.exe --control-url https://control.example.com --state-dir C:\ProgramData\OurCord" start= auto
-sc.exe description ourcordd "OurCord VPN daemon"
-sc.exe start ourcordd
-```
-
-**`NSSM`（推荐，更好的日志/重启策略）：**
-
-```powershell
-nssm install ourcordd "C:\Program Files\OurCord\ourcordd.exe"
-nssm set ourcordd AppParameters "--control-url https://control.example.com --state-dir C:\ProgramData\OurCord"
-nssm set ourcordd Start SERVICE_AUTO_START
-nssm set ourcordd AppRestartDelay 5000
-nssm start ourcordd
+sc.exe create OurCordDaemon binPath= "C:\Program Files\OurCord\ourcord-service.exe" start= auto
+sc.exe description OurCordDaemon "OurCord network daemon"
+sc.exe failure OurCordDaemon reset= 86400 actions= restart/5000/restart/15000/restart/60000
+sc.exe start OurCordDaemon
 ```
 
 ### 4.4 防火墙（Windows Defender Firewall）
@@ -287,9 +285,10 @@ netsh advfirewall firewall add rule name="OurCord daemon" dir=in action=allow pr
 ## 7. Known gaps
 
 - **macOS launchd helper 一键安装**：当前需手动 `sudo` 启动或自行写 plist；`SMJobBless` 集成仍待做。
-- **Windows MSI 安装包 + 服务包装**：仍待做，先用 `sc.exe` / `nssm` 手动方案。
-- **自动更新**：无内置 updater。
+- **Windows 发布验收**：NSIS 安装器、SCM 服务包装、Azure Artifact Signing 与 Tauri updater 流水线已实现，但仍需在配置 Azure/GitHub secrets 后完成签名产物和真机安装/升级验收。
+- **账户隔离**：当前 Windows daemon enrollment profile 是机器级单账户；同机多 Windows SID 并行使用不同 OurCord 账户尚未实现。
+- **其他平台自动更新**：当前 updater 发布流水线仅覆盖 Windows beta channel。
 
 ---
 
-> 修订记录：AA3 / V12 / W10 — 初版，对应 `daemon/cmd/ourcordd/main.go`、`daemon/pkg/tun/addr_{linux,darwin,windows,other}.go`、`daemon/pkg/wg/persist.go` 当前实现。Windows Wintun 地址/路由同步已落地（`addr_windows.go` + CI `windows-native`）。
+> 修订记录：AA3 / V12 / W10 / Desktop beta — 对应 `daemon/cmd/ourcordd/main.go`、`daemon/cmd/ourcord-service`、`daemon/pkg/ipc/transport_windows.go`、`daemon/pkg/tun/addr_{linux,darwin,windows,other}.go` 当前实现。Windows Wintun 地址/路由同步、SCM 服务与 NSIS/updater 流水线已落地。
