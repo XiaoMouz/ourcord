@@ -1,6 +1,6 @@
 import { Env } from "./types";
 import { SCHEMA_SQL } from "./schema";
-import { createLobby, getLobby, joinLobby, listMembers, updateMemberRole, createInvite, revokeInvite, createRoom, updateRoom, deleteRoom } from "./lobby";
+import { createLobby, listLobbies, getLobby, joinLobby, listMembers, updateMemberRole, createInvite, revokeInvite, createRoom, updateRoom, deleteRoom } from "./lobby";
 import { getMessages, sendMessage, deleteMessage } from "./messages";
 import { initiateUpload, uploadToR2, completeExternalUpload, listFiles, getDownloadUrl, getFilePolicy, updateFilePolicy, runR2Cleanup } from "./files";
 import { registerBackend, listBackends, deactivateBackend, shareBackend, unshareBackend, checkBackendHealth, runBackendHealthChecks } from "./backends";
@@ -38,6 +38,9 @@ export default {
         const rl = await checkRateLimit(request, env, "lobby-create", 5, 60);
         if (rl) return rl;
         return createLobby(request, env);
+      }
+      if (method === "GET" && path === "/api/lobbies") {
+        return listLobbies(request, env);
       }
       if (method === "GET" && parts[0] === "api" && parts[1] === "lobbies" && parts[2] && !parts[3]) {
         return getLobby(request, env, parts[2]);

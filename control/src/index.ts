@@ -4,7 +4,8 @@ import { registerPeer, getPeerConfig, lookupPeers, reportPeerConnectivity } from
 import { getStunServers, addStunServer } from "./stun";
 import { registerRelay, getRelayMap, getBannedKeys, denyPeerOnRelay, allowPeerOnRelay } from "./relay";
 import { createBan, removeBan, checkBan } from "./ban";
-import { requestOTP, verifyOTP, oauthRedirect, oauthCallback } from "./authHandler";
+import { requestOTP, verifyOTP, oauthRedirect, oauthCallback, requestDesktopMagic, confirmDesktopMagicPage, confirmDesktopMagic, exchangeDesktopCode } from "./authHandler";
+import { getMe, updateMe, lookupProfiles } from "./profile";
 import { enrollDevice, exchangeDeviceToken, listDevices, revokeDevice } from "./devices";
 import { checkRateLimit } from "./ratelimit";
 import { log, newRequestId } from "./log";
@@ -51,6 +52,29 @@ export default {
         if (parts[4] === "callback") return oauthCallback(request, env, provider);
         return oauthRedirect(request, env, provider);
       }
+      if (method === "POST" && path === "/api/auth/desktop/magic") {
+        const rl = await checkRateLimit(request, env, "desktop-magic", 5, 60);
+        if (rl) return rl;
+        return requestDesktopMagic(request, env);
+      }
+      if (path === "/api/auth/desktop/magic/confirm") {
+        if (method === "GET") return confirmDesktopMagicPage(request);
+        if (method === "POST") return confirmDesktopMagic(request, env);
+      }
+      if (method === "POST" && path === "/api/auth/desktop/exchange") {
+        const rl = await checkRateLimit(request, env, "desktop-exchange", 20, 60);
+        if (rl) return rl;
+        return exchangeDesktopCode(request, env);
+      }
+      if (method === "GET" && path.startsWith("/api/auth/desktop/oauth/")) {
+        const provider = path.split("/").filter(Boolean)[4];
+        return oauthRedirect(request, env, provider);
+      }
+
+      // ── User profile ──────────────────────────────────────────────────────
+      if (path === "/api/me" && method === "GET") return getMe(request, env);
+      if (path === "/api/me" && method === "PATCH") return updateMe(request, env);
+      if (path === "/api/profiles/lookup" && method === "POST") return lookupProfiles(request, env);
       // Device-credential exchange is unauthenticated (it IS the auth step) —
       // rate-limit tighter than peer traffic to blunt brute force on top of
       // the 256-bit secret space.

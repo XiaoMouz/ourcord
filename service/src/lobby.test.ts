@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { joinLobby, createRoom, updateRoom, deleteRoom } from "./lobby";
+import { joinLobby, listLobbies, createRoom, updateRoom, deleteRoom } from "./lobby";
 import type { Env } from "./types";
 
 const SECRET = "test-secret-1234567890abcdef";
@@ -18,6 +18,33 @@ async function hmacSign(secret: string, data: string): Promise<string> {
   for (let i = 0; i < b.length; i++) s += String.fromCharCode(b[i]);
   return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
+
+describe("listLobbies", () => {
+  it("returns lobby navigation entries with ordered rooms", async () => {
+    const token = await makeToken();
+    const all = vi
+      .fn()
+      .mockResolvedValueOnce({ results: [{ id: "L1", name: "Friends", owner_id: "u1", icon: null, created_at: 1, role: "owner", joined_at: 2 }] })
+      .mockResolvedValueOnce({ results: [{ id: "R1", lobby_id: "L1", name: "voice", type: "voice", position: 0, vpn_namespace: "vpn-1" }] });
+    const db = {
+      prepare: vi.fn(() => {
+        const stmt: any = { bind: () => stmt, all };
+        return stmt;
+      }),
+    } as unknown as D1Database;
+    const env = { ENVIRONMENT: "production", JWT_SECRET: SECRET, DB: db } as Env;
+    const req = new Request("https://service.example/api/lobbies", {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+
+    const resp = await listLobbies(req, env);
+    expect(resp.status).toBe(200);
+    const body = await resp.json<any>();
+    expect(body.lobbies[0].lobby.name).toBe("Friends");
+    expect(body.lobbies[0].member.role).toBe("owner");
+    expect(body.lobbies[0].rooms[0].vpn_namespace).toBe("vpn-1");
+  });
+});
 
 function b64url(s: string): string {
   return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");

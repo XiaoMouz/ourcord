@@ -15,6 +15,9 @@ const OAUTH_STATE_TTL = 10 * 60;
 // P1: cookie name for OAuth state-binding. The cookie is scoped to the
 // callback path so it never leaks to other endpoints.
 const OAUTH_CSRF_COOKIE = "oauth_state";
+const DESKTOP_MAGIC_TTL = 10 * 60;
+const DESKTOP_CODE_TTL = 60;
+const PKCE_CHALLENGE_RE = /^[A-Za-z0-9_-]{43}$/;
 
 // POST /api/auth/otp/request — send OTP to email
 export async function requestOTP(request: Request, env: Env): Promise<Response> {
@@ -142,9 +145,13 @@ export async function oauthRedirect(request: Request, env: Env, provider: string
   // logging the victim into the attacker's account.
   const state = crypto.randomUUID();
   const csrf = crypto.randomUUID();
+  const desktopChallenge = url.searchParams.get("code_challenge");
+  if (desktopChallenge !== null && !PKCE_CHALLENGE_RE.test(desktopChallenge)) {
+    return json({ error: "valid S256 code_challenge required" }, 400);
+  }
   await env.KV.put(
     `oauth_state:${state}`,
-    JSON.stringify({ provider, csrf }),
+    JSON.stringify({ provider, csrf, desktopChallenge }),
     { expirationTtl: OAUTH_STATE_TTL },
   );
 
@@ -216,9 +223,9 @@ export async function oauthCallback(request: Request, env: Env, provider: string
   if (!storedRaw) {
     return jsonWithCookie({ error: "Invalid or expired state" }, 400, clearCookie);
   }
-  let stored: { provider: string; csrf: string };
+  let stored: { provider: string; csrf: string; desktopChallenge?: string | null };
   try {
-    stored = JSON.parse(storedRaw) as { provider: string; csrf: string };
+    stored = JSON.parse(storedRaw) as { provider: string; csrf: string; desktopChallenge?: string | null };
   } catch {
     await env.KV.delete(stateKey);
     return jsonWithCookie({ error: "Invalid state record" }, 400, clearCookie);
@@ -269,6 +276,14 @@ export async function oauthCallback(request: Request, env: Env, provider: string
     return jsonWithCookie({ error: "User is banned" }, 403, clearCookie);
   }
 
+  if (stored.desktopChallenge) {
+    const appCode = await issueDesktopCode(env, user.id, email, stored.desktopChallenge);
+    return new Response(null, {
+      status: 302,
+      headers: { Location: `ourcord://auth?code=${encodeURIComponent(appCode)}`, "Set-Cookie": clearCookie },
+    });
+  }
+
   const payload = makeToken(user.id, email);
   const token = await signToken(payload, getJwtSecret(env));
 
@@ -279,6 +294,141 @@ export async function oauthCallback(request: Request, env: Env, provider: string
     status: 302,
     headers: { Location: appUrl, "Set-Cookie": clearCookie },
   });
+}
+
+// POST /api/auth/desktop/magic — send a browser confirmation link bound to
+// the requesting desktop instance's PKCE challenge.
+export async function requestDesktopMagic(request: Request, env: Env): Promise<Response> {
+  const tooBig = checkBodySize(request, 2048);
+  if (tooBig) return tooBig;
+  let body: { email?: unknown; code_challenge?: unknown };
+  try { body = await request.json(); } catch { return json({ error: "invalid JSON body" }, 400); }
+  const email = typeof body.email === "string" ? body.email.toLowerCase().trim() : "";
+  const challenge = typeof body.code_challenge === "string" ? body.code_challenge : "";
+  if (!email.includes("@") || email.length > 254) return json({ error: "valid email required" }, 400);
+  if (!PKCE_CHALLENGE_RE.test(challenge)) return json({ error: "valid S256 code_challenge required" }, 400);
+
+  const cooldownKey = `desktop_magic_cooldown:${email}`;
+  if (await env.KV.get(cooldownKey)) {
+    return json({ message: "If the address can receive mail, a sign-in link has been sent", expires_in: DESKTOP_MAGIC_TTL });
+  }
+
+  const rawToken = `${crypto.randomUUID()}${crypto.randomUUID()}`.replace(/-/g, "");
+  const tokenHash = await sha256Base64url(rawToken);
+  await env.KV.put(`desktop_magic:${tokenHash}`, JSON.stringify({ email, challenge }), {
+    expirationTtl: DESKTOP_MAGIC_TTL,
+  });
+  await env.KV.put(cooldownKey, "1", { expirationTtl: OTP_REQUEST_COOLDOWN });
+  const origin = new URL(request.url).origin;
+  const confirmURL = `${origin}/api/auth/desktop/magic/confirm?token=${encodeURIComponent(rawToken)}`;
+  try {
+    await sendMagicEmail(env, email, confirmURL);
+  } catch (e) {
+    log({ event: "desktop_magic.send_failed", level: "error", email, error: String(e) });
+    return json({ error: "Magic link delivery not configured" }, 503);
+  }
+  return json({ message: "If the address can receive mail, a sign-in link has been sent", expires_in: DESKTOP_MAGIC_TTL });
+}
+
+// GET intentionally does not consume the token: mail security scanners often
+// prefetch links. Only the explicit form POST authorizes the app.
+export async function confirmDesktopMagicPage(request: Request): Promise<Response> {
+  const token = new URL(request.url).searchParams.get("token") ?? "";
+  const escaped = token.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/"/g, "&quot;");
+  return new Response(`<!doctype html><meta charset="utf-8"><title>Sign in to OurCord</title><style>body{font:16px system-ui;background:#111827;color:#f9fafb;display:grid;place-items:center;min-height:100vh}main{max-width:28rem;padding:2rem;background:#1f2937;border-radius:16px}button{padding:.8rem 1.2rem;border:0;border-radius:8px;background:#6366f1;color:white;font-weight:700}</style><main><h1>Sign in to OurCord</h1><p>Confirm this sign-in on the computer where you requested it.</p><form method="post"><input type="hidden" name="token" value="${escaped}"><button>Open OurCord</button></form></main>`, {
+    headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "Referrer-Policy": "no-referrer" },
+  });
+}
+
+export async function confirmDesktopMagic(request: Request, env: Env): Promise<Response> {
+  const form = await request.formData();
+  const rawToken = String(form.get("token") ?? "");
+  if (!/^[a-f0-9]{64}$/.test(rawToken)) return json({ error: "Invalid or expired link" }, 400);
+  const key = `desktop_magic:${await sha256Base64url(rawToken)}`;
+  const storedRaw = await env.KV.get(key);
+  await env.KV.delete(key);
+  if (!storedRaw) return json({ error: "Invalid or expired link" }, 400);
+  let stored: { email: string; challenge: string };
+  try { stored = JSON.parse(storedRaw); } catch { return json({ error: "Invalid link" }, 400); }
+  if (!PKCE_CHALLENGE_RE.test(stored.challenge)) return json({ error: "Invalid link" }, 400);
+  const user = await getOrCreateUser(env, stored.email);
+  if (user.banned_at || await isUserBanned(user.id, env.DB)) return json({ error: "Account banned" }, 403);
+  const code = await issueDesktopCode(env, user.id, user.email, stored.challenge);
+  return new Response(null, { status: 303, headers: { Location: `ourcord://auth?code=${encodeURIComponent(code)}`, "Cache-Control": "no-store" } });
+}
+
+export async function exchangeDesktopCode(request: Request, env: Env): Promise<Response> {
+  const tooBig = checkBodySize(request, 2048);
+  if (tooBig) return tooBig;
+  let body: { code?: unknown; code_verifier?: unknown };
+  try { body = await request.json(); } catch { return json({ error: "invalid JSON body" }, 400); }
+  const code = typeof body.code === "string" ? body.code : "";
+  const verifier = typeof body.code_verifier === "string" ? body.code_verifier : "";
+  if (!/^[a-f0-9]{64}$/.test(code) || !/^[A-Za-z0-9._~-]{43,128}$/.test(verifier)) {
+    return json({ error: "invalid authorization code" }, 400);
+  }
+  const hash = await sha256Base64url(code);
+  const now = Math.floor(Date.now() / 1000);
+  const row = await env.DB.prepare(
+    "SELECT user_id, email, code_challenge, expires_at FROM desktop_auth_codes WHERE code_hash = ?",
+  ).bind(hash).first<{ user_id: string; email: string; code_challenge: string; expires_at: number }>();
+  if (!row || row.expires_at < now || !constantTimeEqual(await sha256Base64url(verifier), row.code_challenge)) {
+    return json({ error: "invalid or expired authorization code" }, 401);
+  }
+  // Delete first and issue only if this caller won the one-time consume race.
+  const deleted = await env.DB.prepare("DELETE FROM desktop_auth_codes WHERE code_hash = ?")
+    .bind(hash).run();
+  if ((deleted.meta?.changes ?? 0) !== 1) return json({ error: "authorization code already used" }, 401);
+  if (await isUserBanned(row.user_id, env.DB)) return json({ error: "Account banned" }, 403);
+  const token = await signToken(makeToken(row.user_id, row.email), getJwtSecret(env));
+  return json({ token, user_id: row.user_id });
+}
+
+async function issueDesktopCode(env: Env, userId: string, email: string, challenge: string): Promise<string> {
+  const code = `${crypto.randomUUID()}${crypto.randomUUID()}`.replace(/-/g, "");
+  const now = Math.floor(Date.now() / 1000);
+  await env.DB.prepare(
+    "INSERT INTO desktop_auth_codes (code_hash, user_id, email, code_challenge, expires_at) VALUES (?,?,?,?,?)",
+  ).bind(await sha256Base64url(code), userId, email, challenge, now + DESKTOP_CODE_TTL).run();
+  return code;
+}
+
+async function getOrCreateUser(env: Env, email: string): Promise<{ id: string; email: string; banned_at: number | null }> {
+  let user = await env.DB.prepare("SELECT id, email, banned_at FROM users WHERE email = ?")
+    .bind(email).first<{ id: string; email: string; banned_at: number | null }>();
+  if (!user) {
+    const id = generateId();
+    await env.DB.prepare("INSERT INTO users (id, email, display_name, created_at) VALUES (?,?,?,?)")
+      .bind(id, email, email.split("@")[0], Math.floor(Date.now() / 1000)).run();
+    user = { id, email, banned_at: null };
+  }
+  return user;
+}
+
+async function sha256Base64url(value: string): Promise<string> {
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value)));
+  let binary = "";
+  for (const b of digest) binary += String.fromCharCode(b);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+async function sendMagicEmail(env: Env, email: string, confirmURL: string): Promise<void> {
+  if (env.ENVIRONMENT === "development") {
+    log({ event: "desktop_magic.dev_print", email, confirm_url: confirmURL });
+    return;
+  }
+  if (!env.EMAIL_API_KEY) throw new Error("email provider not configured");
+  const resp = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${env.EMAIL_API_KEY}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      from: env.EMAIL_FROM || "OurCord <noreply@ourcord.invalid>",
+      to: [email],
+      subject: "Sign in to OurCord",
+      text: `Open this link to sign in to OurCord:\n\n${confirmURL}\n\nIt expires in 10 minutes.`,
+    }),
+  });
+  if (!resp.ok) throw new Error(`resend api error: ${resp.status}`);
 }
 
 async function fetchOAuthEmail(env: Env, provider: string, code: string, redirectUri: string): Promise<string> {

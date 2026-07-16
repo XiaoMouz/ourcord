@@ -1,6 +1,51 @@
 import { Env, Lobby, Room, LobbyMember } from "./types";
 import { requireAuth, generateId, json, err, checkBodySize } from "./auth";
 
+// GET /api/lobbies — list the authenticated user's lobby navigation model.
+// A desktop client needs this aggregate to render its initial lobby/room rail
+// without issuing one request per lobby. OurCord lobbies are deliberately
+// small, so returning their rooms in one bounded D1 query is appropriate.
+export async function listLobbies(request: Request, env: Env): Promise<Response> {
+  const auth = await requireAuth(request, env);
+  if (auth instanceof Response) return auth;
+
+  const rows = await env.DB.prepare(
+    `SELECT l.id, l.name, l.owner_id, l.icon, l.created_at,
+            lm.role, lm.joined_at
+       FROM lobby_members lm
+       JOIN lobbies l ON l.id = lm.lobby_id
+      WHERE lm.user_id = ?
+      ORDER BY lm.joined_at, l.id`,
+  ).bind(auth.sub).all<Lobby & { role: LobbyMember["role"]; joined_at: number }>();
+
+  const lobbies = rows.results ?? [];
+  if (lobbies.length === 0) return json({ lobbies: [] });
+
+  // Keep safely below D1's ~100 prepared-parameter limit. The product is for
+  // small groups, but a user can join many groups over time, so batch here.
+  const roomsByLobby = new Map<string, Room[]>();
+  for (let offset = 0; offset < lobbies.length; offset += 90) {
+    const ids = lobbies.slice(offset, offset + 90).map((l) => l.id);
+    const placeholders = ids.map(() => "?").join(",");
+    const rooms = await env.DB.prepare(
+      `SELECT * FROM rooms WHERE lobby_id IN (${placeholders}) ORDER BY lobby_id, position, id`,
+    ).bind(...ids).all<Room>();
+    for (const room of rooms.results ?? []) {
+      const list = roomsByLobby.get(room.lobby_id) ?? [];
+      list.push(room);
+      roomsByLobby.set(room.lobby_id, list);
+    }
+  }
+
+  return json({
+    lobbies: lobbies.map(({ role, joined_at, ...lobby }) => ({
+      lobby,
+      member: { role, joined_at },
+      rooms: roomsByLobby.get(lobby.id) ?? [],
+    })),
+  });
+}
+
 // POST /api/lobbies — create a lobby
 export async function createLobby(request: Request, env: Env): Promise<Response> {
   const tooBig = checkBodySize(request, 4 * 1024);

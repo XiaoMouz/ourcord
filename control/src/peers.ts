@@ -244,16 +244,17 @@ export async function getPeerConfig(request: Request, env: Env): Promise<Respons
   // because daemon-side DERP fallback needs each peer's DERP identity to route
   // WireGuard packets through a relay. Ban feeds still use /api/relay/banned-keys.
   const pairKeys = roomId?.startsWith("pair:") ? parsePairRoom(roomId) : null;
-  const SELECT_PEERS = `SELECT id, user_id, public_key, name, platform, last_seen, ip4, ip6, derp_node_key,
-              wg_endpoint AS endpoint
-       FROM peers WHERE `;
+  const SELECT_PEERS = `SELECT p.id, p.user_id, p.public_key, p.name, p.platform, p.last_seen,
+              p.ip4, p.ip6, p.derp_node_key, p.wg_endpoint AS endpoint,
+              u.display_name AS display_name
+       FROM peers p JOIN users u ON u.id = p.user_id WHERE `;
   const selfFilter = pubKey ? " AND public_key <> ?" : "";
   let peerRows: Peer[];
   if (pairKeys) {
     const params: string[] = [...pairKeys];
     if (pubKey) params.push(pubKey);
     const peers = await env.DB
-      .prepare(`${SELECT_PEERS}public_key IN (?,?)${selfFilter} ORDER BY last_seen DESC`)
+      .prepare(`${SELECT_PEERS}p.public_key IN (?,?)${selfFilter.replaceAll("public_key", "p.public_key")} ORDER BY p.last_seen DESC`)
       .bind(...params)
       .all<Peer>();
     peerRows = peers.results ?? [];
@@ -269,7 +270,7 @@ export async function getPeerConfig(request: Request, env: Env): Promise<Respons
       if (pubKey) params.push(pubKey);
       const placeholders = chunk.map(() => "?").join(",");
       const peers = await env.DB
-        .prepare(`${SELECT_PEERS}user_id IN (${placeholders})${selfFilter} ORDER BY last_seen DESC`)
+        .prepare(`${SELECT_PEERS}p.user_id IN (${placeholders})${selfFilter.replaceAll("public_key", "p.public_key")} ORDER BY p.last_seen DESC`)
         .bind(...params)
         .all<Peer>();
       peerRows.push(...(peers.results ?? []));

@@ -43,6 +43,7 @@ export interface Peer {
   derp_node_key: string; // optional Tailscale DERP NodePublic.String() (G12)
   wg_endpoint: string; // optional host:port endpoint hint reported by daemon
   next_hop_public_key?: string; // optional WG public key for one-hop relay routing
+  display_name?: string; // joined from users for UI-facing peer configs
 }
 
 export interface RelayServer {
