@@ -13,11 +13,10 @@
 # connect_test.go integration test. That test verifies the pipeline logic;
 # this script verifies the pipeline against actual kernel TUN/wg behavior.
 #
-# Current limitation: per-peer ICE agents are not yet wired, so the daemons
-# themselves won't auto-discover each other's wg endpoint. This script
-# manually injects a loopback endpoint for each peer so wg can handshake
-# over localhost UDP. That's enough to confirm TUN/wg are correctly wired.
-# True P2P / DERP fallback verification is required before Phase 1 can close.
+# Legacy scope: this script manually injects loopback endpoint hints and only
+# confirms that TUN/WireGuard are wired correctly on one host. Per-peer ICE and
+# DERP fallback are implemented; use smoke_abc_netns.sh for their repeatable
+# release acceptance and OrbStack VMs for an independent environment check.
 
 set -euo pipefail
 

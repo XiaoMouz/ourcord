@@ -11,7 +11,7 @@
   `daemon/pkg/tun/addr_windows.go`（winipcfg）支持，真机行为由 CI 的
   `windows-native` job 用真 Wintun 适配器验收——本地脚本仍只跑 Linux/macOS。
 - `sudo` 权限（创 TUN 必须）
-- Go ≥ 1.22（需能 `go build`）
+- Go ≥ 1.26.1（与各 Go module 的 `go` directive 一致）
 - Python 3（mock control plane 用，无外部依赖）
 
 ## 本地 legacy smoke
@@ -277,6 +277,12 @@ GitHub Actions 的 **Network release acceptance** workflow 可通过
 均为 0% packet loss；DERP 阶段与恢复 direct 分别有 daemon fallback/ICE upgrade
 日志，A-B-C 与恢复 ping 的 TTL 分别为 63 与 64。
 
+2026-07-16 使用当前提交重新复验：exit code 0。三方先达到 ICE direct；A↔C UDP
+阻断后 DERP 数据面保持 4/4 ping，随后 control 自动选择经 B 的 next-hop（TTL=63）；
+三端 `voice join` 后 A/C 经 B 双向收包且 participant `secure=true`；解除阻断后 A↔C
+恢复 direct（TTL=64）。脚本最终输出 `NETWORK ACCEPTANCE PASSED: direct, DERP,
+A-B-C next-hop, voice-over-relay, recovery`。
+
 2026-06-29 OrbStack 单 VM 三 netns smoke 通过：
 
 - 新增可重复入口：`tests/e2e/smoke_abc_netns.sh`。脚本在 `ourcord-test`
@@ -353,67 +359,37 @@ GitHub Actions 的 **Network release acceptance** workflow 可通过
 
 ---
 
-## OrbStack 双 VM 跨主机互通验证（legacy mock-control smoke）
+## OrbStack 独立 VM 环境复核（真实 product flow）
 
-这是历史上的"两节点组网互通"手工 smoke，仍可用于回归 TUN/WireGuard
-基础管线，但它依赖 mock control 和手工 endpoint 注入，不再代表 direct
-connect 的主验收路径。
+2026-07-16 使用两台独立 Ubuntu VM（`ourcord-test` / `ourcord-peer3`）复核当前
+binary。control、service、relay 跑在第一台 VM；两台 daemon 使用不同用户 JWT，
+通过真实 service API 创建 lobby、invite、join、voice room，再进入同一个
+`vpn_namespace`。结果：
 
-### 跑一遍
+- 两端先以 DERP baseline 建链，ICE host candidates 完成交换和 probe 后都自动切到
+  `path_summary=direct`、`relay_used=false`；不是手工 endpoint 注入。
+- VPN `198.18.0.2` → `198.18.0.3` 跨 VM ping 4/4，0% packet loss，TTL=64。
+- 两端执行 `voice join` 后互相持续收包；status 均为 `codec=pcm`、
+  `speaking=true`、`secure=true`、`loss_percent=0`。
 
-```bash
-# 1. 启 mock control（背景，监听 0.0.0.0:18642，VM 通过 host.orb.internal 访问）
-mkdir -p ~/.cache/ourcord-debug
-nohup python3 tests/e2e/mock_control.py \
-  --bind 0.0.0.0 --port 18642 \
-  --state ~/.cache/ourcord-debug/mock.json \
-  > ~/.cache/ourcord-debug/mock.log 2>&1 &
+同日 `ourcord-a` 完成 provisioning 后追加三独立 VM 复核。三个当前设备形成全
+direct mesh，`198.18.0.4/.5/.6` 六个有向 ping 组合均为 3/3、0% loss、TTL=64；
+三端 voice status 对另外两个当前设备都显示持续收包、`speaking=true`、
+`secure=true`、`loss_percent=0`。复用的本地 D1 仍保留上一轮 u1/u2 设备，因此
+peer list 还包含两个离线旧设备并让汇总 path 显示 DERP；当前三设备的逐 peer path
+均为 direct。验收脚本应像 `smoke_abc_netns.sh` 一样每次清空 persist state，或使用
+全新用户/显式 revoke 旧设备，不能用“peer 总数恰好等于成员数”作为多设备断言。
 
-# 2. 跑 OrbStack smoke（自动建两个 Ubuntu VM、推送二进制、ipc.key、起 daemon）
-KEEP_VMS=1 bash tests/e2e/smoke_orbstack.sh
-```
+历史 `tests/e2e/smoke_orbstack.sh` 依赖 mock-control 原始 WG endpoint hint，已删除：
+当前 daemon 有意只把此类 hint 当 ICE candidate，未经 ICE data-plane validation
+不会直接写入 WireGuard endpoint。继续保留旧脚本会得到 `no known endpoint`，并且会
+鼓励绕过当前安全/连通性契约。日常自动回归使用 `smoke_abc_netns.sh`；独立 VM 只作
+环境复核。
 
-完成后两个 VM (ourcord-a / ourcord-b) 各跑一份 daemon，都已 `connect`。
-
-### 手工验证跨 daemon ping
-
-```bash
-# 注入 B 的 endpoint 到 mock（A 拉 config 时学到 B 的真实 IP:port）
-B_HOST=$(orb info ourcord-b | awk '/^[Ii][Pp][Vv]4/{print $2}')
-A_HOST=$(orb info ourcord-a | awk '/^[Ii][Pp][Vv]4/{print $2}')
-python3 -c "
-import json; p='$HOME/.cache/ourcord-debug/mock.json'
-d=json.load(open(p))
-for k,v in d['peers'].items():
-    if v['name']=='ourcord-b': v['endpoint']='$B_HOST:51820'
-    if v['name']=='ourcord-a': v['endpoint']='$A_HOST:51820'
-json.dump(d, open(p,'w'), indent=2)"
-
-# 在 A/B 内打通到对端的 VPN /32 路由 — 现在 daemon 自动做（U6），手工命令仅作 fallback：
-#   sudo ip route add 198.18.0.10/32 dev utun
-#   sudo ip route add 198.18.0.11/32 dev utun
-
-# 强制 B 重新拉 config（学到 A endpoint）
-orb run -m ourcord-b sudo XDG_CONFIG_HOME=/home/xiaomouz/.config \
-  /home/xiaomouz/ourcord-cli --socket /tmp/ourcord.sock disconnect
-orb run -m ourcord-b sudo XDG_CONFIG_HOME=/home/xiaomouz/.config \
-  /home/xiaomouz/ourcord-cli --socket /tmp/ourcord.sock connect
-
-# 互 ping
-orb run -m ourcord-a sudo ping -c 4 198.18.0.10   # ourcord-b
-orb run -m ourcord-b sudo ping -c 4 198.18.0.11   # ourcord-a
-```
-
-预期：4 packets transmitted, 4 received, 0% packet loss。
-
-### 已知坑
-
-- **必须固定 wg 监听端口**：daemon 默认端口 0（ephemeral），重启后变化让 mock 注入的 endpoint 失效。
-  `smoke_orbstack.sh` 已默认传 `--wg-listen-port 51820`。
-- **ipc.key 路径**：daemon 与 CLI 都必须读 `XDG_CONFIG_HOME=/home/xiaomouz/.config`，否则 HMAC 失配 → 静默断连。
-- **mock control 是 HTTP/1.0**：daemon 的 `control` HTTP body 必须是 `bytes.Reader`（非自定义 io.Reader），否则 net/http 走 chunked transfer-encoding，Python BaseHTTPServer 解析不了会挂死。本仓库已修复 (`daemon/pkg/control/client.go bytesReader`)。
-- **IPC handshake 拖尾字节**：服务端 HMAC handshake 用 `json.Decoder` 时其 bufio 会预读到 client 紧随其后的第一个 IPC 请求；handleConn 必须用 `dec.Buffered()` 拼回 `io.MultiReader`，否则首条请求丢失、连接挂死。本仓库已修复 (`daemon/pkg/ipc/{auth,server}.go`)。
-- **v6 暂不通**（已知，记入 follow-up）：默认 daemon 已自动 `route add fd<XX>::/48 dev utun`（U6），但 wg AllowedIPs 必须含对端 /128。当前由 control 下发的 ip6 已是 /128，理论应通；若不通见 `daemon/pkg/routing/table.go`。
+本次创建新 VM 时，OrbStack 1.11.1 能启动 Ubuntu 到登录提示，但新实例长期停在
+`provisioning`（已有两个旧实例也处于同样状态）。因此复核复用了两台 `running`
+实例；这是 OrbStack provisioning 状态问题，不是 OurCord TUN/daemon 失败。遇到同样
+情况先看 `orbctl info <vm>` / `orbctl logs <vm>`，不要把 provisioning 实例纳入验收。
 
 ### 与 Tailscale 共存测试
 
