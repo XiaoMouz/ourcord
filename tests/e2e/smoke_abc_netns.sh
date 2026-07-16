@@ -24,6 +24,9 @@ NET_PREFIX="${NET_PREFIX:-10.222.0}"
 ROOM_NAME="${ROOM_NAME:-abc-voice}"
 KEEP_SMOKE="${KEEP_SMOKE:-0}"
 GO_BIN="${GO_BIN:-$(command -v go || true)}"
+NODE22_BIN="${NODE22_BIN:-}"
+CONTROL_INSPECTOR_PORT="${CONTROL_INSPECTOR_PORT:-9230}"
+SERVICE_INSPECTOR_PORT="${SERVICE_INSPECTOR_PORT:-9231}"
 
 CONTROL_URL="http://$BRIDGE_IP:$CONTROL_PORT"
 CONTROL_LOCAL="http://127.0.0.1:$CONTROL_PORT"
@@ -49,6 +52,12 @@ cleanup() {
     kill -- "-$pid" 2>/dev/null
     kill "$pid" 2>/dev/null
   done
+  sleep 0.5
+  for pid in "${PIDS[@]:-}"; do
+    kill -KILL -- "-$pid" 2>/dev/null
+    kill -KILL "$pid" 2>/dev/null
+    wait "$pid" 2>/dev/null || true
+  done
   # run_bg starts every long-lived host process in its own session, so PIDS is
   # sufficient for cleanup. Do not use a broad `pkill -f "$WORKDIR"` here:
   # release-acceptance supervisors legitimately contain WORKDIR in their own
@@ -61,10 +70,16 @@ cleanup() {
   if [[ "$KEEP_SMOKE" != "1" ]]; then
     rm -rf "$WORKDIR"
   else
+    # Daemons run through sudo inside network namespaces and may create
+    # root-owned state. Return retained diagnostics to the invoking user so
+    # upload-artifact can traverse the complete tree on GitHub-hosted runners.
+    sudo chown -R "$(id -u):$(id -g)" "$WORKDIR" 2>/dev/null || true
     log "Keeping smoke workdir: $WORKDIR"
   fi
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 need() {
   command -v "$1" >/dev/null 2>&1 || fail "missing required command: $1"
@@ -95,7 +110,7 @@ wait_http() {
   local deadline=$((SECONDS + 45))
   until curl --max-time 2 -fsS "$url" >/dev/null 2>&1; do
     if (( SECONDS > deadline )); then
-      fail "$service_name did not become ready at $url"
+      fail_with_diagnostics "$service_name did not become ready at $url"
     fi
     sleep 0.5
   done
@@ -108,15 +123,18 @@ wait_file_text() {
   local deadline=$((SECONDS + 45))
   until [[ -f "$file" ]] && grep -qE "$pattern" "$file"; do
     if (( SECONDS > deadline )); then
-      [[ -f "$file" ]] && tail -80 "$file" >&2 || true
-      fail "$service_name did not log pattern: $pattern"
+      fail_with_diagnostics "$service_name did not log pattern: $pattern"
     fi
     sleep 0.5
   done
 }
 
 node22() {
-  npx -y node@22.12.0 "$@"
+  if [[ -n "$NODE22_BIN" ]]; then
+    "$NODE22_BIN" "$@"
+  else
+    npx -y node@22.12.0 "$@"
+  fi
 }
 
 jwt() {
@@ -252,10 +270,14 @@ start_workers() {
       --persist-to "$WORKDIR/service-persist" >/tmp/ocabc-service-migrate.log 2>&1
   ) || { cat /tmp/ocabc-service-migrate.log >&2; fail "service migrations failed"; }
 
-  run_bg service sh -lc "cd '$ROOT/service' && npx -y node@22.12.0 node_modules/wrangler/bin/wrangler.js dev --ip 0.0.0.0 --port '$SERVICE_PORT' --local --persist-to '$WORKDIR/service-persist' --var JWT_SECRET:'$JWT_SECRET' --var SERVICE_INTERNAL_TOKEN:'$SERVICE_INTERNAL_TOKEN' --var ADMIN_TOKEN:'$ADMIN_TOKEN'"
+  local node_command="npx -y node@22.12.0"
+  if [[ -n "$NODE22_BIN" ]]; then
+    node_command="'$NODE22_BIN'"
+  fi
+  run_bg service sh -lc "cd '$ROOT/service' && $node_command node_modules/wrangler/bin/wrangler.js dev --ip 0.0.0.0 --port '$SERVICE_PORT' --inspector-port '$SERVICE_INSPECTOR_PORT' --local --persist-to '$WORKDIR/service-persist' --var JWT_SECRET:'$JWT_SECRET' --var SERVICE_INTERNAL_TOKEN:'$SERVICE_INTERNAL_TOKEN' --var ADMIN_TOKEN:'$ADMIN_TOKEN'"
   wait_http "$SERVICE_LOCAL/health" service
 
-  run_bg control sh -lc "cd '$ROOT/control' && npx -y node@22.12.0 node_modules/wrangler/bin/wrangler.js dev --ip 0.0.0.0 --port '$CONTROL_PORT' --local --persist-to '$WORKDIR/control-persist' --var JWT_SECRET:'$JWT_SECRET' --var SERVICE_URL:'$SERVICE_LOCAL' --var SERVICE_INTERNAL_TOKEN:'$SERVICE_INTERNAL_TOKEN' --var ADMIN_TOKEN:'$ADMIN_TOKEN' --var ADMIN_USER_IDS:u1"
+  run_bg control sh -lc "cd '$ROOT/control' && $node_command node_modules/wrangler/bin/wrangler.js dev --ip 0.0.0.0 --port '$CONTROL_PORT' --inspector-port '$CONTROL_INSPECTOR_PORT' --local --persist-to '$WORKDIR/control-persist' --var JWT_SECRET:'$JWT_SECRET' --var SERVICE_URL:'$SERVICE_LOCAL' --var SERVICE_INTERNAL_TOKEN:'$SERVICE_INTERNAL_TOKEN' --var ADMIN_TOKEN:'$ADMIN_TOKEN' --var ADMIN_USER_IDS:u1"
   wait_http "$CONTROL_LOCAL/health" control
 }
 
@@ -320,6 +342,35 @@ cli() {
   sudo ip netns exec "$ns" env XDG_CONFIG_HOME="$state/config" "$WORKDIR/ourcord-cli" --socket "$sock" "$@"
 }
 
+dump_diagnostics() (
+  set +e
+  log "Network acceptance diagnostic snapshot"
+  for name in "${NAMES[@]}"; do
+    printf '\n--- %s status ---\n' "$name" >&2
+    cli "$name" status >&2
+    printf '\n--- %s peers ---\n' "$name" >&2
+    cli "$name" peers >&2
+    printf '\n--- %s voice ---\n' "$name" >&2
+    cli "$name" voice status >&2
+    if [[ -f "$WORKDIR/daemon-$name.log" ]]; then
+      printf '\n--- daemon-%s.log (tail) ---\n' "$name" >&2
+      tail -160 "$WORKDIR/daemon-$name.log" >&2
+    fi
+  done
+  for component in relay control service; do
+    if [[ -f "$WORKDIR/$component.log" ]]; then
+      printf '\n--- %s.log (tail) ---\n' "$component" >&2
+      tail -160 "$WORKDIR/$component.log" >&2
+    fi
+  done
+)
+
+fail_with_diagnostics() {
+  local message=$*
+  dump_diagnostics
+  fail "$message"
+}
+
 connect_all() {
   local network_id
   network_id="$(cat "$WORKDIR/network_id")"
@@ -332,9 +383,7 @@ wait_peer_count() {
   local name=$1 deadline=$((SECONDS + 90))
   until cli "$name" peers | python3 -c 'import json,sys; sys.exit(0 if len(json.load(sys.stdin)) >= 2 else 1)' >/dev/null; do
     if (( SECONDS > deadline )); then
-      cli "$name" status >&2 || true
-      cli "$name" peers >&2 || true
-      fail "$name did not see two room peers"
+      fail_with_diagnostics "$name did not see two room peers"
     fi
     sleep 2
   done
@@ -344,8 +393,7 @@ wait_next_hop() {
   local name=$1 deadline=$((SECONDS + 180))
   until cli "$name" peers | python3 -c 'import json,sys; peers=json.load(sys.stdin); sys.exit(0 if any(p.get("path")=="next-hop" and p.get("next_hop") for p in peers) else 1)' >/dev/null; do
     if (( SECONDS > deadline )); then
-      cli "$name" peers >&2 || true
-      fail "$name did not receive next-hop route"
+      fail_with_diagnostics "$name did not receive next-hop route"
     fi
     sleep 5
   done
@@ -360,8 +408,7 @@ peers = json.load(sys.stdin)
 sys.exit(0 if len(peers) >= 2 and all(p.get("path") == expected for p in peers) else 1)
 ' "$expected" >/dev/null; do
     if (( SECONDS > deadline )); then
-      cli "$name" peers >&2 || true
-      fail "$name did not reach all-$expected peer paths"
+      fail_with_diagnostics "$name did not reach all-$expected peer paths"
     fi
     sleep 2
   done
@@ -378,8 +425,7 @@ for peer in json.load(sys.stdin):
 sys.exit(1)
 ' "$ip" "$expected" >/dev/null; do
     if (( SECONDS > deadline )); then
-      cli "$name" peers >&2 || true
-      fail "$name did not report $ip as $expected"
+      fail_with_diagnostics "$name did not report $ip as $expected"
     fi
     sleep 2
   done
@@ -401,8 +447,7 @@ for peer in json.load(sys.stdin):
 sys.exit(1)
 ' "$ip" "$accepted" >/dev/null; do
     if (( SECONDS > deadline )); then
-      cli "$name" peers >&2 || true
-      fail "$name did not report $ip as one of: $accepted"
+      fail_with_diagnostics "$name did not report $ip as one of: $accepted"
     fi
     sleep 2
   done
@@ -429,8 +474,7 @@ for p in st.get("participants", []):
 sys.exit(1)
 ' "$peer_pk" >/dev/null; do
     if (( SECONDS > deadline )); then
-      cli "$name" voice status >&2 || true
-      fail "$name did not hear $peer_pk over voice"
+      fail_with_diagnostics "$name did not hear $peer_pk over voice"
     fi
     sleep 1
   done
