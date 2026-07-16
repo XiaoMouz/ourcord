@@ -14,8 +14,9 @@ DERP 中继节点 (Go)            ←→  UI (Tauri / Flutter / React)
 
 - **控制层** (`control/`) — 打洞协调、节点注册、STUN 指派、中继注册、封禁管理
 - **服务层** (`service/`) — 大厅/房间、权限、消息历史、自治文件后端直传闭环与 R2 fallback
+- **自治文件后端** (`filebackend/`) — 用户/大厅可自建的 capability-gated 文件存储服务
 - **中继节点** (`relay/`) — DERP 协议中继，基于 Tailscale derper，添加控制面集成与限速
-- **客户端 Daemon** (`daemon/`) — wireguard-go + ICE 打洞 + DERP 客户端 + IPC
+- **客户端 Daemon** (`daemon/`) — wireguard-go + ICE 打洞 + DERP 客户端 + 认证 UDS 上的 gRPC IPC + 语音 v1
 
 ## 网络特性
 
@@ -30,7 +31,7 @@ DERP 中继节点 (Go)            ←→  UI (Tauri / Flutter / React)
 ## 快速开始
 
 ### 前提条件
-- Go 1.25+
+- Go 1.26.1+
 - Node.js 18+
 - Cloudflare 账号 (Workers + D1 + KV + R2)
 
@@ -138,6 +139,7 @@ go build -o ourcord-cli ./cmd/ourcord-cli
 go build -o ourcord-tui ./cmd/ourcord-tui
 ./ourcordd --control-url https://your-control.workers.dev &
 ./ourcord-cli status         # one-shot commands + `ourcord-cli watch` live view
+./ourcord-cli voice join     # 默认构建为无硬件 PCM；真 Opus/音频设备需 -tags voice
 ./ourcord-tui                # interactive terminal UI
 ```
 
@@ -148,8 +150,8 @@ go build -o ourcord-tui ./cmd/ourcord-tui
 ## 开发路线图
 
 - [x] **阶段一** — VPN 核心 + 控制层 + DERP 节点 + daemon 连接管线已闭环（per-peer ICE 自动直连、startup/runtime DERP fallback、指数退避重试、1:1 pair network、service `vpn_namespace`、A-B-C next-hop 数据面与 next-hop 后直达恢复均已用真实 control/service/relay/daemon + OrbStack 验证；`tests/e2e/smoke_abc_netns.sh` 保留为自动 A-B-C 回归入口）
-- [ ] **阶段二** — 网络完整性与自治主线大部分完成（已落地 A-B-C 拓扑闭环、设备级凭证、control↔service HMAC、room-scoped peer refresh、CLI/status、自治文件后端直传/complete/health v1、发布前 direct/DERP/A-B-C/recovery 网络验收；待收口 Windows Wintun、路径抖动观测与降噪）
-- [ ] **阶段三** — 媒体层（语音/视频/屏幕共享/远控）
+- [x] **阶段二** — 网络完整性与自治主线已闭环（A-B-C 拓扑、设备级凭证、control↔service HMAC、room-scoped peer refresh、CLI/TUI、自治文件后端、Windows Wintun、路径抖动遥测/降噪与发布验收均已落地）
+- [ ] **阶段三** — 媒体层进行中：语音 v1 已实现（逐 peer E2E、jitter/loss、mute/deafen、真 Opus + 音频设备选择）；视频、屏幕共享、远控和正式语音 UI 待实现
 - [ ] **阶段四** — 分发与产品化（Tauri/Flutter/React UI、安装器、更新、运营监控）
 
 内部设备接入、运行日志与诊断包操作见 [docs/ops/internal-operations.md](docs/ops/internal-operations.md)。

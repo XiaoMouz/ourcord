@@ -12,7 +12,7 @@
 - DERP 中继客户端
 - 控制面 WebSocket 客户端（拉配置、推状态）
 - 路由表计算（含 A-B-C 中继链 `AllowedIPs`）
-- 给 UI 提供 IPC（gRPC over Unix socket / Named Pipe）
+- 给 UI 提供 IPC（当前为认证 Unix socket 上的 gRPC；Windows Named Pipe 待实现）
 - 媒体引擎入口（阶段三）
 
 ## 包结构
@@ -78,12 +78,18 @@ CI 的 `voice-build` job 在 ubuntu+macos 上跑上述命令。**绝不要**把 
 
 ## IPC
 
-- 当前是带 HMAC 握手的 NDJSON over Unix Socket（macOS/Linux）；Windows Named Pipe
-  是未来实现，不要把当前 JSON IPC 误称为 gRPC。
+- 当前是带 peercred + HMAC 握手的 **gRPC over Unix Socket**（macOS/Linux）；
+  Windows Named Pipe 是未来实现。旧 NDJSON transport 已移除，不要恢复或继续按
+  JSON IPC 描述当前实现。
 - `proto/ourcord/v1/daemon.proto` 是稳定 daemon ↔ UI 契约的事实源。`pkg/ipc/`
-  内的 JSON 类型是兼容适配层；新增稳定能力先更新 proto，再同步更新适配层或生成绑定。
-- `CmdStatus` 返回 `IP4` / `IP6` / `PeerCount` / `RelayUsed` / `RelayURL` / `PathSummary` 字段；`CmdListPeers` 返回每个 peer 的 `path`（`configured` / `direct` / `derp` / `next-hop` / `unresolved`）。CLI/UI 可直接读，不需要解析 wg 表。
-- `CmdEnterRoom` / `CmdLeaveRoom` 是 daemon 接入业务房间的入口：进入房间后 `FetchConfig(room_id)` 拉房间作用域 peers，离开后回到 user-scope mesh。切换 config 必须替换旧 peer set，不能让上一房间的 peer 留在路由表。
+  内的 domain types 通过 `conv.go` 映射到 proto；新增稳定能力先更新 proto，再同步
+  domain mapping 与生成绑定。
+- `DaemonService.GetStatus` 返回地址、peer 数、relay、path summary/flap 等字段；
+  `ListPeers` 返回每个 peer 的 direct/derp/next-hop/degraded 等 path。CLI/UI
+  直接消费 typed response，不需要解析 wg 表。
+- `EnterNetwork` / `LeaveNetwork` 是 daemon 接入业务网络的稳定入口（CLI 的
+  `enter-room`/`leave-room` 只是兼容 alias）。进入后按 `vpn_namespace` 拉房间作用域
+  peers，离开后回到 user-scope mesh；切换配置必须替换旧 peer set。
 
 ## 已知技术债
 

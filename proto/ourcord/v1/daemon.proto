@@ -9,10 +9,9 @@ option go_package = "github.com/ourcord/ourcord/daemon/pkg/pb/ourcordv1;ourcordv
 
 // DaemonService is the stable local UI-to-daemon contract.
 //
-// It describes operations, messages, and field numbers only. The current
-// daemon still transports the equivalent requests as authenticated NDJSON over
-// a local Unix socket; see proto/README.md for the migration rules. A future
-// transport may implement these methods using gRPC without changing this API.
+// It describes operations, messages, and field numbers. The daemon serves this
+// API as gRPC over an authenticated local Unix socket; see proto/README.md for
+// the transport and compatibility rules.
 service DaemonService {
   rpc GetStatus(GetStatusRequest) returns (GetStatusResponse);
   rpc ListPeers(ListPeersRequest) returns (ListPeersResponse);

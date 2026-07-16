@@ -33,10 +33,9 @@ const (
 //
 // DaemonService is the stable local UI-to-daemon contract.
 //
-// It describes operations, messages, and field numbers only. The current
-// daemon still transports the equivalent requests as authenticated NDJSON over
-// a local Unix socket; see proto/README.md for the migration rules. A future
-// transport may implement these methods using gRPC without changing this API.
+// It describes operations, messages, and field numbers. The daemon serves this
+// API as gRPC over an authenticated local Unix socket; see proto/README.md for
+// the transport and compatibility rules.
 type DaemonServiceClient interface {
 	GetStatus(ctx context.Context, in *GetStatusRequest, opts ...grpc.CallOption) (*GetStatusResponse, error)
 	ListPeers(ctx context.Context, in *ListPeersRequest, opts ...grpc.CallOption) (*ListPeersResponse, error)
@@ -120,10 +119,9 @@ func (c *daemonServiceClient) LeaveNetwork(ctx context.Context, in *LeaveNetwork
 //
 // DaemonService is the stable local UI-to-daemon contract.
 //
-// It describes operations, messages, and field numbers only. The current
-// daemon still transports the equivalent requests as authenticated NDJSON over
-// a local Unix socket; see proto/README.md for the migration rules. A future
-// transport may implement these methods using gRPC without changing this API.
+// It describes operations, messages, and field numbers. The daemon serves this
+// API as gRPC over an authenticated local Unix socket; see proto/README.md for
+// the transport and compatibility rules.
 type DaemonServiceServer interface {
 	GetStatus(context.Context, *GetStatusRequest) (*GetStatusResponse, error)
 	ListPeers(context.Context, *ListPeersRequest) (*ListPeersResponse, error)

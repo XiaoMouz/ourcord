@@ -149,7 +149,7 @@ sudo ./ourcordd \
   --state-dir /usr/local/var/ourcord
 ```
 
-**b. launchd helper（生产推荐，但当前为 phase-2）**
+**b. launchd helper（生产推荐，属于 Phase 4 分发/产品化）**
 
 按设计应通过 `SMJobBless` 或 launchd `LaunchDaemon` 运行 root helper，UI 通过 IPC 与之通信。**当前未实现**——见 §7「已知缺口」。
 

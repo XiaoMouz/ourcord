@@ -26,6 +26,7 @@ OurCord 是一个面向 5–10 人小群体的通讯平台，**底层是自建�
 |---|---|---|---|
 | 控制层 | `control/` | TypeScript + Cloudflare Workers + D1 + KV + Durable Objects | `wrangler deploy` |
 | 服务层 | `service/` | TypeScript + Cloudflare Workers + D1 + R2 | `wrangler deploy` |
+| 自治文件后端 | `filebackend/` | Go | 用户/大厅自建服务器 |
 | DERP 中继 | `relay/` | Go (fork tailscale/derp) | 用户/官方裸机或 VPS |
 | 客户端 daemon | `daemon/` | Go (wireguard-go + pion/ice) | 跑在终端用户机器上 |
 | UI | `ui/{desktop,mobile,web}` | Tauri / Flutter / React | 通过 IPC 与 daemon 通信 |
@@ -93,11 +94,13 @@ R2 配额由后端控制（大小、永久/临时数量、保存天数）。元�
 - `SERVICE_INTERNAL_TOKEN` 仍是双方共享密钥，但**不再作为 bearer 直接发送**。
 - control 每次内部调用发送 `X-Internal-Ts` / `X-Internal-Nonce` / `X-Internal-Sig`，
   其中 Sig = base64url(HMAC-SHA256(secret, `ts\nnonce\nMETHOD\npathname+search`))。
-- service 校验 ±90s 时间窗 + 常数时间比较 + per-isolate nonce 重放拒绝。
+- service 校验 ±90s 时间窗 + 常数时间比较 + D1 `internal_nonces` 全局 nonce
+  重放拒绝（per-isolate map 仅作快速负缓存）。
   实现：`control/src/internalAuth.ts` ↔ `service/src/internalAuth.ts`（契约需保持同步，
   标注 `TODO(proto)` 待迁 proto/）。
-- 残余风险：nonce 缓存是 isolate 内存，跨 isolate 的 90s 窗口内重放理论上可行；
-  需要时可用 D1/KV nonce 表收口。旧的静态 `X-Internal-Token` 已被拒收，不要回退。
+- 残余风险：D1 写入异常时 verifier 会降级到 per-isolate 缓存以保持可用性，
+  该异常窗口内跨 isolate 重放理论上可行；需要更高保证时改为 D1 故障 fail-closed。
+  旧的静态 `X-Internal-Token` 已被拒收，不要回退。
 
 ---
 
@@ -112,12 +115,13 @@ R2 配额由后端控制（大小、永久/临时数量、保存天数）。元�
 # Go modules
 (cd relay  && go build ./... && go vet ./... && go test ./...)
 (cd daemon && go build ./... && go vet ./... && go test -race ./...)
+(cd filebackend && go build ./... && go vet ./... && go test -race ./...)
 
 # 整工作区
 go work sync
 ```
 
-测试矩阵已成形（control 31+ vitest、daemon 多包 race tests、relay 单测）；新增逻辑请同步加 `_test.go` 或 vitest，不再算"脚手架"阶段。
+测试矩阵已成形（control/service 完整 vitest、daemon 多包 race tests、relay/filebackend 单测）；新增逻辑请同步加 `_test.go` 或 vitest，不再算"脚手架"阶段。
 
 ---
 
@@ -170,7 +174,7 @@ go work sync
 
 - ✅ **阶段一**：VPN 核心 + 控制层 + DERP 节点 + daemon 连接管线 + IPC + 路由（含 A-B-C 链配置能力）+ 限速 + 封禁双 key 体系 + IPAM 198.18/15+ULA 已闭环。per-peer ICE 自动直连、startup/runtime DERP fallback、1:1 pair network、service `vpn_namespace`、A-B-C next-hop 与 next-hop 后直达恢复，均已通过真实 control/service/relay/daemon + OrbStack 验证。
 - ✅ **阶段二**：网络完整性与自治主线已闭环：A-B-C 拓扑计算/路由下发/daemon 连通性反馈、设备级凭证、control↔service HMAC 短签名、房间作用域 peer refresh、CLI/status、自治文件后端直传/complete/health v1 均已实现。连通性报告已用 epoch+sequence 仲裁、以 source-owned 有向边保存；direct/DERP/A-B-C/recovery 已有发布验收 workflow。路径抖动已有 per-peer 转换计数/dwell/flapping 遥测与 ICE 退避降噪；Windows Wintun 地址/路由同步（`addr_windows.go` + winipcfg）已落地并由 CI `windows-native` job 用真 Wintun 适配器验收。剩余为可选附加（Minecraft LAN）与打包/UI（阶段三/四）。
-- 📋 **阶段三**：媒体层（Opus/H.264/H.265、远控）
+- 🚧 **阶段三**：语音 v1 已落地（逐 peer E2E 加密、RTP/UDP over overlay、jitter/loss、mute/deafen、真 Opus + malgo 音频设备与设备选择）；视频、屏幕共享、远控和正式语音 UI 待实现。
 - 📋 **阶段四**：UI 层（Tauri/Flutter/React）
 - 📋 **阶段二可选附加**：Minecraft LAN 联机；是否作为阶段二差异化能力仍需在网络完整性主线之后确认。
 

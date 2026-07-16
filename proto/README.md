@@ -10,12 +10,13 @@ This first contract deliberately covers the daemon boundary only:
 
 - daemon status and transport diagnostics;
 - peer-list state;
-- connect/disconnect and enter/leave-network operations.
+- connect/disconnect and enter/leave-network operations;
+- Phase-3 voice control/status and audio device selection (`media.proto`).
 
 It does **not** convert the browser-facing control/service REST APIs to
-protobuf. Lobby, message, and file APIs remain JSON HTTP APIs. Media controls
-will be added in a later `ourcord.v1` file after their session model is
-designed.
+protobuf. Lobby, message, and file APIs remain JSON HTTP APIs. Voice controls
+live in `ourcord/v1/media.proto`; video, screen-share, and remote-control
+contracts have not been frozen yet.
 
 ## Current wire transport
 

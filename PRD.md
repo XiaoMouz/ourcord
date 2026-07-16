@@ -147,38 +147,7 @@ Recent validation:
   daemon kept probing direct ICE while still routed through B, cleared
   `NextHop`, reported `ice_direct=1`, and A-C ping returned to TTL=64 direct.
 
-Known gaps:
-
-- Connectivity reports have three async writers per edge (30s baseline
-  refresh, 10s reachability monitor, ICE upgrade/degrade callbacks). The
-  daemon now tags every report with a lifecycle epoch and monotonic sequence,
-  and control stores only the reporter's source-owned directed edge. This
-  prevents reordering and a peer's observation from fabricating the opposite
-  direction; remaining work is path-flap telemetry and noise reduction.
-- A-B-C mixed DERP data-plane forwarding has been validated. Startup DERP
-  reachable-edge reports are automatic; daemon unreachable/direct recovery
-  reports have code coverage and independent OrbStack VM smoke coverage. The
-  repeatable single-VM / three-netns script remains the faster regression
-  entrypoint.
-- Legacy mock-control endpoint injection remains documented only as a fast
-  regression path; it is no longer the primary direct-connect acceptance path.
-- Room/network identity is being split into an explicit contract:
-  `rooms.id` remains the service-layer business key for messages/files/CRUD,
-  while `rooms.vpn_namespace` is accepted by control/service/daemon as the
-  network namespace for voice/video/file overlays. Existing `room_id` query
-  names remain for wire compatibility during the transition.
-- Pair signaling exists in the control-layer SignalDO route and pair-scoped
-  peer config now resolves the two exact device public keys; product-level
-  private-call permission and UI flow still need full end-to-end validation.
-- Windows address assignment and route sync are implemented via winipcfg
-  (`daemon/pkg/tun/addr_windows.go`), validated by the `windows-native` CI job.
-- Product GUIs remain Phase 4, but the client stack is ready for them: the
-  daemon serves `proto/ourcord/v1/daemon.proto` as gRPC over an authenticated
-  unix socket (the JSON IPC adapter is removed), and `daemon/pkg/client`
-  exposes typed, UI-agnostic operations that the CLI and TUI share today —
-  a GUI is another presenter over the same core, or a direct gRPC consumer.
-
-Implementation decisions to close:
+Current contracts and remaining product gaps:
 
 - **Room identity contract**: `rooms.id` is the business identity used by
   service APIs (`messages`, `files`, room CRUD). `rooms.vpn_namespace` is the
@@ -197,13 +166,10 @@ Implementation decisions to close:
   P2P-only, P2P+DERP, user-relay+P2P, and A-B-C route chains. The control model
   now separates `ice_direct` from `wg_reachable`, so a DERP-backed peer edge can
   still be used as a valid next-hop when policy allows it.
-- **Signal room conventions**: control currently accepts two SignalDO room id
-  forms. Service-room ids map to lobby/room membership and should correspond
-  to the same identity used for `peers/config`. `pair:<pkA>.<pkB>` maps to
-  standalone 1:1 peer signaling without service membership. Decide whether
-  pair signaling remains an internal/direct-connect primitive only, or whether
-  it needs a matching peer-config path for product flows such as calls outside
-  a lobby.
+- **Signal room conventions**: control accepts service-backed network ids and
+  canonical `pair:<pkA>.<pkB>` ids. Pair-scoped config resolves exactly those
+  two device public keys; product-level private-call permissions, records, and
+  UI remain to be attached above this working network primitive.
 - **DERP fallback acceptance**: Phase 1 must prove both startup fallback
   (direct ICE is unavailable from the beginning) and runtime fallback (direct
   path fails after being established). The daemon should automatically route
@@ -212,21 +178,28 @@ Implementation decisions to close:
   fallback from ICE to DERP. Real startup constrained-network DERP data-plane
   smoke is validated; runtime fallback is validated both through the diagnostic
   `force-derp` path and through a live OS route-blackhole impairment smoke.
-- **Connectivity topology reports**: daemon/control now distinguish
+- **Connectivity topology reports**: daemon/control distinguish
   `ice_direct` from `wg_reachable` in `/api/peers/connectivity`. Control stores
-  recent reachable edges per `network_id`, and `peers/config` derives a one-hop
-  next-hop route only when the hop path is cheaper than the direct edge. Reports
-  are mirrored because the transport edge is bidirectional for route selection.
+  reporter-owned directed edges per `network_id`, and `peers/config` derives a
+  one-hop next-hop route only when both required directions are evidenced and
+  the hop path is cheaper than the direct edge. Reports are never mirrored.
   Runtime ICE fallback reports `ice_direct=false` while keeping
   `wg_reachable=true` when DERP remains configured and uses a
   `derp-fallback:<reason>` report reason. Startup DERP peer configs are also
   reported automatically as reachable baseline edges, but those DERP baseline
   edges carry high route cost and no longer create arbitrary relay chains by
   themselves.
-- **ICE startup dedup/noise**: record and reduce the observed duplicate-start
-  and gather-timeout noise (`attempted to start agent twice`, repeated
-  `ice gather timeout`) so successful direct paths do not look degraded in
-  logs or UI diagnostics.
+- **Path stability**: lifecycle epoch + monotonic sequence arbitration prevents
+  stale async writers from overwriting newer reports. Per-peer transition,
+  dwell, and flapping telemetry is exposed through status/proto; ICE retry
+  backoff is raised while a path is flapping to reduce churn.
+- **Platform/UI boundary**: Windows address and route sync are implemented via
+  winipcfg and covered by the native Wintun CI job. Product GUIs remain Phase 4,
+  but the daemon now serves gRPC over an authenticated Unix socket and
+  `daemon/pkg/client` provides the shared typed core used by CLI and TUI.
+- **Legacy smoke**: mock-control plus `--wg-endpoint` remains only a fast daemon
+  pipeline regression. `tests/e2e/smoke_abc_netns.sh` is the repeatable network
+  release acceptance; independent OrbStack VMs are an environment-level check.
 
 Validated in the current Phase 1 smoke:
 
@@ -288,9 +261,9 @@ ChaCha20-Poly1305); no PFS in v1 (see SECURITY.md). The engine is presenter-
 agnostic like the rest: `DaemonVoiceService` (join/leave/mute/deafen/status) over
 gRPC, `daemon/pkg/client` voice methods, and an `ourcord-cli voice` subcommand.
 The default build encodes PCM (pure Go, CGO=0); the `voice` build tag swaps in
-real Opus (~32 kbps) and hardware audio devices (malgo). Remaining Phase-3 work:
-audio device selection, active-speaker/volume UI, and video/screen-share/remote
-control.
+real Opus (~32 kbps) and hardware audio devices (malgo), including capture and
+playback device enumeration/selection through gRPC and CLI. Remaining Phase-3
+work: active-speaker/volume UI, video, screen-share, and remote control.
 
 Required:
 

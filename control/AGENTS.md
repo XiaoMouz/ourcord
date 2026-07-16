@@ -49,6 +49,7 @@
 cd control
 pnpm install               # 仅首次（corepack 自动取 pnpm@9）
 pnpm exec tsc --noEmit     # 类型检查
+pnpm test                  # vitest
 pnpm exec wrangler deploy  # 部署
 ```
 
@@ -60,7 +61,7 @@ pnpm exec wrangler deploy  # 部署
 - **per-relay denylist 与全局 ban 解耦**：`/api/relay/banned-keys?relay_id=` 才返回合并集。响应包含 `{keys, derp_keys}` 两数组，分别给 WireGuard 与 DERP admit 用——双 key 体系（G12），daemon 注册 peer 时必须同时上报 `public_key` + `derp_node_key`，否则 DERP 通道封禁失效。
 - **schema 改动必须走迁移**；不要恢复通过 `init-db` 或 ad-hoc `wrangler d1 execute` 管理生产 schema 的旧模式。
 - **OAuth state 浏览器绑定（P1）**：`oauthRedirect` 同时下发 `state`（KV）与 `oauth_state` HttpOnly cookie；`oauthCallback` 必须常量时间比对二者。修改这条链路时不能去掉 cookie 校验，否则退化为登录 CSRF。
-- **OTP 暴力防护（P2）**：`otp_fails:<email>` KV 计数器达到 5 即作废 OTP；`otp_cooldown:<email>` 强制 60s 申请冷却。**KV 读改写非原子**——这是已知短板，并发错码可能漏计 1-2 次。Phase-2 切换 D1 计数行或 Durable Object 解决。新增 OTP 校验路径必须复用 fail counter 而非另起一套。
+- **OTP 暴力防护（P2）**：`otp_fails:<email>` KV 计数器达到 5 即作废 OTP；`otp_cooldown:<email>` 强制 60s 申请冷却。**KV 读改写非原子**——这是已知短板，并发错码可能漏计 1-2 次；后续可切换 D1 计数行或 Durable Object。新增 OTP 校验路径必须复用 fail counter 而非另起一套。
 - **`bans` 表强制生效点（P3）**：`requireAuth` 在 JWT 验签后追加 `isUserBanned`，让现有 30 天 token 在封禁后立即失效；`verifyOTP` / `oauthCallback` 同时检查以拒发新 token。新增登录入口/特权路径同样要补这一行。
 
 ## IPAM（U 系列后）

@@ -40,6 +40,7 @@
 cd service
 pnpm install               # corepack 自动取 pnpm@9
 pnpm exec tsc --noEmit
+pnpm test
 pnpm exec wrangler deploy
 ```
 
@@ -53,5 +54,5 @@ pnpm exec wrangler deploy
 ## 已知技术债
 
 - R2 过期文件清理已上线，但删失败仅记日志。
-- 权限系统目前粗粒度（owner/admin/member/guest）；细粒度位掩码权限（D3）阶段二补。
+- 权限系统目前粗粒度（owner/admin/member/guest）；细粒度位掩码权限仍是后续产品化技术债。
 - D1 schema 已走版本化 migrations；`src/schema.ts` / dev `init-db` 只能作为开发辅助。新增列必须配套迁移脚本并保持两者同步。

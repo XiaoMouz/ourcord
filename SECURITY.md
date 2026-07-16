@@ -4,9 +4,8 @@ This document describes the OurCord security model: who we trust, which secrets
 exist, how trust boundaries are enforced, how to rotate credentials, and what
 known gaps are scheduled for future work.
 
-It is descriptive of the current implementation. Items explicitly
-marked **future** or **phase-2** are not yet implemented and must not be
-assumed to be in place.
+It is descriptive of the current implementation. Items explicitly marked
+**future** are not yet implemented and must not be assumed to be in place.
 
 ---
 
@@ -85,15 +84,17 @@ assumed to be in place.
   as the shared key. Control sends `X-Internal-Ts`,
   `X-Internal-Nonce`, and `X-Internal-Sig`, where the signature covers
   `ts\nnonce\nMETHOD\npathname+search`.
-- **Verification**: service checks a ±90s timestamp window, rejects nonce
-  reuse within the current isolate, and uses constant-time signature
-  comparison. The old static `X-Internal-Token` bearer shape is rejected.
+- **Verification**: service checks a ±90s timestamp window, uses constant-time
+  signature comparison, and records the nonce with `INSERT OR IGNORE` in the
+  strongly consistent D1 `internal_nonces` table. A per-isolate map is only a
+  fast negative cache. The old static `X-Internal-Token` bearer shape is
+  rejected.
 - **Transport**: HTTPS, Cloudflare → Cloudflare.
-- **Residual risk**: nonce replay protection is per isolate memory. A
-  replay across isolates inside the 90s window is theoretically possible
-  until nonce state is moved to D1/KV or another shared store. A
-  Cloudflare account compromise or malicious deploy remains out of scope
-  for this layer.
+- **Residual risk**: if the D1 nonce insert errors, verification deliberately
+  degrades to the per-isolate cache so a transient D1 outage does not break all
+  room-scoped config calls. Cross-isolate replay is therefore theoretically
+  possible during that degraded window. A Cloudflare account compromise or
+  malicious deploy remains out of scope for this layer.
 
 ### 3.4 Daemon ↔ Control
 
@@ -227,8 +228,8 @@ rotation window will fail; users retry the login.
 - **OTP brute-force protection (P2)**: `otp_fails:<email>` KV counter
   invalidates the OTP after `OTP_MAX_FAILS = 5` wrong submissions;
   `otp_cooldown:<email>` enforces a 60 s cooldown between issuances.
-  Same atomicity caveat as above; phase-2 will move this to D1 or a
-  Durable Object.
+  Same atomicity caveat as above; moving this counter to D1 or a Durable Object
+  remains future hardening.
 - **WebSocket signalling**: per-session rate limits applied in
   `control/src/signal.ts`; offending sockets are closed with
   `1008 "rate limit exceeded"`.
@@ -237,10 +238,10 @@ rotation window will fail; users retry the login.
 
 ## 6. Known gaps and future work
 
-- **Shared nonce store for control ↔ service.** HMAC signing is live, but
-  nonce replay detection is isolate-local. D1/KV-backed nonce storage
-  would close the cross-isolate 90s replay window if the deployment
-  needs that guarantee.
+- **Fail-closed policy for nonce-store outages.** D1 is the normal
+  cross-isolate replay guard, but verification currently falls back to the
+  isolate-local cache when D1 errors. High-assurance deployments may prefer to
+  reject internal calls until D1 recovers.
 
 - **Dual-key rotation for `SERVICE_INTERNAL_TOKEN`.** HMAC currently uses
   one active key. Add `SERVICE_INTERNAL_TOKEN_OLD`/key-id overlap before
@@ -251,9 +252,9 @@ rotation window will fail; users retry the login.
   legacy raw JWT daemon path once clients have migrated.
 
 - **End-to-end encryption.**
-  - **Room media (audio/video/screen-share)** is end-to-end at the
-    WireGuard layer: peers exchange Curve25519 keys and traffic is
-    encrypted with ChaCha20-Poly1305. Relays carry ciphertext only.
+  - **Voice media** has the additional pairwise E2E layer described in §3.7,
+    so an A-B-C forwarding peer cannot read it. Video and screen-share are not
+    implemented yet and must preserve this property when their contracts land.
   - **Message text routed through the service layer** falls back to
     TLS only — i.e. the service is trusted with plaintext for the
     purpose of storing message history. Adding E2EE for stored messages
