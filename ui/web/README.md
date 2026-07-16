@@ -12,4 +12,8 @@ npm run dev
 npm test
 ```
 
-The site is built with vinext and deployed through Sites. Runtime storage is intentionally disabled in `.openai/hosting.json`; authentication and application data remain in the separate control and service Workers.
+The site is built with vinext and versioned through Sites. The production apex
+is deployed with `npm run deploy:apex`, which binds the same validated build to
+`ourcord.mou.best` through Cloudflare Workers. Runtime storage is intentionally
+disabled; authentication and application data remain in the separate control
+and service Workers.
