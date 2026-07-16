@@ -1,5 +1,5 @@
 import { Env, RelayServer } from "./types";
-import { requireAuth, requireAdmin, generateId, checkBodySize, json } from "./auth";
+import { requireAuth, requireAdmin, generateId, checkBodySize, constantTimeEqual, json } from "./auth";
 
 // POST /api/relay/register — relay server self-registration / heartbeat
 // Called by the relay server daemon itself (authenticated by server secret).
@@ -18,9 +18,12 @@ export async function registerRelay(request: Request, env: Env): Promise<Respons
   const cloned = request.clone();
   const peek = await request.json<{ mode?: string }>().catch(() => ({} as { mode?: string }));
   const requiresAdmin = peek.mode === "lobby" || peek.mode === "rental";
-  const authResult = requiresAdmin
-    ? await requireAdmin(cloned, env)
-    : await requireAuth(cloned, env);
+  const serverOwnerId = requiresAdmin ? authenticateOperatorRelay(cloned, env) : null;
+  const authResult = serverOwnerId
+    ? { sub: serverOwnerId }
+    : requiresAdmin
+      ? await requireAdmin(cloned, env)
+      : await requireAuth(cloned, env);
   if (authResult instanceof Response) return authResult;
   const { sub: ownerId } = authResult;
 
@@ -118,6 +121,21 @@ export async function registerRelay(request: Request, env: Env): Promise<Respons
 
   await invalidateRelayCache(env);
   return json({ id: canonicalId }, 201);
+}
+
+// Official lobby/rental relays are long-running servers, while user JWTs are
+// intentionally capped at one hour. Let an operator relay authenticate with
+// the long-lived ADMIN_TOKEN and attribute its rows to the first configured
+// admin user. Personal relays continue through normal user JWT authentication.
+function authenticateOperatorRelay(request: Request, env: Env): string | null {
+  const configured = env.ADMIN_TOKEN ?? "";
+  const auth = request.headers.get("Authorization") ?? "";
+  if (!configured || !auth.startsWith("Bearer ")) return null;
+  if (!constantTimeEqual(auth.slice(7), configured)) return null;
+  return (env.ADMIN_USER_IDS ?? "")
+    .split(",")
+    .map((id) => id.trim())
+    .find(Boolean) ?? null;
 }
 
 // GET /api/relay/map — return relay server map (public, cached in KV).
@@ -284,5 +302,4 @@ async function invalidateRelayCache(env: Env): Promise<void> {
   // surgery; if/when caching returns it will need to walk per-user keys.
   void env;
 }
-
 

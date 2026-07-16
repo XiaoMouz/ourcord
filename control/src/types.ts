@@ -15,6 +15,9 @@ export interface Env {
   // Comma-separated list of user ids treated as global admins. Used to gate
   // /api/ban and other operator-only endpoints. Empty / missing = nobody.
   ADMIN_USER_IDS?: string;
+  // Long-lived operator credential used by trusted relay servers and guarded
+  // admin bootstrap routes. This is distinct from short-lived user JWTs.
+  ADMIN_TOKEN?: string;
   // Base URL of the service layer worker (used for per-room peer scoping).
   // E.g. https://service.ourcord.example
   SERVICE_URL?: string;

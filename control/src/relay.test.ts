@@ -182,6 +182,24 @@ describe("registerRelay (POST /api/relay/register)", () => {
     expect(cap.binds[1][5]).toBe("lobby");
   });
 
+  it("operator relay token registers lobby without a short-lived user JWT", async () => {
+    const cap = makeDB([
+      {}, // INSERT
+      { first: { id: "operator-rid" } },
+    ]);
+    const env = makeEnv(cap.db, {
+      ADMIN_TOKEN: "operator-secret",
+      ADMIN_USER_IDS: "operator-user",
+    });
+    const resp = await registerRelay(
+      await postRegister("operator-secret", { hostname: "hk.example", region: "hk", mode: "lobby" }),
+      env,
+    );
+    expect(resp.status).toBe(201);
+    expect(cap.binds[0][1]).toBe("operator-user");
+    expect(cap.binds[0][5]).toBe("lobby");
+  });
+
   it("rental mode without admin → 403", async () => {
     const token = await makeToken();
     const env = makeEnv(makeDB([{ first: null }]).db);
