@@ -27,6 +27,7 @@ jobs:
         with:
           install: mingw-w64-x86_64-gcc mingw-w64-x86_64-opus mingw-w64-x86_64-opusfile mingw-w64-x86_64-pkgconf
       - uses: azure/login@v3
+        if: ${{ vars.ENABLE_AZURE_SIGNING == 'true' }}
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
@@ -77,6 +78,7 @@ jobs:
           Copy-Item "$mingw\bin\libopusfile-0.dll" ui/desktop/src-tauri/binaries/libopusfile-0.dll
           Copy-Item "$mingw\bin\libogg-0.dll" ui/desktop/src-tauri/binaries/libogg-0.dll
       - name: Sign bridge, daemon and Wintun
+        if: ${{ vars.ENABLE_AZURE_SIGNING == 'true' }}
         uses: azure/artifact-signing-action@v2
         with:
           endpoint: ${{ vars.AZURE_ARTIFACT_SIGNING_ENDPOINT }}
@@ -94,6 +96,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: pnpm tauri build --no-bundle
       - name: Sign application executable
+        if: ${{ vars.ENABLE_AZURE_SIGNING == 'true' }}
         uses: azure/artifact-signing-action@v2
         with:
           endpoint: ${{ vars.AZURE_ARTIFACT_SIGNING_ENDPOINT }}
@@ -110,6 +113,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: pnpm tauri bundle --bundles nsis
       - name: Sign installer
+        if: ${{ vars.ENABLE_AZURE_SIGNING == 'true' }}
         uses: azure/artifact-signing-action@v2
         with:
           endpoint: ${{ vars.AZURE_ARTIFACT_SIGNING_ENDPOINT }}
@@ -146,6 +150,7 @@ jobs:
           }
           $manifest | ConvertTo-Json -Depth 8 | Set-Content src-tauri/target/release/bundle/nsis/latest.json
       - name: Verify Authenticode signatures
+        if: ${{ vars.ENABLE_AZURE_SIGNING == 'true' }}
         shell: pwsh
         run: |
           Get-ChildItem ui/desktop/src-tauri/target/release/bundle/nsis/*.exe | ForEach-Object {

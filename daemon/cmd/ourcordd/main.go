@@ -43,7 +43,7 @@ import (
 
 func main() {
 	var (
-		controlURL     = flag.String("control-url", "https://control.ourcord.app", "Control plane URL")
+		controlURL     = flag.String("control-url", "https://control.ourcord.mou.best", "Control plane URL")
 		socketPath     = flag.String("socket", ipc.DefaultSocketPath(), "Unix socket path for IPC")
 		stateDir       = flag.String("state-dir", wg.DefaultStateDir(), "Persistent state directory (WireGuard private key, etc.)")
 		logLevel       = flag.String("log-level", "info", "Log level: debug, info, error")

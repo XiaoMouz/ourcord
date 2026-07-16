@@ -54,7 +54,7 @@ func main() {
 	flag.Parse()
 	b := &bridge{
 		controlURL: envOr("OURCORD_CONTROL_URL", client.DefaultControlURL),
-		serviceURL: envOr("OURCORD_SERVICE_URL", "https://service.ourcord.app"),
+		serviceURL: envOr("OURCORD_SERVICE_URL", "https://service.ourcord.mou.best"),
 		http:       &http.Client{Timeout: 15 * time.Second},
 		socketPath: envOr("OURCORD_DAEMON_SOCKET", ipc.DefaultSocketPath()),
 	}

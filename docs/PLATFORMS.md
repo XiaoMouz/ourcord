@@ -18,7 +18,7 @@
 
 | Flag | 默认 | 说明 |
 |---|---|---|
-| `--control-url` | `https://control.ourcord.app` | 控制面 URL |
+| `--control-url` | `https://control.ourcord.mou.best` | 控制面 URL |
 | `--socket` | `ipc.DefaultSocketPath()` | IPC unix socket 路径 |
 | `--state-dir` | `$XDG_STATE_HOME/ourcord` 或 `$HOME/.local/share/ourcord` | 持久状态目录（含 `wg.key`、`token`） |
 | `--log-level` | `info` | `debug` / `info` / `warn` / `error`；控制 JSON runtime 日志的最小级别 |

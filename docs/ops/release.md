@@ -48,6 +48,16 @@ Manual equivalent (service first):
 (cd control && pnpm run migrate && pnpm run deploy)
 ```
 
+## Desktop beta signing
+
+The desktop beta workflow always signs updater artifacts with the Tauri updater
+key. Windows Authenticode signing is optional: leave the repository variable
+`ENABLE_AZURE_SIGNING` unset (or set it to anything other than `true`) for an
+unsigned beta installer. Windows SmartScreen will warn users because the
+publisher is unverified, but the updater signature still protects downloaded
+updates. Set the variable to `true` and provision the documented Azure secrets
+and variables when a trusted publisher certificate is available.
+
 `pnpm run migrate` applies any un-applied migrations in `migrations/`. Recent
 schema changes that ship this way: service `0004_internal_nonces` (replay guard)
 and control `0006_peer_connectivity_flap` (path-flap columns) — both must be

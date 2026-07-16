@@ -18,7 +18,7 @@ import (
 
 // DefaultControlURL is the production control-plane endpoint used when a caller
 // does not override it.
-const DefaultControlURL = "https://control.ourcord.app"
+const DefaultControlURL = "https://control.ourcord.mou.best"
 
 // DeviceRecord is the metadata the control plane returns for an enrolled device.
 type DeviceRecord struct {
