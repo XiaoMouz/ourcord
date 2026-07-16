@@ -54,14 +54,12 @@ h1 { margin: 0; font-size: clamp(52px, 6.4vw, 92px); line-height: .99; letter-sp
 .actions { display: flex; align-items: center; gap: 22px; margin-top: 34px; flex-wrap: wrap; }
 .downloadButton { min-width: 294px; display: grid; grid-template-columns: 32px 1fr auto; align-items: center; gap: 13px; padding: 15px 17px; border-radius: 14px; background: var(--ink); color: #0d0e13; transition: transform .2s ease, box-shadow .2s ease; box-shadow: 0 18px 48px rgba(0,0,0,.32); }
 .downloadButton:hover { transform: translateY(-2px); box-shadow: 0 22px 56px rgba(0,0,0,.5), 0 0 0 1px rgba(141,124,255,.3); }
-.downloadButton:focus-visible, .secondaryLink:focus-visible { outline: 2px solid var(--cyan); outline-offset: 4px; }
+.downloadButton:focus-visible { outline: 2px solid var(--cyan); outline-offset: 4px; }
 .downloadButton strong { display: block; font-size: 15px; line-height: 1.2; }
 .downloadButton small { display: block; margin-top: 4px; color: #696e7b; font-size: 11px; }
 .windowsMark { width: 25px; height: 25px; display: grid; grid-template-columns: 1fr 1fr; gap: 2px; transform: perspective(40px) rotateY(-8deg); }
 .windowsMark i { display: block; background: #171922; }
 .arrow { font-size: 19px; }
-.secondaryLink { color: #d9dce5; font-size: 14px; border-bottom: 1px solid rgba(255,255,255,.24); padding: 8px 0 5px; transition: color .2s ease, border-color .2s ease; }
-.secondaryLink:hover { color: white; border-color: var(--cyan); }
 .notice { margin: 17px 0 0 1px; color: #717887; font-size: 11px; }
 
 .network { position: relative; width: min(470px, 41vw); aspect-ratio: 1; justify-self: center; }
@@ -104,7 +102,6 @@ h1 { margin: 0; font-size: clamp(52px, 6.4vw, 92px); line-height: .99; letter-sp
   .intro { font-size: 16px; line-height: 1.7; }
   .actions { align-items: stretch; flex-direction: column; }
   .downloadButton { min-width: 0; width: 100%; }
-  .secondaryLink { align-self: flex-start; }
   .principles { gap: 15px 20px; }
 }
 

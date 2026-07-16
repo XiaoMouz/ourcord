@@ -20,7 +20,7 @@ test("server-renders the OurCord download landing page", async () => {
   assert.match(html, /<title>OurCord — 朋友在线，数据在你手里<\/title>/i);
   assert.match(html, /朋友在线/);
   assert.match(html, /下载 Windows Beta/);
-  assert.match(html, /releases\/tag\/desktop-beta/);
+  assert.match(html, /\/downloads\/OurCord_0\.1\.0-beta\.1_x64-setup\.exe/);
   assert.match(html, /当前安装包未签名/);
   assert.doesNotMatch(html, /codex-preview|react-loading-skeleton|Your site is taking shape/);
 });

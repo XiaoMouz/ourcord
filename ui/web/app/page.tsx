@@ -1,5 +1,4 @@
-const releaseUrl = "https://github.com/XiaoMouz/ourcord/releases/tag/desktop-beta";
-const repositoryUrl = "https://github.com/XiaoMouz/ourcord";
+const releaseUrl = "/downloads/OurCord_0.1.0-beta.1_x64-setup.exe";
 
 export default function Home() {
   return (
@@ -28,13 +27,10 @@ export default function Home() {
           </p>
 
           <div className="actions">
-            <a className="downloadButton" href={releaseUrl} target="_blank" rel="noreferrer">
+            <a className="downloadButton" href={releaseUrl} download>
               <span className="windowsMark" aria-hidden="true"><i /><i /><i /><i /></span>
               <span><strong>下载 Windows Beta</strong><small>Windows 10 / 11 · x64</small></span>
               <span className="arrow" aria-hidden="true">↗</span>
-            </a>
-            <a className="secondaryLink" href={repositoryUrl} target="_blank" rel="noreferrer">
-              查看源代码 <span aria-hidden="true">↗</span>
             </a>
           </div>
 
