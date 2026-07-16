@@ -1,0 +1,109 @@
+syntax = "proto3";
+
+package ourcord.v1;
+
+import "ourcord/v1/daemon.proto";
+
+option go_package = "github.com/ourcord/ourcord/daemon/pkg/pb/ourcordv1;ourcordv1";
+
+// DaemonVoiceService drives the Phase-3 voice engine. Sessions are
+// zero-signaling: once the daemon is in a network (a room's vpn_namespace),
+// VoiceJoin starts sending/receiving Opus over the VPN overlay to the current
+// mesh peers. Media is end-to-end encrypted per peer (X25519 over the
+// WireGuard keys → ChaCha20-Poly1305) so an A-B-C relay hop that merely
+// forwards packets cannot read them. This service is UI-facing but, like the
+// diagnostics service, is a v1 surface that may still evolve.
+service DaemonVoiceService {
+  rpc VoiceJoin(VoiceJoinRequest) returns (VoiceJoinResponse);
+  rpc VoiceLeave(VoiceLeaveRequest) returns (VoiceLeaveResponse);
+  rpc SetMute(SetMuteRequest) returns (SetMuteResponse);
+  rpc SetDeafen(SetDeafenRequest) returns (SetDeafenResponse);
+  rpc GetVoiceStatus(GetVoiceStatusRequest) returns (GetVoiceStatusResponse);
+  // Audio device management is only functional in a build that includes the
+  // hardware audio layer (the `voice` build tag); otherwise ok=false.
+  rpc ListAudioDevices(ListAudioDevicesRequest) returns (ListAudioDevicesResponse);
+  rpc SetAudioDevices(SetAudioDevicesRequest) returns (SetAudioDevicesResponse);
+}
+
+message VoiceJoinRequest {}
+
+message VoiceJoinResponse {
+  OperationResult result = 1;
+}
+
+message VoiceLeaveRequest {}
+
+message VoiceLeaveResponse {
+  OperationResult result = 1;
+}
+
+message SetMuteRequest {
+  bool muted = 1;
+}
+
+message SetMuteResponse {
+  OperationResult result = 1;
+}
+
+message SetDeafenRequest {
+  bool deafened = 1;
+}
+
+message SetDeafenResponse {
+  OperationResult result = 1;
+}
+
+message GetVoiceStatusRequest {}
+
+message GetVoiceStatusResponse {
+  VoiceStatus status = 1;
+}
+
+message VoiceStatus {
+  bool joined = 1;
+  bool muted = 2;
+  bool deafened = 3;
+  // The network this voice session is bound to (a room vpn_namespace or a
+  // pair: id); empty when not joined.
+  string network_id = 4;
+  // The codec the running build encodes with ("pcm" for the pure-Go default
+  // build; "opus" when built with the voice tag).
+  string codec = 5;
+  repeated VoiceParticipant participants = 6;
+}
+
+message VoiceParticipant {
+  string public_key = 1;
+  // speaking is true when a media packet arrived from this peer recently.
+  bool speaking = 2;
+  uint64 packets_rx = 3;
+  uint64 packets_tx = 4;
+  double loss_percent = 5;
+  double jitter_ms = 6;
+  // secure is true when a decryptable pairwise channel is established (the
+  // peer's media is E2E-encrypted, not merely WG-hop encrypted).
+  bool secure = 7;
+}
+
+message AudioDevice {
+  string id = 1;
+  string name = 2;
+  bool is_default = 3;
+}
+
+message ListAudioDevicesRequest {}
+
+message ListAudioDevicesResponse {
+  OperationResult result = 1;
+  repeated AudioDevice capture = 2;
+  repeated AudioDevice playback = 3;
+}
+
+message SetAudioDevicesRequest {
+  string capture_id = 1;
+  string playback_id = 2;
+}
+
+message SetAudioDevicesResponse {
+  OperationResult result = 1;
+}
