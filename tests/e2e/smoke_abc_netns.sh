@@ -24,7 +24,7 @@ NET_PREFIX="${NET_PREFIX:-10.222.0}"
 ROOM_NAME="${ROOM_NAME:-abc-voice}"
 KEEP_SMOKE="${KEEP_SMOKE:-0}"
 GO_BIN="${GO_BIN:-$(command -v go || true)}"
-NODE22_BIN="${NODE22_BIN:-}"
+NODE24_BIN="${NODE24_BIN:-}"
 CONTROL_INSPECTOR_PORT="${CONTROL_INSPECTOR_PORT:-9230}"
 SERVICE_INSPECTOR_PORT="${SERVICE_INSPECTOR_PORT:-9231}"
 
@@ -95,7 +95,7 @@ check_node_modules() {
     # workerd is wrangler's transitive dep (pnpm does not hoist it to the top
     # node_modules), so resolve it through wrangler, then require it to trigger
     # its platform-binary check. Works for both npm-hoisted and pnpm layouts.
-    ( cd "$ROOT/$dir" && node22 -e '
+    ( cd "$ROOT/$dir" && node24 -e '
         const path = require("path");
         const w = require.resolve("wrangler/package.json");
         require(require.resolve("workerd", { paths: [path.dirname(w)] }));
@@ -129,11 +129,11 @@ wait_file_text() {
   done
 }
 
-node22() {
-  if [[ -n "$NODE22_BIN" ]]; then
-    "$NODE22_BIN" "$@"
+node24() {
+  if [[ -n "$NODE24_BIN" ]]; then
+    "$NODE24_BIN" "$@"
   else
-    npx -y node@22.12.0 "$@"
+    npx -y node@24.18.0 "$@"
   fi
 }
 
@@ -253,12 +253,12 @@ start_workers() {
   mkdir -p "$WORKDIR/control-persist" "$WORKDIR/service-persist"
   (
     cd "$ROOT/control"
-    node22 node_modules/wrangler/bin/wrangler.js d1 migrations apply DB --local \
+    node24 node_modules/wrangler/bin/wrangler.js d1 migrations apply DB --local \
       --persist-to "$WORKDIR/control-persist" >/tmp/ocabc-control-migrate.log 2>&1
   ) || { cat /tmp/ocabc-control-migrate.log >&2; fail "control migrations failed"; }
   (
     cd "$ROOT/control"
-    node22 node_modules/wrangler/bin/wrangler.js d1 execute DB --local \
+    node24 node_modules/wrangler/bin/wrangler.js d1 execute DB --local \
       --persist-to "$WORKDIR/control-persist" \
       --command "INSERT OR IGNORE INTO users (id, email, display_name, created_at) VALUES ('u1','u1@smoke.local','u1',0),('u2','u2@smoke.local','u2',0),('u3','u3@smoke.local','u3',0)" >/tmp/ocabc-control-seed.log 2>&1
   ) || { cat /tmp/ocabc-control-seed.log >&2; fail "control user seed failed"; }
@@ -266,13 +266,13 @@ start_workers() {
     # Canonical service schema path: versioned migrations, same as production.
     # (init-db stays available as a dev convenience but is not exercised here.)
     cd "$ROOT/service"
-    node22 node_modules/wrangler/bin/wrangler.js d1 migrations apply DB --local \
+    node24 node_modules/wrangler/bin/wrangler.js d1 migrations apply DB --local \
       --persist-to "$WORKDIR/service-persist" >/tmp/ocabc-service-migrate.log 2>&1
   ) || { cat /tmp/ocabc-service-migrate.log >&2; fail "service migrations failed"; }
 
-  local node_command="npx -y node@22.12.0"
-  if [[ -n "$NODE22_BIN" ]]; then
-    node_command="'$NODE22_BIN'"
+  local node_command="npx -y node@24.18.0"
+  if [[ -n "$NODE24_BIN" ]]; then
+    node_command="'$NODE24_BIN'"
   fi
   run_bg service sh -lc "cd '$ROOT/service' && $node_command node_modules/wrangler/bin/wrangler.js dev --ip 0.0.0.0 --port '$SERVICE_PORT' --inspector-port '$SERVICE_INSPECTOR_PORT' --local --persist-to '$WORKDIR/service-persist' --var JWT_SECRET:'$JWT_SECRET' --var SERVICE_INTERNAL_TOKEN:'$SERVICE_INTERNAL_TOKEN' --var ADMIN_TOKEN:'$ADMIN_TOKEN'"
   wait_http "$SERVICE_LOCAL/health" service
@@ -499,7 +499,7 @@ main() {
   need ip
   need tc
   need npx
-  need node22
+  need node24
   [[ -n "$GO_BIN" ]] || fail "go is required"
   [[ -c /dev/net/tun ]] || fail "/dev/net/tun is missing"
 

@@ -23,7 +23,7 @@ jobs:
             filebackend/go.sum
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: "22"
+          node-version: "24"
       - name: Install Linux network tools
         run: |
           sudo apt-get update
@@ -39,7 +39,7 @@ jobs:
       - name: Run network acceptance smoke
         env:
           KEEP_SMOKE: "1"
-          NODE22_BIN: node
+          NODE24_BIN: node
         run: bash tests/e2e/smoke_abc_netns.sh
       - name: Upload smoke logs and local state
         if: always()
