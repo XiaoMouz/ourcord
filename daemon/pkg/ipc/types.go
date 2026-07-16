@@ -65,6 +65,27 @@ type ConnectedPeer struct {
 	Flapping          bool    `json:"flapping,omitempty"` // path unstable (≥ threshold changes in window)
 }
 
+// VoiceStatus is the domain shape for ourcord.v1.VoiceStatus.
+type VoiceStatus struct {
+	Joined       bool               `json:"joined"`
+	Muted        bool               `json:"muted"`
+	Deafened     bool               `json:"deafened"`
+	NetworkID    string             `json:"network_id,omitempty"`
+	Codec        string             `json:"codec,omitempty"`
+	Participants []VoiceParticipant `json:"participants,omitempty"`
+}
+
+// VoiceParticipant is the domain shape for ourcord.v1.VoiceParticipant.
+type VoiceParticipant struct {
+	PublicKey   string  `json:"public_key"`
+	Speaking    bool    `json:"speaking"`
+	PacketsRx   uint64  `json:"packets_rx"`
+	PacketsTx   uint64  `json:"packets_tx"`
+	LossPercent float64 `json:"loss_percent"`
+	JitterMs    float64 `json:"jitter_ms"`
+	Secure      bool    `json:"secure"`
+}
+
 // Command names key the daemon's internal HandleIPC mux; the gRPC service
 // adapters translate the proto RPCs onto these. They are no longer a wire
 // format.
@@ -79,6 +100,12 @@ const (
 	CmdLeaveNetwork = "leave_network"
 	CmdForceDERP    = "force_derp"
 	CmdPing         = "ping"
+
+	CmdVoiceJoin   = "voice_join"
+	CmdVoiceLeave  = "voice_leave"
+	CmdVoiceMute   = "voice_mute"
+	CmdVoiceDeafen = "voice_deafen"
+	CmdVoiceStatus = "voice_status"
 )
 
 // IPCRequest is the daemon's internal command envelope (HandleIPC mux input).

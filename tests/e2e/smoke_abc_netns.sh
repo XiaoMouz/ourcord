@@ -413,6 +413,36 @@ vpn_ip() {
   cli "$name" status | python3 -c 'import json,sys; print(json.load(sys.stdin)["ip4"])'
 }
 
+# wait_voice_hears waits until $name's voice status shows the peer with WG
+# public key $peer_pk speaking, secure, and with rx packets flowing.
+wait_voice_hears() {
+  local name=$1 peer_pk=$2 deadline=$((SECONDS + 60))
+  until cli "$name" voice status | python3 -c '
+import json, sys
+pk = sys.argv[1]
+st = json.load(sys.stdin)
+if not st.get("joined"):
+    sys.exit(1)
+for p in st.get("participants", []):
+    if p.get("public_key") == pk and p.get("speaking") and p.get("secure") and p.get("packets_rx", 0) > 5:
+        sys.exit(0)
+sys.exit(1)
+' "$peer_pk" >/dev/null; do
+    if (( SECONDS > deadline )); then
+      cli "$name" voice status >&2 || true
+      fail "$name did not hear $peer_pk over voice"
+    fi
+    sleep 1
+  done
+}
+
+peer_pubkey() {
+  # WG public key of daemon $1, read from its own status is not exposed; derive
+  # from another node's peer list by VPN ip.
+  local name=$1 ip=$2
+  cli "$name" peers | python3 -c 'import json,sys; ip=sys.argv[1]; print(next(p["public_key"] for p in json.load(sys.stdin) if p.get("ip4")==ip))' "$ip"
+}
+
 next_hop_peer_ip() {
   local name=$1
   cli "$name" peers | python3 -c 'import json,sys; peers=json.load(sys.stdin); print(next(p["ip4"] for p in peers if p.get("path")=="next-hop"))'
@@ -483,6 +513,26 @@ main() {
   log "Pinging A next-hop peer VPN IP from A: $c_ip"
   sudo ip netns exec ocabc-a ping -c 4 -W 3 "$c_ip"
 
+  # Voice over the relay chain: A<->C traffic transits B (kernel forwarding),
+  # so this proves voice works across A-B-C AND that E2E media crypto survives
+  # the hop (C decrypts A with pairKey(A,C); B, which forwards the datagram,
+  # holds only pairKey(A,B) and cannot read it — asserted in the unit tests).
+  log "Joining voice on all three nodes"
+  cli a voice join
+  cli b voice join
+  cli c voice join
+  local a_pk c_pk
+  a_pk="$(peer_pubkey b "$a_ip")"
+  c_pk="$(peer_pubkey b "$c_ip")"
+  log "Verifying C hears A over the A-B-C relay ($a_pk)"
+  wait_voice_hears c "$a_pk"
+  log "Verifying A hears C over the A-B-C relay ($c_pk)"
+  wait_voice_hears a "$c_pk"
+  cli a voice status
+  cli a voice leave
+  cli b voice leave
+  cli c voice leave
+
   unblock_ac_udp
   log "Waiting for A<->C ICE direct recovery from next-hop"
   wait_peer_path a "$c_ip" direct
@@ -490,7 +540,7 @@ main() {
   log "Verifying recovered direct VPN data path"
   sudo ip netns exec ocabc-a ping -c 4 -W 3 "$c_ip"
 
-  log "NETWORK ACCEPTANCE PASSED: direct, DERP, A-B-C next-hop, recovery"
+  log "NETWORK ACCEPTANCE PASSED: direct, DERP, A-B-C next-hop, voice-over-relay, recovery"
 }
 
 main "$@"

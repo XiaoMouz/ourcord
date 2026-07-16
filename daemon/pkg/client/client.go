@@ -27,9 +27,10 @@ import (
 
 // Client is a typed wrapper over the daemon's gRPC IPC surface.
 type Client struct {
-	conn *grpc.ClientConn // nil when constructed via New (test seam)
-	svc  ourcordv1.DaemonServiceClient
-	diag ourcordv1.DaemonDiagnosticsServiceClient
+	conn  *grpc.ClientConn // nil when constructed via New (test seam)
+	svc   ourcordv1.DaemonServiceClient
+	diag  ourcordv1.DaemonDiagnosticsServiceClient
+	voice ourcordv1.DaemonVoiceServiceClient
 }
 
 // Dial connects to the daemon at socketPath using the shared IPC HMAC key
@@ -57,17 +58,19 @@ func Dial(socketPath string) (*Client, error) {
 		return nil, err
 	}
 	return &Client{
-		conn: conn,
-		svc:  ourcordv1.NewDaemonServiceClient(conn),
-		diag: ourcordv1.NewDaemonDiagnosticsServiceClient(conn),
+		conn:  conn,
+		svc:   ourcordv1.NewDaemonServiceClient(conn),
+		diag:  ourcordv1.NewDaemonDiagnosticsServiceClient(conn),
+		voice: ourcordv1.NewDaemonVoiceServiceClient(conn),
 	}, nil
 }
 
 // New wraps an existing gRPC connection (e.g. a bufconn in tests).
 func New(conn grpc.ClientConnInterface) *Client {
 	return &Client{
-		svc:  ourcordv1.NewDaemonServiceClient(conn),
-		diag: ourcordv1.NewDaemonDiagnosticsServiceClient(conn),
+		svc:   ourcordv1.NewDaemonServiceClient(conn),
+		diag:  ourcordv1.NewDaemonDiagnosticsServiceClient(conn),
+		voice: ourcordv1.NewDaemonVoiceServiceClient(conn),
 	}
 }
 
@@ -195,4 +198,37 @@ func (c *Client) Ping() error {
 		return rpcErr("ping", err)
 	}
 	return nil
+}
+
+// VoiceJoin starts the voice session for the current network.
+func (c *Client) VoiceJoin() error {
+	resp, err := c.voice.VoiceJoin(context.Background(), &ourcordv1.VoiceJoinRequest{})
+	return opErr("voice-join", resp.GetResult(), err)
+}
+
+// VoiceLeave ends the voice session.
+func (c *Client) VoiceLeave() error {
+	resp, err := c.voice.VoiceLeave(context.Background(), &ourcordv1.VoiceLeaveRequest{})
+	return opErr("voice-leave", resp.GetResult(), err)
+}
+
+// SetVoiceMute mutes/unmutes the local microphone.
+func (c *Client) SetVoiceMute(muted bool) error {
+	resp, err := c.voice.SetMute(context.Background(), &ourcordv1.SetMuteRequest{Muted: muted})
+	return opErr("voice-mute", resp.GetResult(), err)
+}
+
+// SetVoiceDeafen deafens/undeafens local playback.
+func (c *Client) SetVoiceDeafen(deafened bool) error {
+	resp, err := c.voice.SetDeafen(context.Background(), &ourcordv1.SetDeafenRequest{Deafened: deafened})
+	return opErr("voice-deafen", resp.GetResult(), err)
+}
+
+// VoiceStatus returns the current voice session snapshot.
+func (c *Client) VoiceStatus() (ipc.VoiceStatus, error) {
+	resp, err := c.voice.GetVoiceStatus(context.Background(), &ourcordv1.GetVoiceStatusRequest{})
+	if err != nil {
+		return ipc.VoiceStatus{}, rpcErr("voice-status", err)
+	}
+	return ipc.VoiceStatusFromProto(resp.GetStatus()), nil
 }

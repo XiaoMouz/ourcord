@@ -167,6 +167,57 @@ func PeersFromProto(ps []*ourcordv1.ConnectedPeer) []ConnectedPeer {
 	return out
 }
 
+// VoiceStatusToProto converts a voice status snapshot to its wire form.
+func VoiceStatusToProto(v VoiceStatus) *ourcordv1.VoiceStatus {
+	parts := make([]*ourcordv1.VoiceParticipant, 0, len(v.Participants))
+	for _, p := range v.Participants {
+		parts = append(parts, &ourcordv1.VoiceParticipant{
+			PublicKey:   p.PublicKey,
+			Speaking:    p.Speaking,
+			PacketsRx:   p.PacketsRx,
+			PacketsTx:   p.PacketsTx,
+			LossPercent: p.LossPercent,
+			JitterMs:    p.JitterMs,
+			Secure:      p.Secure,
+		})
+	}
+	return &ourcordv1.VoiceStatus{
+		Joined:       v.Joined,
+		Muted:        v.Muted,
+		Deafened:     v.Deafened,
+		NetworkId:    v.NetworkID,
+		Codec:        v.Codec,
+		Participants: parts,
+	}
+}
+
+// VoiceStatusFromProto converts a wire voice status back to the domain type.
+func VoiceStatusFromProto(p *ourcordv1.VoiceStatus) VoiceStatus {
+	if p == nil {
+		return VoiceStatus{}
+	}
+	parts := make([]VoiceParticipant, 0, len(p.GetParticipants()))
+	for _, pp := range p.GetParticipants() {
+		parts = append(parts, VoiceParticipant{
+			PublicKey:   pp.GetPublicKey(),
+			Speaking:    pp.GetSpeaking(),
+			PacketsRx:   pp.GetPacketsRx(),
+			PacketsTx:   pp.GetPacketsTx(),
+			LossPercent: pp.GetLossPercent(),
+			JitterMs:    pp.GetJitterMs(),
+			Secure:      pp.GetSecure(),
+		})
+	}
+	return VoiceStatus{
+		Joined:       p.GetJoined(),
+		Muted:        p.GetMuted(),
+		Deafened:     p.GetDeafened(),
+		NetworkID:    p.GetNetworkId(),
+		Codec:        p.GetCodec(),
+		Participants: parts,
+	}
+}
+
 func transportToProto(t TransportStats) *ourcordv1.TransportStats {
 	return &ourcordv1.TransportStats{
 		Mtu:                   uint32(max(t.MTU, 0)),

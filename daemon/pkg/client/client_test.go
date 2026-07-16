@@ -17,11 +17,27 @@ import (
 	ourcordv1 "github.com/ourcord/ourcord/daemon/pkg/pb/ourcordv1"
 )
 
-// stubServer implements both gRPC services with canned typed payloads, so the
+// stubServer implements the gRPC services with canned typed payloads, so the
 // client's conversion paths are exercised against the real gRPC transport.
 type stubServer struct {
 	ourcordv1.UnimplementedDaemonServiceServer
 	ourcordv1.UnimplementedDaemonDiagnosticsServiceServer
+	ourcordv1.UnimplementedDaemonVoiceServiceServer
+}
+
+func (stubServer) VoiceJoin(context.Context, *ourcordv1.VoiceJoinRequest) (*ourcordv1.VoiceJoinResponse, error) {
+	return &ourcordv1.VoiceJoinResponse{Result: &ourcordv1.OperationResult{Ok: true}}, nil
+}
+
+func (stubServer) SetMute(context.Context, *ourcordv1.SetMuteRequest) (*ourcordv1.SetMuteResponse, error) {
+	return &ourcordv1.SetMuteResponse{Result: &ourcordv1.OperationResult{Ok: true}}, nil
+}
+
+func (stubServer) GetVoiceStatus(context.Context, *ourcordv1.GetVoiceStatusRequest) (*ourcordv1.GetVoiceStatusResponse, error) {
+	return &ourcordv1.GetVoiceStatusResponse{Status: &ourcordv1.VoiceStatus{
+		Joined: true, Codec: "pcm", NetworkId: "lobby-x-voice",
+		Participants: []*ourcordv1.VoiceParticipant{{PublicKey: "pk", Speaking: true, PacketsRx: 9, Secure: true}},
+	}}, nil
 }
 
 func (stubServer) GetStatus(context.Context, *ourcordv1.GetStatusRequest) (*ourcordv1.GetStatusResponse, error) {
@@ -71,6 +87,7 @@ func dialStub(t *testing.T) *Client {
 	srv := grpc.NewServer()
 	ourcordv1.RegisterDaemonServiceServer(srv, stubServer{})
 	ourcordv1.RegisterDaemonDiagnosticsServiceServer(srv, stubServer{})
+	ourcordv1.RegisterDaemonVoiceServiceServer(srv, stubServer{})
 	go srv.Serve(lis)
 	t.Cleanup(srv.Stop)
 
@@ -128,6 +145,24 @@ func TestMutatingSucceeds(t *testing.T) {
 	}
 }
 
+func TestVoiceOpsAndStatus(t *testing.T) {
+	c := dialStub(t)
+	if err := c.VoiceJoin(); err != nil {
+		t.Fatalf("voice join: %v", err)
+	}
+	if err := c.SetVoiceMute(true); err != nil {
+		t.Fatalf("voice mute: %v", err)
+	}
+	st, err := c.VoiceStatus()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !st.Joined || st.Codec != "pcm" || len(st.Participants) != 1 ||
+		!st.Participants[0].Speaking || !st.Participants[0].Secure || st.Participants[0].PacketsRx != 9 {
+		t.Fatalf("unexpected voice status: %+v", st)
+	}
+}
+
 func TestDaemonRejectionSurfacesAsError(t *testing.T) {
 	err := dialStub(t).EnterNetwork("")
 	if err == nil {
@@ -160,6 +195,7 @@ func TestDialAuthenticatedRoundTrip(t *testing.T) {
 	srv := grpc.NewServer()
 	ourcordv1.RegisterDaemonServiceServer(srv, stubServer{})
 	ourcordv1.RegisterDaemonDiagnosticsServiceServer(srv, stubServer{})
+	ourcordv1.RegisterDaemonVoiceServiceServer(srv, stubServer{})
 	go srv.Serve(lis)
 	t.Cleanup(srv.Stop)
 

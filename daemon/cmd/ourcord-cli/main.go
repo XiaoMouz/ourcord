@@ -36,12 +36,15 @@ func main() {
 	if args[0] == "watch" {
 		os.Exit(runWatch(*socketPath, args[1:]))
 	}
+	if args[0] == "voice" {
+		os.Exit(runVoice(*socketPath, args[1:]))
+	}
 	os.Exit(runDaemonCommand(*socketPath, args))
 }
 
 func usage() {
 	fmt.Fprintln(os.Stderr, "Usage: ourcord-cli [--socket path] <command> [args...]")
-	fmt.Fprintln(os.Stderr, "Commands: status, connect, disconnect, ping, peers, watch [interval_secs], enter-room <room_id>, leave-room, enter-network <network_id>, leave-network, force-derp <peer_public_key> [reason], enroll, devices, revoke-device <device_id>, diagnostics collect")
+	fmt.Fprintln(os.Stderr, "Commands: status, connect, disconnect, ping, peers, watch [interval_secs], enter-room <room_id>, leave-room, enter-network <network_id>, leave-network, force-derp <peer_public_key> [reason], voice <join|leave|mute|unmute|deafen|undeafen|status>, enroll, devices, revoke-device <device_id>, diagnostics collect")
 }
 
 // runDaemonCommand dispatches the IPC-backed commands. Argument arity is checked

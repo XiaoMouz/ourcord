@@ -33,6 +33,7 @@ import (
 	ourice "github.com/ourcord/ourcord/daemon/pkg/ice"
 	"github.com/ourcord/ourcord/daemon/pkg/ipc"
 	"github.com/ourcord/ourcord/daemon/pkg/logging"
+	"github.com/ourcord/ourcord/daemon/pkg/media"
 	"github.com/ourcord/ourcord/daemon/pkg/routing"
 	"github.com/ourcord/ourcord/daemon/pkg/tun"
 	"github.com/ourcord/ourcord/daemon/pkg/wg"
@@ -209,6 +210,10 @@ type daemon struct {
 	assignedIP6 string
 	activeRoom  string
 
+	// voice is the running Phase-3 voice engine (nil when not in a call).
+	// Guarded by connMu; membership tracked from the routing table.
+	voice *media.Engine
+
 	// Injectable factories (test seam). nil → real implementations.
 	newTun    func(name string, addrs []netip.Prefix) (tunIface, error)
 	newClient func(controlURL, token, pubkey string) controlClient
@@ -348,9 +353,123 @@ func (d *daemon) HandleIPC(ctx context.Context, req ipc.IPCRequest) ipc.IPCRespo
 		return ipc.IPCResponse{OK: true}
 	case ipc.CmdPing:
 		return ipc.IPCResponse{OK: true, Data: map[string]string{"pong": "ok"}}
+	case ipc.CmdVoiceJoin:
+		if err := d.voiceJoin(); err != nil {
+			return ipc.IPCResponse{OK: false, Error: err.Error()}
+		}
+		return ipc.IPCResponse{OK: true}
+	case ipc.CmdVoiceLeave:
+		d.voiceLeave()
+		return ipc.IPCResponse{OK: true}
+	case ipc.CmdVoiceMute:
+		if err := d.voiceSet(func(e *media.Engine) { e.SetMute(req.Params["on"] == "true") }); err != nil {
+			return ipc.IPCResponse{OK: false, Error: err.Error()}
+		}
+		return ipc.IPCResponse{OK: true}
+	case ipc.CmdVoiceDeafen:
+		if err := d.voiceSet(func(e *media.Engine) { e.SetDeafen(req.Params["on"] == "true") }); err != nil {
+			return ipc.IPCResponse{OK: false, Error: err.Error()}
+		}
+		return ipc.IPCResponse{OK: true}
+	case ipc.CmdVoiceStatus:
+		return ipc.IPCResponse{OK: true, Data: d.voiceStatus()}
 	default:
 		return ipc.IPCResponse{OK: false, Error: fmt.Sprintf("unknown command: %s", req.Cmd)}
 	}
+}
+
+// voiceJoin starts the voice engine for the current network. Requires an active
+// VPN session; idempotent (a second join is a no-op).
+func (d *daemon) voiceJoin() error {
+	d.connMu.Lock()
+	defer d.connMu.Unlock()
+	if !d.vpnActive.Load() || d.activeRoom == "" || d.table == nil {
+		return errors.New("not in a network; connect and enter-network first")
+	}
+	if d.voice != nil {
+		return nil
+	}
+	vpn4, err := netip.ParseAddr(d.assignedIP4)
+	if err != nil {
+		return fmt.Errorf("no VPN IPv4 assigned: %w", err)
+	}
+	eng, err := media.Start(media.Config{
+		SelfKey:   d.keyPair.Private,
+		VPN4:      vpn4,
+		NetworkID: d.activeRoom,
+	})
+	if err != nil {
+		return err
+	}
+	d.voice = eng
+	d.syncVoicePeersLocked()
+	log.Printf("voice: joined %s (codec=%s)", d.activeRoom, eng.Status().Codec)
+	return nil
+}
+
+// voiceLeave stops the engine if running.
+func (d *daemon) voiceLeave() {
+	d.connMu.Lock()
+	eng := d.voice
+	d.voice = nil
+	d.connMu.Unlock()
+	if eng != nil {
+		eng.Stop()
+		log.Printf("voice: left")
+	}
+}
+
+func (d *daemon) voiceSet(fn func(*media.Engine)) error {
+	d.connMu.Lock()
+	eng := d.voice
+	d.connMu.Unlock()
+	if eng == nil {
+		return errors.New("not in a voice call")
+	}
+	fn(eng)
+	return nil
+}
+
+func (d *daemon) voiceStatus() ipc.VoiceStatus {
+	d.connMu.Lock()
+	eng := d.voice
+	d.connMu.Unlock()
+	if eng == nil {
+		return ipc.VoiceStatus{Joined: false}
+	}
+	s := eng.Status()
+	out := ipc.VoiceStatus{
+		Joined: true, Muted: s.Muted, Deafened: s.Deafened,
+		NetworkID: s.NetworkID, Codec: s.Codec,
+	}
+	for _, p := range s.Participants {
+		out.Participants = append(out.Participants, ipc.VoiceParticipant{
+			PublicKey:   p.PublicKey.String(),
+			Speaking:    p.Speaking,
+			PacketsRx:   p.PacketsRx,
+			PacketsTx:   p.PacketsTx,
+			LossPercent: p.LossPercent,
+			Secure:      p.Secure,
+		})
+	}
+	return out
+}
+
+// syncVoicePeersLocked pushes the current mesh membership into the voice engine.
+// Caller holds connMu; no-op when not in a call.
+func (d *daemon) syncVoicePeersLocked() {
+	if d.voice == nil || d.table == nil {
+		return
+	}
+	routes := d.table.All()
+	peers := make([]media.PeerInfo, 0, len(routes))
+	for _, r := range routes {
+		if r == nil || !r.VPN4.IsValid() {
+			continue
+		}
+		peers = append(peers, media.PeerInfo{PublicKey: r.PublicKey, VPN4: r.VPN4})
+	}
+	d.voice.UpdatePeers(peers)
 }
 
 func summarizeRoutes(active bool, routes []*routing.PeerRoute) (bool, string, string) {
@@ -690,6 +809,10 @@ func (d *daemon) disconnect() {
 	if !d.vpnActive.Load() {
 		return
 	}
+	if d.voice != nil {
+		d.voice.Stop()
+		d.voice = nil
+	}
 	if d.connCxl != nil {
 		d.connCxl()
 	}
@@ -760,6 +883,10 @@ func (d *daemon) leaveRoom(ctx context.Context) error {
 		return fmt.Errorf("apply user config: %w", err)
 	}
 	d.syncDERPSuppressionLocked(d.table.All())
+	if d.voice != nil { // voice is bound to a network; leaving ends the call
+		d.voice.Stop()
+		d.voice = nil
+	}
 	d.activeRoom = ""
 	d.resetConnectivitySeqLocked()
 	if d.sigCxl != nil {
@@ -1461,6 +1588,7 @@ func (d *daemon) meshLoop(ctx context.Context) {
 				d.reportICEDirectReachabilityLocked(table.All())
 				d.startICEForRoutes(ctx, table.All())
 			}
+			d.syncVoicePeersLocked() // keep voice membership in sync with the mesh
 			d.connMu.Unlock()
 		}
 	}

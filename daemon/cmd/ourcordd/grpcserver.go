@@ -16,10 +16,11 @@ import (
 // problems become RPC status errors; operation-specific failures ride
 // OperationResult{ok:false}.
 
-// registerGRPCServices wires both services onto srv.
+// registerGRPCServices wires all services onto srv.
 func registerGRPCServices(srv *grpc.Server, d *daemon) {
 	ourcordv1.RegisterDaemonServiceServer(srv, &daemonService{d: d})
 	ourcordv1.RegisterDaemonDiagnosticsServiceServer(srv, &diagnosticsService{d: d})
+	ourcordv1.RegisterDaemonVoiceServiceServer(srv, &voiceService{d: d})
 }
 
 type daemonService struct {
@@ -84,6 +85,48 @@ func (s *diagnosticsService) ForceDERP(ctx context.Context, req *ourcordv1.Force
 	params := map[string]string{"public_key": req.GetPeerPublicKey(), "reason": req.GetReason()}
 	resp := s.d.HandleIPC(ctx, ipc.IPCRequest{Cmd: ipc.CmdForceDERP, Params: params})
 	return &ourcordv1.ForceDERPResponse{Result: &ourcordv1.OperationResult{Ok: resp.OK, ErrorMessage: resp.Error}}, nil
+}
+
+type voiceService struct {
+	ourcordv1.UnimplementedDaemonVoiceServiceServer
+	d *daemon
+}
+
+func (s *voiceService) VoiceJoin(ctx context.Context, _ *ourcordv1.VoiceJoinRequest) (*ourcordv1.VoiceJoinResponse, error) {
+	return &ourcordv1.VoiceJoinResponse{Result: s.op(ctx, ipc.CmdVoiceJoin, nil)}, nil
+}
+
+func (s *voiceService) VoiceLeave(ctx context.Context, _ *ourcordv1.VoiceLeaveRequest) (*ourcordv1.VoiceLeaveResponse, error) {
+	return &ourcordv1.VoiceLeaveResponse{Result: s.op(ctx, ipc.CmdVoiceLeave, nil)}, nil
+}
+
+func (s *voiceService) SetMute(ctx context.Context, req *ourcordv1.SetMuteRequest) (*ourcordv1.SetMuteResponse, error) {
+	return &ourcordv1.SetMuteResponse{Result: s.op(ctx, ipc.CmdVoiceMute, boolParam(req.GetMuted()))}, nil
+}
+
+func (s *voiceService) SetDeafen(ctx context.Context, req *ourcordv1.SetDeafenRequest) (*ourcordv1.SetDeafenResponse, error) {
+	return &ourcordv1.SetDeafenResponse{Result: s.op(ctx, ipc.CmdVoiceDeafen, boolParam(req.GetDeafened()))}, nil
+}
+
+func (s *voiceService) GetVoiceStatus(ctx context.Context, _ *ourcordv1.GetVoiceStatusRequest) (*ourcordv1.GetVoiceStatusResponse, error) {
+	resp := s.d.HandleIPC(ctx, ipc.IPCRequest{Cmd: ipc.CmdVoiceStatus})
+	st, ok := resp.Data.(ipc.VoiceStatus)
+	if !resp.OK || !ok {
+		return nil, status.Error(codes.Internal, orMsg(resp.Error, "voice status unavailable"))
+	}
+	return &ourcordv1.GetVoiceStatusResponse{Status: ipc.VoiceStatusToProto(st)}, nil
+}
+
+func (s *voiceService) op(ctx context.Context, cmd string, params map[string]string) *ourcordv1.OperationResult {
+	resp := s.d.HandleIPC(ctx, ipc.IPCRequest{Cmd: cmd, Params: params})
+	return &ourcordv1.OperationResult{Ok: resp.OK, ErrorMessage: resp.Error}
+}
+
+func boolParam(v bool) map[string]string {
+	if v {
+		return map[string]string{"on": "true"}
+	}
+	return map[string]string{"on": "false"}
 }
 
 func orMsg(msg, fallback string) string {

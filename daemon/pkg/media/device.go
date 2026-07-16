@@ -1,5 +1,7 @@
 package media
 
+import "time"
+
 // Device abstracts the local audio hardware so the engine is testable without a
 // sound card and cross-compilable without cgo. The default build uses
 // nullDevice (silent capture with an injectable tone seam, discarded playback);
@@ -46,15 +48,23 @@ type nullDevice struct {
 func newNullDevice(captureSource <-chan []int16) *nullDevice {
 	d := &nullDevice{src: captureSource, done: make(chan struct{})}
 	if d.src == nil {
-		// Silent capture: emit zero frames on demand so the send loop has a
-		// steady source even with no injected audio.
+		// Silent capture paced at the real frame cadence (20 ms), mimicking
+		// hardware: a mic delivers 50 frames/s, so the engine paces to that. An
+		// unpaced source would busy-loop the send path.
 		ch := make(chan []int16)
 		go func() {
+			t := time.NewTicker(FrameMillis * time.Millisecond)
+			defer t.Stop()
 			for {
 				select {
 				case <-d.done:
 					return
-				case ch <- silence():
+				case <-t.C:
+					select {
+					case ch <- silence():
+					case <-d.done:
+						return
+					}
 				}
 			}
 		}()
