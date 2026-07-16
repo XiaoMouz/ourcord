@@ -78,6 +78,7 @@ type session struct {
 	conn            *pionice.Conn
 	writeMu         sync.Mutex
 	controlling     bool
+	offering        bool
 	dialing         bool
 	accepting       bool
 	gatherOnce      sync.Once
@@ -143,14 +144,23 @@ func (m *Manager) StartPeer(ctx context.Context, peerKey string) {
 		return
 	}
 	controlling := m.localKey > peerKey
-	s, created, err := m.ensureSession(peerKey, controlling)
+	s, _, err := m.ensureSession(peerKey, controlling)
 	if err != nil {
 		m.logf("ice session %s: %v", shortKey(peerKey), err)
 		return
 	}
-	if !controlling || !created {
+	// Starting signaling and gathering ICE candidates are asynchronous. A fast
+	// gather can try to send the initial offer before the SignalDO WebSocket is
+	// connected. Keep the session so gathered candidates can be reused, but let
+	// a later join/paired event re-send the offer. `offering` collapses the join
+	// + paired burst into one in-flight write.
+	m.mu.Lock()
+	if !controlling || s.conn != nil || s.dialing || s.offering {
+		m.mu.Unlock()
 		return
 	}
+	s.offering = true
+	m.mu.Unlock()
 	go m.sendOffer(ctx, s)
 }
 
@@ -317,6 +327,13 @@ func (m *Manager) ensureSession(peerKey string, controlling bool) (*session, boo
 }
 
 func (m *Manager) sendOffer(ctx context.Context, s *session) {
+	defer func() {
+		m.mu.Lock()
+		if m.sessions[s.peerKey] == s {
+			s.offering = false
+		}
+		m.mu.Unlock()
+	}()
 	ufrag, pwd, err := s.agent.Credentials()
 	if err != nil {
 		m.logf("ice credentials for %s: %v", shortKey(s.peerKey), err)
