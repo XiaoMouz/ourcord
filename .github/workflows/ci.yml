@@ -210,13 +210,17 @@ jobs:
       - name: Build Windows bridge and daemon resources
         shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
           New-Item -ItemType Directory -Force src-tauri/binaries | Out-Null
           Push-Location ../../daemon
           go build -o ../ui/desktop/src-tauri/binaries/ourcord-desktop-bridge-x86_64-pc-windows-msvc.exe ./cmd/ourcord-desktop-bridge
+          $mingw = @("$env:RUNNER_TEMP\msys64\mingw64", "C:\msys64\mingw64") | Where-Object { Test-Path "$_\bin\gcc.exe" } | Select-Object -First 1
+          if (-not $mingw) { throw "MSYS2 MinGW64 toolchain not found" }
           $env:CGO_ENABLED = "1"
-          $env:CC = "C:\msys64\mingw64\bin\gcc.exe"
-          $env:PKG_CONFIG = "C:\msys64\mingw64\bin\pkg-config.exe"
-          $env:Path = "C:\msys64\mingw64\bin;$env:Path"
+          $env:CC = "$mingw\bin\gcc.exe"
+          $env:PKG_CONFIG = "$mingw\bin\pkg-config.exe"
+          $env:Path = "$mingw\bin;$env:Path"
           go build -tags voice -o ../ui/desktop/src-tauri/binaries/ourcordd.exe ./cmd/ourcordd
           go build -o ../ui/desktop/src-tauri/binaries/ourcord-service.exe ./cmd/ourcord-service
           Pop-Location
@@ -224,7 +228,7 @@ jobs:
           if ((Get-FileHash wintun.zip -Algorithm SHA256).Hash.ToLower() -ne "07c256185d6ee3652e09fa55c0b673e2624b565e02c4b9091c79ca7d2f24ef51") { throw "wintun checksum mismatch" }
           Expand-Archive wintun.zip -DestinationPath wintun-dist
           Copy-Item wintun-dist/wintun/bin/amd64/wintun.dll src-tauri/binaries/wintun.dll
-          Copy-Item C:\msys64\mingw64\bin\libopus-0.dll src-tauri/binaries/libopus-0.dll
+          Copy-Item "$mingw\bin\libopus-0.dll" src-tauri/binaries/libopus-0.dll
       - name: Compile Tauri application
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_TEST_SIGNING_PRIVATE_KEY }}
