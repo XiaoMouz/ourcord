@@ -203,7 +203,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: msys2/setup-msys2@v2
         with:
-          install: mingw-w64-x86_64-gcc mingw-w64-x86_64-opus mingw-w64-x86_64-pkgconf
+          install: mingw-w64-x86_64-gcc mingw-w64-x86_64-opus mingw-w64-x86_64-opusfile mingw-w64-x86_64-pkgconf
       - run: corepack enable
       - run: corepack prepare pnpm@9.15.9 --activate
       - run: pnpm install --frozen-lockfile
@@ -229,6 +229,8 @@ jobs:
           Expand-Archive wintun.zip -DestinationPath wintun-dist
           Copy-Item wintun-dist/wintun/bin/amd64/wintun.dll src-tauri/binaries/wintun.dll
           Copy-Item "$mingw\bin\libopus-0.dll" src-tauri/binaries/libopus-0.dll
+          Copy-Item "$mingw\bin\libopusfile-0.dll" src-tauri/binaries/libopusfile-0.dll
+          Copy-Item "$mingw\bin\libogg-0.dll" src-tauri/binaries/libogg-0.dll
       - name: Compile Tauri application
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_TEST_SIGNING_PRIVATE_KEY }}
