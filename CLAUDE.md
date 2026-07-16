@@ -48,4 +48,6 @@
 
 阶段一已按当前验收口径闭环：per-peer ICE、startup/runtime DERP fallback、1:1 pair network、service `vpn_namespace`、A-B-C next-hop 与恢复都已通过真实 control/service/relay/daemon + OrbStack 验证。阶段二主线已闭环：连通性 epoch+sequence 仲裁 + source-owned 有向边；Windows Wintun 地址/路由（`addr_windows.go` winipcfg + CI `windows-native`）；路径抖动 per-peer 遥测 + ICE 退避降噪 + control 端 flap 仲裁；自治文件后端直传/complete/health；direct/DERP/A-B-C/recovery 有可重复发布验收 workflow（`tests/e2e/smoke_abc_netns.sh`，已 de-flake）。部署遵循 migrate-before-deploy（`docs/ops/release.md` + Deploy workflow）。
 
-客户端已把 **UI 无关的核心** 抽到 `daemon/pkg/client`（typed IPC ops + 设备/诊断 + `Watch` view-model）；`ourcord-cli` 与 `ourcord-tui` 只是 presenter，共用同一核心——这是给阶段四多平台 GUI 的复用底座，**presenter 里不要写 daemon 逻辑**（详见 `docs/ui/client-core.md`）。改动前判断归属哪个阶段：仍不要提前实现阶段三媒体与阶段四正式产品 GUI（Tauri/Flutter/React）。Minecraft LAN（M 系列）属阶段二可选附加。
+客户端已把 **UI 无关的核心** 抽到 `daemon/pkg/client`（typed ops + 设备/诊断 + `Watch` view-model）；IPC 传输已从 JSON 换成 **gRPC over 认证 UDS**（`proto/ourcord/v1`，bindings 提交在 `daemon/pkg/pb`，CI diff 校验）。`ourcord-cli`/`ourcord-tui` 只是 presenter，共用同一核心——阶段四多平台 GUI 的复用底座，**presenter 里不要写 daemon 逻辑**（详见 `docs/ui/client-core.md`）。
+
+阶段三媒体已开工：**语音 v1 已落地**（`daemon/pkg/media`，engine+E2E 加密+relay 验收，`ourcord-cli voice`）。默认构建 PCM 纯 Go/CGO=0；真 Opus+硬件音频在 `voice` tag 后（cgo，见 `daemon/AGENTS.md`）。剩余阶段三：设备选择、语音 UI、视频/屏幕共享/远控。仍不要提前做阶段四正式产品 GUI（Tauri/Flutter/React）。Minecraft LAN（M 系列）属阶段二可选附加。

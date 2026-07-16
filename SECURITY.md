@@ -123,6 +123,25 @@ assumed to be in place.
 - **Scope**: identifies the relay node when registering itself and
   reporting capacity / health to control.
 
+### 3.7 Voice media (peer ↔ peer)
+
+- **Why extra crypto**: voice is UDP on the VPN overlay, and an A-B-C relay
+  hop (peer B) kernel-forwards the inner packets in the clear at the
+  WireGuard layer. B may not even be in the call, so relying on WG-hop
+  encryption would expose the audio to the relay.
+- **Scheme** (`daemon/pkg/media/crypto.go`): a pairwise key is derived with no
+  extra signaling from the WireGuard static keys both ends already hold —
+  `X25519(ourWgPriv, peerWgPub) → HKDF-SHA256 → ChaCha20-Poly1305`. The RTP
+  header is authenticated as AEAD additional data; the payload is sealed; a
+  monotonic counter + 64-entry replay window prevent replay. Each peer stream
+  has its own key, so a relay holding only `pairKey(A,B)` cannot read the
+  forwarded `A→C` datagram (asserted by unit tests and the netns acceptance's
+  voice-over-relay stage).
+- **Known gap — no PFS (v1)**: the pairwise key is static for the life of the
+  WireGuard keys, so a compromise of a device's WG private key retro-decrypts
+  captured audio. The planned follow-up is an ephemeral rekey negotiated inside
+  the encrypted pairwise channel.
+
 ---
 
 ## 4. Rotation strategy

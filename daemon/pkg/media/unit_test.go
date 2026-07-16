@@ -4,18 +4,26 @@ import "testing"
 
 func TestPCMCodecRoundTrip(t *testing.T) {
 	c := NewPCMCodec()
+	enc, err := c.NewEncoder()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dec, err := c.NewDecoder()
+	if err != nil {
+		t.Fatal(err)
+	}
 	pcm := make([]int16, FrameSamples)
 	for i := range pcm {
 		pcm[i] = int16(i*7 - 1000)
 	}
-	enc, err := c.Encode(pcm)
+	encoded, err := enc.Encode(pcm)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(enc) != FrameSamples*2 {
-		t.Fatalf("encoded len = %d, want %d", len(enc), FrameSamples*2)
+	if len(encoded) != FrameSamples*2 {
+		t.Fatalf("encoded len = %d, want %d", len(encoded), FrameSamples*2)
 	}
-	got, err := c.Decode(enc)
+	got, err := dec.Decode(encoded)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -24,7 +32,7 @@ func TestPCMCodecRoundTrip(t *testing.T) {
 			t.Fatalf("sample %d: got %d want %d", i, got[i], pcm[i])
 		}
 	}
-	if _, err := c.Encode(pcm[:10]); err == nil {
+	if _, err := enc.Encode(pcm[:10]); err == nil {
 		t.Fatal("wrong frame size must error")
 	}
 }

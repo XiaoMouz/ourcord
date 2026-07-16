@@ -279,6 +279,19 @@ Required:
 
 Goal: deliver voice/video/screen-share/remote-control experiences on top of the VPN overlay.
 
+Status: voice v1 shipped. `daemon/pkg/media` runs the capture → encode → per-peer
+E2E-encrypt → RTP → UDP pipeline over the VPN overlay (voice is plain UDP to each
+peer's VPN IP, so A-B-C relay forwarding is transparent and media stays encrypted
+through the hop — proven by the netns acceptance). Media is E2E-encrypted with a
+pairwise key derived from the WireGuard static keys (X25519 → HKDF →
+ChaCha20-Poly1305); no PFS in v1 (see SECURITY.md). The engine is presenter-
+agnostic like the rest: `DaemonVoiceService` (join/leave/mute/deafen/status) over
+gRPC, `daemon/pkg/client` voice methods, and an `ourcord-cli voice` subcommand.
+The default build encodes PCM (pure Go, CGO=0); the `voice` build tag swaps in
+real Opus (~32 kbps) and hardware audio devices (malgo). Remaining Phase-3 work:
+audio device selection, active-speaker/volume UI, and video/screen-share/remote
+control.
+
 Required:
 
 - Opus voice path with mute/deafen, device selection, packet loss handling, and path-quality reporting.

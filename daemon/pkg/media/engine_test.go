@@ -122,7 +122,9 @@ func TestTwoEnginesEndToEndVoice(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer a.Stop()
-	b, err := Start(Config{SelfKey: keyB, VPN4: addrB, NetworkID: "lobby-x-voice", Conn: fab.endpoint(addrB)})
+	// B is a receiver: an idle capture channel pins the null device (no real
+	// hardware) regardless of the build tag.
+	b, err := Start(Config{SelfKey: keyB, VPN4: addrB, NetworkID: "lobby-x-voice", Conn: fab.endpoint(addrB), CaptureSource: idleCapture()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,12 +163,18 @@ func TestWrongKeyPeerCannotDecrypt(t *testing.T) {
 	stop := make(chan struct{})
 	defer close(stop)
 
-	a, _ := Start(Config{SelfKey: keyA, VPN4: addrA, Conn: fab.endpoint(addrA), CaptureSource: tone(stop)})
+	a, err := Start(Config{SelfKey: keyA, VPN4: addrA, Conn: fab.endpoint(addrA), CaptureSource: tone(stop)})
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer a.Stop()
 	// Eve joins with her own key but claims to expect A. A is NOT told about Eve,
 	// so A never sends to her; even if she received A's packets (addressed to B),
 	// her opener derives pairKey(Eve,A) ≠ pairKey(A,B) and cannot decrypt.
-	eve, _ := Start(Config{SelfKey: keyEve, VPN4: addrEve, Conn: fab.endpoint(addrEve)})
+	eve, err := Start(Config{SelfKey: keyEve, VPN4: addrEve, Conn: fab.endpoint(addrEve), CaptureSource: idleCapture()})
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer eve.Stop()
 
 	a.UpdatePeers([]PeerInfo{{PublicKey: keyB.PublicKey(), VPN4: netip.MustParseAddr("198.18.0.3")}})
@@ -177,6 +185,11 @@ func TestWrongKeyPeerCannotDecrypt(t *testing.T) {
 		t.Fatalf("eavesdropper decrypted %d packets", rx)
 	}
 }
+
+// idleCapture is a never-sending capture source: it pins the null device for a
+// receiver-only engine so tests never touch real audio hardware, even under the
+// voice build tag.
+func idleCapture() <-chan []int16 { return make(chan []int16) }
 
 func participantRx(s Status, key wgtypes.Key) uint64 {
 	for _, p := range s.Participants {

@@ -25,7 +25,7 @@
 | `pkg/ice` | ICE/STUN 打洞 |
 | `pkg/routing` | AllowedIPs 计算 + 中继链路由 |
 | `pkg/control` | 控制面 WebSocket 客户端 |
-| `pkg/media` | 语音/视频/远控（阶段三占位） |
+| `pkg/media` | 语音引擎（阶段三 v1）：capture→encode→**逐对端 E2E 加密**→RTP→UDP over overlay + jitter/mix。默认 PCM 纯 Go（CGO=0）；`voice` tag 换真 Opus(cgo)+malgo 设备。E2E 密钥由 WG 静态密钥派生（X25519→HKDF→ChaCha20-Poly1305），中继节点转发但读不了媒体 |
 | `pkg/ipc` | IPC 层：认证 UDS transport（peercred + HMAC 握手，之后才起 HTTP/2）、domain types、proto 转换（`conv.go`）|
 | `pkg/pb` | `proto/ourcord/v1` 生成的 Go bindings（**已提交**，勿手改；CI 重新生成并 diff 校验）|
 | `pkg/client` | **UI 无关的客户端核心**：typed daemon ops（gRPC）+ 设备/诊断 + `Watch` view-model。CLI/TUI/未来 GUI 共用，禁止在 presenter 里写 daemon 逻辑 |
@@ -66,7 +66,15 @@ go vet ./...
 go test -race ./...
 ```
 
-跨平台：daemon 必须能编译 linux/amd64、linux/arm64、darwin/arm64、windows/amd64。
+跨平台：daemon 必须能编译 linux/amd64、linux/arm64、darwin/arm64、windows/amd64（**默认构建必须 CGO=0**）。
+
+语音真实 Opus + 硬件音频在 `voice` 构建 tag 后（cgo）：
+```bash
+# Linux 需 libopus-dev libopusfile-dev libasound2-dev；macOS 需 brew opus opusfile pkg-config
+CGO_ENABLED=1 go build -tags voice ./...
+CGO_ENABLED=1 go test  -tags voice ./pkg/media/   # 两引擎 E2E 会跑真 Opus
+```
+CI 的 `voice-build` job 在 ubuntu+macos 上跑上述命令。**绝不要**把 cgo 代码放进默认构建——`pkg/media` 里除 `*_voice.go`（`//go:build voice`）外全部纯 Go。
 
 ## IPC
 

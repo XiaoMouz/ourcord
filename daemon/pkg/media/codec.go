@@ -5,9 +5,10 @@
 // forwarding) is transparent and media stays E2E-encrypted through the hop.
 //
 // The audio codec is abstracted behind Codec. The default (pure-Go, CGO=0,
-// cross-compilable) build uses PCMCodec; a build with the `voice` tag swaps in
-// a real Opus codec alongside the hardware audio devices. When a pure-Go Opus
-// encoder is available upstream it becomes the default codec — a one-file swap.
+// cross-compilable) build uses the PCM codec; a build with the `voice` tag
+// swaps in a real Opus codec (cgo → libopus) alongside the hardware audio
+// devices. When a pure-Go Opus encoder is available upstream it becomes the
+// default codec — a one-file swap.
 package media
 
 const (
@@ -21,20 +22,30 @@ const (
 	FrameSamples = SampleRate / 1000 * FrameMillis * Channels
 )
 
-// Codec encodes/decodes one 20 ms mono 48 kHz frame. Encode takes exactly
-// FrameSamples s16 samples; Decode returns exactly FrameSamples samples (a
-// codec may pad/conceal internally). Implementations must be safe for use by a
-// single sender goroutine (Encode) and per-peer receiver goroutines (Decode)
-// concurrently — i.e. Encode and Decode must not share mutable state, or must
-// lock it.
+// Codec is a factory for a stateful audio codec. Encode and decode state are
+// separated because they have different lifetimes: one Encoder per engine (the
+// single local capture stream) and one Decoder per remote peer (each is an
+// independent Opus stream — sharing a decoder across peers corrupts inter-frame
+// state).
 type Codec interface {
 	// Name identifies the codec on the wire/status ("pcm", "opus").
 	Name() string
+	// NewEncoder returns an encoder for the local outbound stream.
+	NewEncoder() (Encoder, error)
+	// NewDecoder returns a decoder for one inbound peer stream.
+	NewDecoder() (Decoder, error)
+}
+
+// Encoder encodes one 20 ms mono 48 kHz frame (exactly FrameSamples s16).
+type Encoder interface {
 	Encode(pcm []int16) ([]byte, error)
+}
+
+// Decoder decodes one frame from a single peer's stream.
+type Decoder interface {
 	Decode(payload []byte) ([]int16, error)
 }
 
-// newDefaultCodec returns the codec for the current build. Overridden by the
-// voice-tagged build to return the Opus codec. Kept as a var so the engine has
-// a single construction point.
+// newDefaultCodec returns the codec for the current build. The voice-tagged
+// build rebinds this (init) to return the Opus codec. Single construction point.
 var newDefaultCodec = func() (Codec, error) { return NewPCMCodec(), nil }

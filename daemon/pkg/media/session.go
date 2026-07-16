@@ -37,13 +37,15 @@ type Config struct {
 // buffers per peer and mixes for playback. All exported methods are safe for
 // concurrent use.
 type Engine struct {
-	cfg    Config
-	codec  Codec
-	dev    Device
-	conn   packetConn
-	ssrc   uint32
-	cancel context.CancelFunc
-	wg     sync.WaitGroup
+	cfg       Config
+	codec     Codec
+	codecName string
+	enc       Encoder
+	dev       Device
+	conn      packetConn
+	ssrc      uint32
+	cancel    context.CancelFunc
+	wg        sync.WaitGroup
 
 	mu       sync.Mutex
 	peers    map[wgtypes.Key]*peerState
@@ -55,10 +57,11 @@ type Engine struct {
 }
 
 type peerState struct {
-	info   PeerInfo
-	sealer *sealer
-	opener *opener
-	jitter *jitterBuffer
+	info    PeerInfo
+	sealer  *sealer
+	opener  *opener
+	decoder Decoder // per-peer: codec decode state is per-stream
+	jitter  *jitterBuffer
 
 	txPackets uint64
 	rxPackets uint64
@@ -69,6 +72,10 @@ type peerState struct {
 // Start builds the codec/device/socket and launches the send and receive loops.
 func Start(cfg Config) (*Engine, error) {
 	codec, err := newDefaultCodec()
+	if err != nil {
+		return nil, err
+	}
+	enc, err := codec.NewEncoder()
 	if err != nil {
 		return nil, err
 	}
@@ -87,14 +94,16 @@ func Start(cfg Config) (*Engine, error) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	e := &Engine{
-		cfg:    cfg,
-		codec:  codec,
-		dev:    dev,
-		conn:   conn,
-		ssrc:   ssrcFor(cfg.SelfKey.PublicKey()),
-		cancel: cancel,
-		peers:  make(map[wgtypes.Key]*peerState),
-		byAddr: make(map[netip.Addr]*peerState),
+		cfg:       cfg,
+		codec:     codec,
+		codecName: codec.Name(),
+		enc:       enc,
+		dev:       dev,
+		conn:      conn,
+		ssrc:      ssrcFor(cfg.SelfKey.PublicKey()),
+		cancel:    cancel,
+		peers:     make(map[wgtypes.Key]*peerState),
+		byAddr:    make(map[netip.Addr]*peerState),
 	}
 	e.wg.Add(2)
 	go e.sendLoop(ctx)
@@ -143,6 +152,11 @@ func (e *Engine) UpdatePeers(peers []PeerInfo) {
 
 func (e *Engine) newPeerLocked(p PeerInfo) *peerState {
 	st := &peerState{info: p, jitter: newJitterBuffer(defaultJitterDepth)}
+	dec, err := e.codec.NewDecoder()
+	if err != nil {
+		return st // can't decode this peer; leaves it insecure/silent
+	}
+	st.decoder = dec
 	key, err := pairKey(e.cfg.SelfKey, p.PublicKey)
 	if err != nil {
 		return st // insecure; no sealer/opener → won't tx/rx to this peer
@@ -197,7 +211,7 @@ func (e *Engine) broadcast(pcm []int16) {
 		e.mu.Unlock()
 		return
 	}
-	payload, err := e.codec.Encode(pcm)
+	payload, err := e.enc.Encode(pcm)
 	if err != nil {
 		e.mu.Unlock()
 		return
@@ -258,26 +272,27 @@ func (e *Engine) handleDatagram(datagram []byte, from netip.Addr) {
 	if err != nil {
 		return
 	}
+	// The decode + jitter buffer are per-peer state that Status also reads, so
+	// hold e.mu across open/decode/jitter; only device render happens outside
+	// the lock so Playback can't block the engine. handleDatagram runs on the
+	// single recvLoop goroutine, so this doesn't serialize multiple peers'
+	// decodes against each other beyond the socket read cadence.
 	e.mu.Lock()
 	st := e.byAddr[from]
-	if st == nil || st.opener == nil {
+	if st == nil || st.opener == nil || st.decoder == nil {
 		e.mu.Unlock()
 		return // unknown/insecure sender
 	}
-	opener := st.opener
-	e.mu.Unlock()
-
-	plain, err := opener.open(pkt.ciphertext, pkt.aad, pkt.counter)
+	plain, err := st.opener.open(pkt.ciphertext, pkt.aad, pkt.counter)
 	if err != nil {
+		e.mu.Unlock()
 		return // replay, tamper, or wrong key
 	}
-	pcm, err := e.codec.Decode(plain)
+	pcm, err := st.decoder.Decode(plain)
 	if err != nil {
+		e.mu.Unlock()
 		return
 	}
-	// All jitter-buffer access stays under e.mu (Status reads it too); only the
-	// device render happens outside the lock so Playback can't block the engine.
-	e.mu.Lock()
 	st.rxPackets++
 	st.lastRx = time.Now()
 	st.jitter.push(pkt.header.SequenceNumber, pcm)

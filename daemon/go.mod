@@ -5,6 +5,8 @@ go 1.26.1
 require (
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.0
+	github.com/gen2brain/malgo v0.11.25
+	github.com/hraban/opus v0.0.0-20260708213942-bde8e4304501
 	github.com/pion/ice/v4 v4.2.5
 	github.com/pion/rtp v1.10.3
 	github.com/pion/stun/v3 v3.1.2

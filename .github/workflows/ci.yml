@@ -50,6 +50,39 @@ jobs:
       - run: go vet ./...
       - run: go test -race ./...
 
+  voice-build:
+    name: Voice build (cgo Opus + audio devices)
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: daemon
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: daemon/go.mod
+          cache: true
+      # The `voice` build tag pulls in cgo libopus (hraban/opus) and the audio
+      # device layer (malgo). Linux needs the Opus + ALSA dev packages; macOS
+      # uses CoreAudio and Homebrew's opus/opusfile. The default (tag-less)
+      # build stays CGO=0 and is covered by the `go` job above.
+      - name: Install Opus + audio dev libraries (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install --yes libopus-dev libopusfile-dev libasound2-dev
+      - name: Install Opus (macOS)
+        if: runner.os == 'macOS'
+        run: brew install opus opusfile pkg-config
+      - name: Build and test with the voice tag
+        env:
+          CGO_ENABLED: "1"
+        run: |
+          go build -tags voice ./...
+          go test -tags voice ./pkg/media/
+
   proto:
     name: Proto contract
     runs-on: ubuntu-latest
