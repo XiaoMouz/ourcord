@@ -232,3 +232,26 @@ func (c *Client) VoiceStatus() (ipc.VoiceStatus, error) {
 	}
 	return ipc.VoiceStatusFromProto(resp.GetStatus()), nil
 }
+
+// ListAudioDevices enumerates local capture and playback devices. It returns a
+// DaemonError when the daemon was built without the voice tag (no audio backend).
+func (c *Client) ListAudioDevices() (capture, playback []ipc.AudioDevice, err error) {
+	resp, err := c.voice.ListAudioDevices(context.Background(), &ourcordv1.ListAudioDevicesRequest{})
+	if err != nil {
+		return nil, nil, rpcErr("voice-devices", err)
+	}
+	if res := resp.GetResult(); res == nil || !res.GetOk() {
+		return nil, nil, &DaemonError{Cmd: "voice-devices", Msg: res.GetErrorMessage()}
+	}
+	return ipc.AudioDevicesFromProto(resp.GetCapture()), ipc.AudioDevicesFromProto(resp.GetPlayback()), nil
+}
+
+// SetAudioDevices selects the capture and playback device IDs (empty = system
+// default). Applies immediately if a call is active, else on the next join.
+func (c *Client) SetAudioDevices(captureID, playbackID string) error {
+	resp, err := c.voice.SetAudioDevices(context.Background(), &ourcordv1.SetAudioDevicesRequest{
+		CaptureId:  captureID,
+		PlaybackId: playbackID,
+	})
+	return opErr("voice-set-devices", resp.GetResult(), err)
+}

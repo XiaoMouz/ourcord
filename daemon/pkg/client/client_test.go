@@ -40,6 +40,21 @@ func (stubServer) GetVoiceStatus(context.Context, *ourcordv1.GetVoiceStatusReque
 	}}, nil
 }
 
+func (stubServer) ListAudioDevices(context.Context, *ourcordv1.ListAudioDevicesRequest) (*ourcordv1.ListAudioDevicesResponse, error) {
+	return &ourcordv1.ListAudioDevicesResponse{
+		Result:   &ourcordv1.OperationResult{Ok: true},
+		Capture:  []*ourcordv1.AudioDevice{{Id: "mic-1", Name: "Built-in Mic", IsDefault: true}},
+		Playback: []*ourcordv1.AudioDevice{{Id: "spk-1", Name: "Speakers"}},
+	}, nil
+}
+
+func (stubServer) SetAudioDevices(_ context.Context, req *ourcordv1.SetAudioDevicesRequest) (*ourcordv1.SetAudioDevicesResponse, error) {
+	if req.GetCaptureId() == "bad" {
+		return &ourcordv1.SetAudioDevicesResponse{Result: &ourcordv1.OperationResult{Ok: false, ErrorMessage: "no such device"}}, nil
+	}
+	return &ourcordv1.SetAudioDevicesResponse{Result: &ourcordv1.OperationResult{Ok: true}}, nil
+}
+
 func (stubServer) GetStatus(context.Context, *ourcordv1.GetStatusRequest) (*ourcordv1.GetStatusResponse, error) {
 	return &ourcordv1.GetStatusResponse{Status: &ourcordv1.DaemonStatus{
 		Running: true, VpnActive: true, Ipv4: "198.18.0.2", PeerCount: 1,
@@ -160,6 +175,27 @@ func TestVoiceOpsAndStatus(t *testing.T) {
 	if !st.Joined || st.Codec != "pcm" || len(st.Participants) != 1 ||
 		!st.Participants[0].Speaking || !st.Participants[0].Secure || st.Participants[0].PacketsRx != 9 {
 		t.Fatalf("unexpected voice status: %+v", st)
+	}
+}
+
+func TestAudioDeviceListAndSelect(t *testing.T) {
+	c := dialStub(t)
+	capture, playback, err := c.ListAudioDevices()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(capture) != 1 || capture[0].ID != "mic-1" || !capture[0].IsDefault ||
+		len(playback) != 1 || playback[0].Name != "Speakers" {
+		t.Fatalf("unexpected devices: cap=%+v play=%+v", capture, playback)
+	}
+	if err := c.SetAudioDevices("mic-1", "spk-1"); err != nil {
+		t.Fatalf("set devices: %v", err)
+	}
+	// A daemon-side rejection surfaces as a DaemonError.
+	err = c.SetAudioDevices("bad", "")
+	var de *DaemonError
+	if !errors.As(err, &de) || de.Msg != "no such device" {
+		t.Fatalf("expected DaemonError, got %v", err)
 	}
 }
 

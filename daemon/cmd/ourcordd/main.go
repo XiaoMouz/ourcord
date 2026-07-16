@@ -213,6 +213,10 @@ type daemon struct {
 	// voice is the running Phase-3 voice engine (nil when not in a call).
 	// Guarded by connMu; membership tracked from the routing table.
 	voice *media.Engine
+	// selected audio device IDs ("" = system default), applied on voice join
+	// and on a live device change. Guarded by connMu.
+	voiceCaptureID  string
+	voicePlaybackID string
 
 	// Injectable factories (test seam). nil → real implementations.
 	newTun    func(name string, addrs []netip.Prefix) (tunIface, error)
@@ -373,6 +377,17 @@ func (d *daemon) HandleIPC(ctx context.Context, req ipc.IPCRequest) ipc.IPCRespo
 		return ipc.IPCResponse{OK: true}
 	case ipc.CmdVoiceStatus:
 		return ipc.IPCResponse{OK: true, Data: d.voiceStatus()}
+	case ipc.CmdVoiceListDevices:
+		capture, playback, supported := media.AudioDevices()
+		if !supported {
+			return ipc.IPCResponse{OK: false, Error: "audio devices require a build with the voice tag"}
+		}
+		return ipc.IPCResponse{OK: true, Data: toDeviceList(capture, playback)}
+	case ipc.CmdVoiceSetDevices:
+		if err := d.voiceSetDevices(req.Params["capture_id"], req.Params["playback_id"]); err != nil {
+			return ipc.IPCResponse{OK: false, Error: err.Error()}
+		}
+		return ipc.IPCResponse{OK: true}
 	default:
 		return ipc.IPCResponse{OK: false, Error: fmt.Sprintf("unknown command: %s", req.Cmd)}
 	}
@@ -393,11 +408,7 @@ func (d *daemon) voiceJoin() error {
 	if err != nil {
 		return fmt.Errorf("no VPN IPv4 assigned: %w", err)
 	}
-	eng, err := media.Start(media.Config{
-		SelfKey:   d.keyPair.Private,
-		VPN4:      vpn4,
-		NetworkID: d.activeRoom,
-	})
+	eng, err := d.startVoiceLocked(vpn4)
 	if err != nil {
 		return err
 	}
@@ -405,6 +416,54 @@ func (d *daemon) voiceJoin() error {
 	d.syncVoicePeersLocked()
 	log.Printf("voice: joined %s (codec=%s)", d.activeRoom, eng.Status().Codec)
 	return nil
+}
+
+// startVoiceLocked builds an engine bound to vpn4 with the current device
+// selection. Caller holds connMu.
+func (d *daemon) startVoiceLocked(vpn4 netip.Addr) (*media.Engine, error) {
+	return media.Start(media.Config{
+		SelfKey:   d.keyPair.Private,
+		VPN4:      vpn4,
+		NetworkID: d.activeRoom,
+		Devices:   media.AudioSelection{CaptureID: d.voiceCaptureID, PlaybackID: d.voicePlaybackID},
+	})
+}
+
+// voiceSetDevices records the selected capture/playback device IDs. If a call is
+// active, the engine is restarted so the change takes effect immediately (a
+// brief audio gap); otherwise the selection applies on the next join.
+func (d *daemon) voiceSetDevices(captureID, playbackID string) error {
+	d.connMu.Lock()
+	defer d.connMu.Unlock()
+	d.voiceCaptureID, d.voicePlaybackID = captureID, playbackID
+	if d.voice == nil {
+		return nil // applies on next join
+	}
+	vpn4, err := netip.ParseAddr(d.assignedIP4)
+	if err != nil {
+		return fmt.Errorf("no VPN IPv4 assigned: %w", err)
+	}
+	old := d.voice
+	d.voice = nil
+	old.Stop()
+	eng, err := d.startVoiceLocked(vpn4)
+	if err != nil {
+		return fmt.Errorf("restart voice with new devices: %w", err)
+	}
+	d.voice = eng
+	d.syncVoicePeersLocked()
+	return nil
+}
+
+func toDeviceList(capture, playback []media.AudioDeviceInfo) ipc.AudioDeviceList {
+	conv := func(in []media.AudioDeviceInfo) []ipc.AudioDevice {
+		out := make([]ipc.AudioDevice, 0, len(in))
+		for _, dv := range in {
+			out = append(out, ipc.AudioDevice{ID: dv.ID, Name: dv.Name, IsDefault: dv.IsDefault})
+		}
+		return out
+	}
+	return ipc.AudioDeviceList{Capture: conv(capture), Playback: conv(playback)}
 }
 
 // voiceLeave stops the engine if running.

@@ -218,6 +218,24 @@ func VoiceStatusFromProto(p *ourcordv1.VoiceStatus) VoiceStatus {
 	}
 }
 
+// AudioDevicesToProto converts an enumerated device list to wire slices.
+func AudioDevicesToProto(ds []AudioDevice) []*ourcordv1.AudioDevice {
+	out := make([]*ourcordv1.AudioDevice, 0, len(ds))
+	for _, d := range ds {
+		out = append(out, &ourcordv1.AudioDevice{Id: d.ID, Name: d.Name, IsDefault: d.IsDefault})
+	}
+	return out
+}
+
+// AudioDevicesFromProto converts wire device slices back to the domain type.
+func AudioDevicesFromProto(ds []*ourcordv1.AudioDevice) []AudioDevice {
+	out := make([]AudioDevice, 0, len(ds))
+	for _, d := range ds {
+		out = append(out, AudioDevice{ID: d.GetId(), Name: d.GetName(), IsDefault: d.GetIsDefault()})
+	}
+	return out
+}
+
 func transportToProto(t TransportStats) *ourcordv1.TransportStats {
 	return &ourcordv1.TransportStats{
 		Mtu:                   uint32(max(t.MTU, 0)),

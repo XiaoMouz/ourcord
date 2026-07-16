@@ -22,13 +22,34 @@ import (
 // hardware even under the voice tag.
 
 func init() {
-	newDevice = func(captureSource <-chan []int16) (Device, error) {
+	newDevice = func(captureSource <-chan []int16, sel AudioSelection) (Device, error) {
 		if captureSource != nil {
 			return newNullDevice(captureSource), nil // test seam
 		}
-		return newMalgoDevice()
+		return newMalgoDevice(sel)
 	}
 	listAudioDevices = malgoListDevices
+}
+
+// resolveDeviceID enumerates devices of kind and returns an owned copy of the
+// malgo DeviceID whose String() matches id, or nil (⇒ system default) when id
+// is empty or not found. Returning a copy (not a pointer into the enumerated
+// slice) keeps the ID alive independently of the slice for InitDevice.
+func resolveDeviceID(ctx malgo.Context, kind malgo.DeviceType, id string) *malgo.DeviceID {
+	if id == "" {
+		return nil
+	}
+	infos, err := ctx.Devices(kind)
+	if err != nil {
+		return nil
+	}
+	for i := range infos {
+		if infos[i].ID.String() == id {
+			cp := infos[i].ID
+			return &cp
+		}
+	}
+	return nil // unknown id → fall back to default
 }
 
 func malgoListDevices() (capture, playback []AudioDeviceInfo, supported bool) {
@@ -67,17 +88,24 @@ type malgoDevice struct {
 	closed  bool
 }
 
-func newMalgoDevice() (Device, error) {
+func newMalgoDevice(sel AudioSelection) (Device, error) {
 	ctx, err := malgo.InitContext(nil, malgo.ContextConfig{}, nil)
 	if err != nil {
 		return nil, fmt.Errorf("malgo context: %w", err)
 	}
 	d := &malgoDevice{ctx: ctx, out: make(chan []int16, 8)}
 
+	// Resolve selected device IDs (kept alive until InitDevice copies them).
+	capID := resolveDeviceID(ctx.Context, malgo.Capture, sel.CaptureID)
+	playID := resolveDeviceID(ctx.Context, malgo.Playback, sel.PlaybackID)
+
 	capCfg := malgo.DefaultDeviceConfig(malgo.Capture)
 	capCfg.Capture.Format = malgo.FormatS16
 	capCfg.Capture.Channels = Channels
 	capCfg.SampleRate = SampleRate
+	if capID != nil {
+		capCfg.Capture.DeviceID = capID.Pointer()
+	}
 	cap, err := malgo.InitDevice(ctx.Context, capCfg, malgo.DeviceCallbacks{Data: d.onCapture})
 	if err != nil {
 		ctx.Uninit()
@@ -88,6 +116,9 @@ func newMalgoDevice() (Device, error) {
 	playCfg.Playback.Format = malgo.FormatS16
 	playCfg.Playback.Channels = Channels
 	playCfg.SampleRate = SampleRate
+	if playID != nil {
+		playCfg.Playback.DeviceID = playID.Pointer()
+	}
 	play, err := malgo.InitDevice(ctx.Context, playCfg, malgo.DeviceCallbacks{Data: d.onPlayback})
 	if err != nil {
 		cap.Uninit()

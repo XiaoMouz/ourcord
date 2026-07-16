@@ -30,6 +30,7 @@ type Config struct {
 
 	Conn          packetConn     // nil ⇒ bind VoicePort on VPN4
 	CaptureSource <-chan []int16 // nil ⇒ build default device's capture
+	Devices       AudioSelection // selected capture/playback hardware (voice build)
 }
 
 // Engine is one voice session. It captures locally, encodes+encrypts once per
@@ -87,7 +88,7 @@ func Start(cfg Config) (*Engine, error) {
 		}
 		conn = udp
 	}
-	dev, err := newDevice(cfg.CaptureSource)
+	dev, err := newDevice(cfg.CaptureSource, cfg.Devices)
 	if err != nil {
 		conn.Close()
 		return nil, err

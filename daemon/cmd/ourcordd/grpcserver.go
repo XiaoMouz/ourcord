@@ -117,6 +117,24 @@ func (s *voiceService) GetVoiceStatus(ctx context.Context, _ *ourcordv1.GetVoice
 	return &ourcordv1.GetVoiceStatusResponse{Status: ipc.VoiceStatusToProto(st)}, nil
 }
 
+func (s *voiceService) ListAudioDevices(ctx context.Context, _ *ourcordv1.ListAudioDevicesRequest) (*ourcordv1.ListAudioDevicesResponse, error) {
+	resp := s.d.HandleIPC(ctx, ipc.IPCRequest{Cmd: ipc.CmdVoiceListDevices})
+	if !resp.OK {
+		return &ourcordv1.ListAudioDevicesResponse{Result: &ourcordv1.OperationResult{Ok: false, ErrorMessage: resp.Error}}, nil
+	}
+	list, _ := resp.Data.(ipc.AudioDeviceList)
+	return &ourcordv1.ListAudioDevicesResponse{
+		Result:   &ourcordv1.OperationResult{Ok: true},
+		Capture:  ipc.AudioDevicesToProto(list.Capture),
+		Playback: ipc.AudioDevicesToProto(list.Playback),
+	}, nil
+}
+
+func (s *voiceService) SetAudioDevices(ctx context.Context, req *ourcordv1.SetAudioDevicesRequest) (*ourcordv1.SetAudioDevicesResponse, error) {
+	params := map[string]string{"capture_id": req.GetCaptureId(), "playback_id": req.GetPlaybackId()}
+	return &ourcordv1.SetAudioDevicesResponse{Result: s.op(ctx, ipc.CmdVoiceSetDevices, params)}, nil
+}
+
 func (s *voiceService) op(ctx context.Context, cmd string, params map[string]string) *ourcordv1.OperationResult {
 	resp := s.d.HandleIPC(ctx, ipc.IPCRequest{Cmd: cmd, Params: params})
 	return &ourcordv1.OperationResult{Ok: resp.OK, ErrorMessage: resp.Error}

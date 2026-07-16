@@ -75,6 +75,21 @@ type VoiceStatus struct {
 	Participants []VoiceParticipant `json:"participants,omitempty"`
 }
 
+// AudioDevice is the domain shape for ourcord.v1.AudioDevice.
+type AudioDevice struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	IsDefault bool   `json:"is_default"`
+}
+
+// AudioDeviceList is the daemon's device enumeration. Whether audio is
+// supported at all rides the IPCResponse/OperationResult (ok=false in a build
+// without the voice tag).
+type AudioDeviceList struct {
+	Capture  []AudioDevice `json:"capture"`
+	Playback []AudioDevice `json:"playback"`
+}
+
 // VoiceParticipant is the domain shape for ourcord.v1.VoiceParticipant.
 type VoiceParticipant struct {
 	PublicKey   string  `json:"public_key"`
@@ -101,11 +116,13 @@ const (
 	CmdForceDERP    = "force_derp"
 	CmdPing         = "ping"
 
-	CmdVoiceJoin   = "voice_join"
-	CmdVoiceLeave  = "voice_leave"
-	CmdVoiceMute   = "voice_mute"
-	CmdVoiceDeafen = "voice_deafen"
-	CmdVoiceStatus = "voice_status"
+	CmdVoiceJoin        = "voice_join"
+	CmdVoiceLeave       = "voice_leave"
+	CmdVoiceMute        = "voice_mute"
+	CmdVoiceDeafen      = "voice_deafen"
+	CmdVoiceStatus      = "voice_status"
+	CmdVoiceListDevices = "voice_list_devices"
+	CmdVoiceSetDevices  = "voice_set_devices"
 )
 
 // IPCRequest is the daemon's internal command envelope (HandleIPC mux input).

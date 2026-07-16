@@ -101,6 +101,19 @@ func bytesEqual(a, b []byte) bool {
 	return true
 }
 
+func TestNullDeviceIgnoresSelection(t *testing.T) {
+	// The device selection is a voice-build concern; the default null device
+	// must accept and ignore it (a Config.Devices value must not break Start).
+	d, err := newDevice(idleCapture(), AudioSelection{CaptureID: "x", PlaybackID: "y"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	if d.Capture() == nil {
+		t.Fatal("null device must still provide a capture channel")
+	}
+}
+
 func TestSeqLess(t *testing.T) {
 	if !seqLess(1, 2) || seqLess(2, 1) || seqLess(1, 1) {
 		t.Fatal("basic ordering")

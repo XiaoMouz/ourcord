@@ -24,10 +24,19 @@ type AudioDeviceInfo struct {
 	IsDefault bool
 }
 
+// AudioSelection names the capture/playback devices to open. Empty IDs mean the
+// system default. The null device ignores it; the voice-tagged device opens the
+// matching hardware.
+type AudioSelection struct {
+	CaptureID  string
+	PlaybackID string
+}
+
 // newDevice constructs the audio device for the current build. Overridden by
 // the voice-tagged build. captureSource, when non-nil, replaces live capture
-// with a test frame source (used by the null device and integration tests).
-var newDevice = func(captureSource <-chan []int16) (Device, error) {
+// with a test frame source (used by the null device and integration tests);
+// sel selects hardware devices (voice build only).
+var newDevice = func(captureSource <-chan []int16, sel AudioSelection) (Device, error) {
 	return newNullDevice(captureSource), nil
 }
 
@@ -35,6 +44,12 @@ var newDevice = func(captureSource <-chan []int16) (Device, error) {
 // the voice-tagged build overrides this.
 var listAudioDevices = func() (capture, playback []AudioDeviceInfo, supported bool) {
 	return nil, nil, false
+}
+
+// AudioDevices enumerates the local capture and playback devices. supported is
+// false in the default (non-voice) build, which has no audio backend.
+func AudioDevices() (capture, playback []AudioDeviceInfo, supported bool) {
+	return listAudioDevices()
 }
 
 // nullDevice is the headless default: capture yields whatever is fed to it (a
