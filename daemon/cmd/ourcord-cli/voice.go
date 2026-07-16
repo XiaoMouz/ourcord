@@ -9,10 +9,10 @@ import (
 )
 
 // runVoice dispatches the voice subcommands over the shared client core.
-// Usage: ourcord-cli voice <join|leave|mute|unmute|deafen|undeafen|status|devices|set-device>
+// Usage: ourcord-cli voice <join|leave|mute|unmute|deafen|undeafen|status|devices|set-device|input-mode>
 func runVoice(socketPath string, args []string) int {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "Usage: ourcord-cli voice <join|leave|mute|unmute|deafen|undeafen|status|devices|set-device [capture_id] [playback_id]>")
+		fmt.Fprintln(os.Stderr, "Usage: ourcord-cli voice <join|leave|mute|unmute|deafen|undeafen|status|devices|set-device|input-mode>")
 		return 1
 	}
 	cli, err := client.Dial(socketPath)
@@ -63,6 +63,12 @@ func runVoice(socketPath string, args []string) int {
 			playbackID = args[2]
 		}
 		return emitOK(cli.SetAudioDevices(captureID, playbackID))
+	case "input-mode":
+		if len(args) != 2 {
+			fmt.Fprintln(os.Stderr, "Usage: ourcord-cli voice input-mode <voice_activity|push_to_talk|open_mic>")
+			return 1
+		}
+		return emitOK(cli.SetVoiceInputMode(args[1], -45, 300))
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown voice command: %s\n", args[0])
 		return 1

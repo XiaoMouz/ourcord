@@ -565,6 +565,12 @@ main() {
   cli a voice join
   cli b voice join
   cli c voice join
+  # The headless null device emits silence. Production defaults to VAD, which
+  # correctly suppresses silence, so explicitly use open-mic here to exercise
+  # encrypted media packets rather than microphone activity detection.
+  cli a voice input-mode open_mic
+  cli b voice input-mode open_mic
+  cli c voice input-mode open_mic
   local a_pk c_pk
   a_pk="$(peer_pubkey b "$a_ip")"
   c_pk="$(peer_pubkey b "$c_ip")"

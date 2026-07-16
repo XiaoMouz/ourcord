@@ -44,7 +44,7 @@ func main() {
 
 func usage() {
 	fmt.Fprintln(os.Stderr, "Usage: ourcord-cli [--socket path] <command> [args...]")
-	fmt.Fprintln(os.Stderr, "Commands: status, connect, disconnect, ping, peers, watch [interval_secs], enter-room <room_id>, leave-room, enter-network <network_id>, leave-network, force-derp <peer_public_key> [reason], voice <join|leave|mute|unmute|deafen|undeafen|status>, enroll, devices, revoke-device <device_id>, diagnostics collect")
+	fmt.Fprintln(os.Stderr, "Commands: status, connect, disconnect, ping, peers, watch [interval_secs], enter-room <room_id>, leave-room, enter-network <network_id>, leave-network, force-derp <peer_public_key> [reason], voice <join|leave|mute|unmute|deafen|undeafen|status|input-mode>, enroll, devices, revoke-device <device_id>, diagnostics collect")
 }
 
 // runDaemonCommand dispatches the IPC-backed commands. Argument arity is checked
