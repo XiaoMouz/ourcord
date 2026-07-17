@@ -5,6 +5,8 @@ import {
   isUniqueViolation,
   generateULAPrefix,
   getULAPrefix,
+  nextOffset,
+  nextCandidateOffset,
 } from "./ipam";
 
 const TEST_PREFIX = "fdab:cdef:0123:";
@@ -79,8 +81,7 @@ describe("generateULAPrefix", () => {
   });
 });
 
-describe("getULAPrefix", () => {
-  function fakeKV(): KVNamespace {
+function fakeKV(): KVNamespace {
     const store = new Map<string, string>();
     return {
       async get(k: string) {
@@ -99,8 +100,9 @@ describe("getULAPrefix", () => {
         return { value: null, metadata: null, cacheStatus: null };
       },
     } as unknown as KVNamespace;
-  }
+}
 
+describe("getULAPrefix", () => {
   it("generates and persists on first call", async () => {
     const kv = fakeKV();
     const p1 = await getULAPrefix(kv);
@@ -122,6 +124,43 @@ describe("getULAPrefix", () => {
     const p = await getULAPrefix(kv);
     expect(p).toMatch(/^fd[0-9a-f]{2}:[0-9a-f]{4}:[0-9a-f]{4}:$/);
     expect(p).not.toBe("garbage-not-a-prefix");
+  });
+});
+
+describe("nextOffset", () => {
+  it("walks upward within the pool", () => {
+    expect(nextOffset(0x10002)).toBe(0x10003);
+  });
+  it("wraps from the pool end into the lower fallback half", () => {
+    expect(nextOffset(0x1ffff)).toBe(2);
+  });
+  it("resets garbage to the upper-half start", () => {
+    expect(nextOffset(NaN)).toBe(0x10002);
+    expect(nextOffset(0)).toBe(0x10002);
+  });
+});
+
+describe("nextCandidateOffset", () => {
+  it("starts at 198.19.0.2 on first call", async () => {
+    const kv = fakeKV();
+    const offset = await nextCandidateOffset(kv);
+    expect(offset).toBe(0x10002);
+    expect(ipsForOffset(offset, TEST_PREFIX).ip4).toBe("198.19.0.2");
+  });
+  it("advances past the committed counter", async () => {
+    const kv = fakeKV();
+    await kv.put("vpn_ip_counter", String(0x10005));
+    expect(await nextCandidateOffset(kv)).toBe(0x10006);
+  });
+  it("clamps pre-U3 lower-half counters up to the upper half", async () => {
+    const kv = fakeKV();
+    await kv.put("vpn_ip_counter", "7"); // legacy deployment: peers at 198.18.0.x
+    expect(await nextCandidateOffset(kv)).toBe(0x10002);
+  });
+  it("recovers from a garbage counter", async () => {
+    const kv = fakeKV();
+    await kv.put("vpn_ip_counter", "not-a-number");
+    expect(await nextCandidateOffset(kv)).toBe(0x10002);
   });
 });
 

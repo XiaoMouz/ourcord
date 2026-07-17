@@ -6,6 +6,7 @@ import { log } from "./log";
 import {
   ipsForOffset,
   nextCandidateOffset,
+  nextOffset,
   commitOffset,
   getULAPrefix,
   isUniqueViolation,
@@ -113,7 +114,7 @@ export async function registerPeer(request: Request, env: Env): Promise<Response
       // and surface a misleading 503 "VPN IP pool" error.
       const msg = err instanceof Error ? err.message : String(err);
       if (/UNIQUE constraint failed:\s*peers\.(ip4|ip6)/i.test(msg)) {
-        offset++;
+        offset = nextOffset(offset);
         continue;
       }
       if (/UNIQUE constraint failed:\s*peers\.public_key/i.test(msg)) {

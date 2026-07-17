@@ -11,6 +11,15 @@ import { Env } from "./types";
 const VPN_SUBNET_START = (198 << 24) | (18 << 16); // 198.18.0.0
 const VPN_SUBNET_MASK = 0x1ffff; // /15 → 2^17 - 1 = 131071
 
+// U3: allocate from the upper /16 (198.19.0.0/16) first. Clash/mihomo's
+// default DNS `fake-ip-range` is 198.18.0.1/16 — exactly the lower half of
+// our pool — and both sides hand out addresses sequentially from the bottom,
+// so a daemon's own /32 host route would shadow the proxy's fake IP for
+// e.g. the control-plane hostname (black-holing it). Keeping allocations in
+// 198.19.x.x makes OurCord coexist with a default-configured Clash; the
+// lower /16 remains only as an exhaustion fallback.
+const UPPER_HALF_FIRST_OFFSET = 0x10000 + 2; // 198.19.0.2 (skip .0/.1 like the lower half)
+
 // U1/U2: IPv6 ULA prefix is per-deployment, NOT a hardcoded constant.
 // fd7a:115c:a1e0::/48 is Tailscale's well-known prefix; we used to reuse it
 // (causing the same conflict as the v4 issue above). Each deployment now
@@ -74,13 +83,28 @@ export async function getULAPrefix(kv: KVNamespace): Promise<string> {
   return settled ?? fresh;
 }
 
-// nextCandidateOffset returns the KV counter hint (or 2 on first call).
+// nextOffset advances the allocation walk: up through the 198.19 half to the
+// pool end, then wraps into the 198.18 fallback half. Callers treat this as a
+// hint stream only — the UNIQUE constraints on peers.ip4/ip6 stay the source
+// of truth.
+export function nextOffset(offset: number): number {
+  if (!Number.isFinite(offset) || offset < 2) return UPPER_HALF_FIRST_OFFSET;
+  const next = offset + 1;
+  return next > VPN_SUBNET_MASK ? 2 : next;
+}
+
+// nextCandidateOffset returns the KV counter hint (198.19.0.2 on first call).
 // This is a HINT only — the caller MUST handle UNIQUE constraint failures
-// in the peers.ip4/ip6 columns by retrying with the next offset.
+// in the peers.ip4/ip6 columns by retrying with nextOffset().
+// commitOffset keeps the max, so a counter below the upper-half start can only
+// mean a deployment that allocated under the old lower-half-first policy (or a
+// fresh one); clamp it up so new peers land in 198.19.x. The wrapped-exhausted
+// state is unrepresentable in a max-counter, but walking past 65534 upper-half
+// addresses is out of scope for a 5-10 person product.
 export async function nextCandidateOffset(kv: KVNamespace): Promise<number> {
   const raw = await kv.get(COUNTER_KEY);
-  let offset = raw ? parseInt(raw, 10) + 1 : 2; // skip .0 (network) and .1 (gateway-reserved)
-  if (!Number.isFinite(offset) || offset < 2) offset = 2;
+  let offset = raw ? nextOffset(parseInt(raw, 10)) : UPPER_HALF_FIRST_OFFSET;
+  if (offset < UPPER_HALF_FIRST_OFFSET) offset = UPPER_HALF_FIRST_OFFSET;
   return offset;
 }
 
