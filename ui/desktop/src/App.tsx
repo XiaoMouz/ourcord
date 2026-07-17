@@ -14,6 +14,7 @@ import VoiceStage from "./components/VoiceStage";
 import ChatPane from "./components/ChatPane";
 import CallBar from "./components/CallBar";
 import SettingsModal from "./components/SettingsModal";
+import { LobbyRailSkeleton, RoomPanelSkeleton, Spinner } from "./components/Skeleton";
 
 const PTT_SHORTCUT = "Ctrl+Shift+Space";
 type InviteLink = Extract<OurCordLink, { kind: "invite" }>;
@@ -30,6 +31,9 @@ export default function App() {
   const [snapshot, setSnapshot] = useState<Snapshot>({ daemon_available: false });
   const [settings, setSettings] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [lobbiesLoaded, setLobbiesLoaded] = useState(false);
+  const [membersLoading, setMembersLoading] = useState(false);
+  const [connectingRoomID, setConnectingRoomID] = useState("");
   const [pendingInvite, setPendingInvite] = useState<InviteLink | null>(null);
   const [, setNameTick] = useState(0);
 
@@ -56,18 +60,24 @@ export default function App() {
     if (!state.authenticated) setLoginURLs(await bridge("auth.begin"));
   }, []);
   const refreshLobbies = useCallback(async () => {
-    const data = await bridge<{ lobbies: LobbyEntry[] }>("lobbies.list");
-    setLobbies(data.lobbies);
-    setSelectedLobbyID((current) => current || data.lobbies[0]?.lobby.id || "");
+    try {
+      const data = await bridge<{ lobbies: LobbyEntry[] }>("lobbies.list");
+      setLobbies(data.lobbies);
+      setSelectedLobbyID((current) => current || data.lobbies[0]?.lobby.id || "");
+    } finally {
+      setLobbiesLoaded(true);
+    }
   }, []);
   const refreshSnapshot = useCallback(async () => setSnapshot(await bridge<Snapshot>("daemon.snapshot")), []);
-  const refreshMembers = useCallback(async (lobbyID: string) => {
+  const refreshMembers = useCallback(async (lobbyID: string, showLoading = false) => {
     if (!lobbyID) { setMembers([]); return; }
+    if (showLoading) setMembersLoading(true);
     try {
       const data = await bridge<{ members: Member[] }>("lobbies.members", { lobby_id: lobbyID });
       setMembers(data.members ?? []);
       void ensureNames((data.members ?? []).map((member) => member.user_id));
     } catch { setMembers([]); }
+    finally { setMembersLoading(false); }
   }, [ensureNames]);
 
   const applyInvite = useCallback(async (invite: InviteLink) => {
@@ -135,7 +145,8 @@ export default function App() {
   useEffect(() => {
     if (!auth.authenticated) return;
     const lobbyID = selectedLobby?.lobby.id ?? "";
-    void refreshMembers(lobbyID);
+    setMembers([]); // clear stale rows so the switch shows a loader, not the old lobby
+    void refreshMembers(lobbyID, true);
     const timer = window.setInterval(() => void refreshMembers(lobbyID), 60_000);
     return () => clearInterval(timer);
   }, [auth.authenticated, selectedLobby?.lobby.id, refreshMembers]);
@@ -154,13 +165,12 @@ export default function App() {
 
   async function joinVoice(room: Room) {
     if (!room.vpn_namespace) return;
-    setBusy(true); setError("");
+    setBusy(true); setConnectingRoomID(room.id); setSelectedRoomID(room.id); setError("");
     try {
       // Re-read the daemon state instead of trusting the 1 Hz poll: the join
       // decision (leave/connect/enter) must not race a stale snapshot.
       const fresh = await bridge<Snapshot>("daemon.snapshot");
       if (fresh.voice?.joined && fresh.status?.network_id === room.vpn_namespace) {
-        setSelectedRoomID(room.id);
         return;
       }
       if (fresh.voice?.joined) await bridge("voice.leave");
@@ -170,9 +180,8 @@ export default function App() {
       const prefs = loadVoicePrefs();
       await bridge("voice.input_mode", { mode: prefs.mode, threshold_dbfs: prefs.threshold_dbfs, hangover_ms: prefs.hangover_ms });
       await bridge("voice.join");
-      setSelectedRoomID(room.id);
       await refreshSnapshot();
-    } catch (e) { setError(String(e)); } finally { setBusy(false); }
+    } catch (e) { setError(String(e)); } finally { setBusy(false); setConnectingRoomID(""); }
   }
 
   async function leaveVoice() {
@@ -230,15 +239,23 @@ export default function App() {
   if (auth.loading) return <div className="splash"><div className="brand-mark">O</div><p>正在连接安全客户端…</p></div>;
   if (!auth.authenticated) return <Login busy={busy} notice={notice} error={error} loginURLs={loginURLs} onMagic={(email) => void sendMagic(email)} />;
 
+  if (!lobbiesLoaded) return <main className="app-shell">
+    <LobbyRailSkeleton />
+    <RoomPanelSkeleton />
+    <section className="voice-stage"><div className="empty-state"><Spinner label="正在载入你的大厅…" /></div></section>
+  </main>;
+
   const inVoice = !!snapshot.voice?.joined;
   const showChat = selectedRoom?.type === "text";
+  const connecting = !!connectingRoomID && !inVoice;
   const stageTitle = selectedRoom ? (showChat ? `#${selectedRoom.name}` : selectedRoom.name) : "选择一个房间";
 
   return <main className="app-shell">
     <LobbyRail lobbies={lobbies} activeID={selectedLobby?.lobby.id ?? ""}
       onSelect={(id) => { setSelectedLobbyID(id); setSelectedRoomID(""); }}
       onCreate={() => void promptAction("createLobby")} onJoin={() => void promptAction("joinLobby")} />
-    <RoomPanel lobby={selectedLobby} members={members} getName={getName} selectedRoomID={selectedRoomID}
+    <RoomPanel lobby={selectedLobby} members={members} membersLoading={membersLoading} getName={getName}
+      selectedRoomID={selectedRoomID} connectingRoomID={connectingRoomID}
       snapshot={snapshot} busy={busy} canManage={canManage} accountName={auth.profile?.user?.display_name}
       onSelectRoom={selectRoom} onCreateRoom={(type) => void createRoom(type)} onInvite={() => void promptAction("invite")}
       onRenameRoom={(room) => void renameRoom(room)} onDeleteRoom={(room) => void deleteRoom(room)}
@@ -246,15 +263,17 @@ export default function App() {
     <section className="voice-stage">
       <header className="stage-header">
         <div><span className="eyebrow">{showChat ? "文字房间" : "语音房间"}</span><h1>{stageTitle}</h1></div>
-        <div className={`path-badge ${snapshot.status?.path_summary ?? "inactive"}`}><span/>{snapshot.status?.path_summary ?? "inactive"}</div>
+        <div className={`path-badge ${connecting ? "waiting" : snapshot.status?.path_summary ?? "inactive"}`}><span/>{connecting ? "连接中" : snapshot.status?.path_summary ?? "inactive"}</div>
       </header>
       {error && <div className="error-banner">{error}<button onClick={() => setError("")}>×</button></div>}
       {notice && !error && <div className="notice-banner">{notice}<button onClick={() => setNotice("")}>×</button></div>}
       {showChat && selectedRoom
         ? <ChatPane key={selectedRoom.id} room={selectedRoom} myUserID={myUserID} canModerate={canManage}
             getName={getName} ensureNames={ensureNames} onError={setError} />
-        : <VoiceStage snapshot={snapshot} />}
-      {(inVoice || !showChat) && <CallBar snapshot={snapshot} busy={busy} shortcut={PTT_SHORTCUT}
+        : connecting
+          ? <div className="participants"><div className="empty-state"><div className="pulse-ring connecting">◖</div><h3>正在连接语音…</h3><p>建立加密隧道并协商最优路径。</p></div></div>
+          : <VoiceStage snapshot={snapshot} />}
+      {(inVoice || connecting || !showChat) && <CallBar snapshot={snapshot} busy={busy} shortcut={PTT_SHORTCUT}
         onLeave={() => void leaveVoice()} refresh={refreshSnapshot} onError={setError} />}
     </section>
     {settings && <SettingsModal snapshot={snapshot} auth={auth} close={() => setSettings(false)}

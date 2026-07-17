@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { bridge, type Message, type Room } from "../bridge";
 import { mergeMessages, senderIDs } from "../messages";
+import { ChatSkeleton } from "./Skeleton";
 
 const PAGE_SIZE = 50;
 const POLL_MS = 3000;
@@ -22,6 +23,7 @@ export default function ChatPane({ room, myUserID, canModerate, getName, ensureN
   onError: (message: string) => void;
 }) {
   const [messages, setMessages] = useState<Message[]>([]);
+  const [loaded, setLoaded] = useState(false);
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
@@ -36,6 +38,7 @@ export default function ChatPane({ room, myUserID, canModerate, getName, ensureN
       setMessages((current) => mergeMessages(current, incoming));
       void ensureNames(senderIDs(incoming));
     } catch { /* transient poll failure; the next tick retries */ }
+    finally { setLoaded(true); }
   }, [room.id, ensureNames]);
 
   useEffect(() => {
@@ -85,6 +88,8 @@ export default function ChatPane({ room, myUserID, canModerate, getName, ensureN
       setMessages((current) => current.filter((m) => m.id !== message.id));
     } catch (e) { onError(String(e)); }
   }
+
+  if (!loaded) return <div className="chat-pane"><ChatSkeleton /><div className="chat-composer" /></div>;
 
   return <div className="chat-pane">
     <div className="chat-scroll" ref={listRef} onScroll={onScroll}>
