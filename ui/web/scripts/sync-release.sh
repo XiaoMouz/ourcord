@@ -3,7 +3,14 @@ set -euo pipefail
 
 readonly repo="XiaoMouz/ourcord"
 readonly tag="desktop-beta"
-readonly asset="OurCord_0.1.0-beta.1_x64-setup.exe"
+# The asset name lives in app/release.ts so the page, this script, and the
+# rendered-html test stay in sync.
+asset="$(sed -n 's/^export const installerAsset = "\(.*\)";$/\1/p' app/release.ts)"
+readonly asset
+if [[ -z "$asset" ]]; then
+  echo "could not extract installerAsset from app/release.ts" >&2
+  exit 1
+fi
 readonly output_dir="public/downloads"
 
 command -v gh >/dev/null 2>&1 || {

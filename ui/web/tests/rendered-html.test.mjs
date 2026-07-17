@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
+
+const installerAsset = readFileSync(new URL("../app/release.ts", import.meta.url), "utf8")
+  .match(/^export const installerAsset = "(.+)";$/m)?.[1];
 
 async function render() {
   const workerUrl = new URL("../dist/server/index.js", import.meta.url);
@@ -20,7 +24,8 @@ test("server-renders the OurCord download landing page", async () => {
   assert.match(html, /<title>OurCord — 朋友在线，数据在你手里<\/title>/i);
   assert.match(html, /朋友在线/);
   assert.match(html, /下载 Windows Beta/);
-  assert.match(html, /\/downloads\/OurCord_0\.1\.0-beta\.1_x64-setup\.exe/);
+  assert.ok(installerAsset, "installerAsset extracted from app/release.ts");
+  assert.ok(html.includes(`/downloads/${installerAsset}`), "download link uses installerAsset");
   assert.match(html, /当前安装包未签名/);
   assert.doesNotMatch(html, /codex-preview|react-loading-skeleton|Your site is taking shape/);
 });

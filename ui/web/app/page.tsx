@@ -1,4 +1,4 @@
-const releaseUrl = "/downloads/OurCord_0.1.0-beta.1_x64-setup.exe";
+import { releaseUrl } from "./release";
 
 export default function Home() {
   return (
