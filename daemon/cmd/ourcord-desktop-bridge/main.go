@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/rand"
@@ -14,8 +15,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ourcord/ourcord/daemon/pkg/client"
@@ -47,6 +51,9 @@ type bridge struct {
 	serviceURL string
 	http       *http.Client
 	socketPath string
+
+	daemonMu sync.Mutex
+	daemon   *client.Client
 }
 
 func main() {
@@ -69,17 +76,35 @@ func main() {
 		_ = enc.Encode(b.handle(req))
 		return
 	}
-	dec := json.NewDecoder(io.LimitReader(os.Stdin, 8<<20))
-	for {
-		var req request
-		if err := dec.Decode(&req); err != nil {
-			if !errors.Is(err, io.EOF) {
-				_ = enc.Encode(response{Error: "invalid request"})
-			}
-			return
-		}
-		_ = enc.Encode(b.handle(req))
+	// Persistent mode: one JSON request per line, responses correlated by id.
+	// Requests are handled concurrently so a slow HTTP call cannot stall the
+	// UI's 1 Hz daemon.snapshot poll; the encoder is the only shared writer.
+	var encMu sync.Mutex
+	reply := func(resp response) {
+		encMu.Lock()
+		defer encMu.Unlock()
+		_ = enc.Encode(resp)
 	}
+	var wg sync.WaitGroup
+	scanner := bufio.NewScanner(os.Stdin)
+	scanner.Buffer(make([]byte, 64<<10), 1<<20)
+	for scanner.Scan() {
+		line := bytes.TrimSpace(scanner.Bytes())
+		if len(line) == 0 {
+			continue
+		}
+		var req request
+		if err := json.Unmarshal(line, &req); err != nil {
+			reply(response{Error: "invalid request"})
+			continue
+		}
+		wg.Add(1)
+		go func(req request) {
+			defer wg.Done()
+			reply(b.handle(req))
+		}(req)
+	}
+	wg.Wait()
 }
 
 func (b *bridge) handle(req request) (out response) {
@@ -157,9 +182,9 @@ func (b *bridge) dispatch(method string, raw json.RawMessage) (any, error) {
 		// deployment. The Windows installer later redirects this enrollment through
 		// the service profile RPC without exposing the device token to WebView.
 		enrollErr := error(nil)
-		if daemon, dialErr := client.Dial(b.socketPath); dialErr == nil {
+		if daemon, dialErr := b.daemonClient(); dialErr == nil {
 			_, enrollErr = daemon.EnrollLocalDevice(exchanged.Token, exchanged.UserID, host)
-			_ = daemon.Close()
+			b.dropDaemon(daemon, enrollErr)
 		} else {
 			_, enrollErr = client.EnrollDevice(context.Background(), b.http, b.controlURL, wg.DefaultStateDir(), exchanged.Token, host)
 		}
@@ -193,9 +218,37 @@ func (b *bridge) dispatch(method string, raw json.RawMessage) (any, error) {
 	case "lobbies.invite":
 		path := "/api/lobbies/" + pathSegment(stringParam(params, "lobby_id")) + "/invites"
 		return b.authedJSON(http.MethodPost, b.serviceURL, path, map[string]any{"expires_in_seconds": 604800, "max_uses": 0})
+	case "lobbies.members":
+		path := "/api/lobbies/" + pathSegment(stringParam(params, "lobby_id")) + "/members"
+		return b.authedJSON(http.MethodGet, b.serviceURL, path, nil)
 	case "rooms.create":
+		roomType := stringParam(params, "type")
+		if roomType == "" {
+			roomType = "voice"
+		}
 		path := "/api/lobbies/" + pathSegment(stringParam(params, "lobby_id")) + "/rooms"
-		return b.authedJSON(http.MethodPost, b.serviceURL, path, map[string]string{"name": stringParam(params, "name"), "type": "voice"})
+		return b.authedJSON(http.MethodPost, b.serviceURL, path, map[string]string{"name": stringParam(params, "name"), "type": roomType})
+	case "rooms.update":
+		path := "/api/rooms/" + pathSegment(stringParam(params, "room_id"))
+		return b.authedJSON(http.MethodPatch, b.serviceURL, path, map[string]string{"name": stringParam(params, "name")})
+	case "rooms.delete":
+		path := "/api/rooms/" + pathSegment(stringParam(params, "room_id"))
+		return b.authedJSON(http.MethodDelete, b.serviceURL, path, nil)
+	case "messages.list":
+		path := messagesPath(stringParam(params, "room_id"), stringParam(params, "before"), int(numberParam(params, "limit", 50)))
+		return b.authedJSON(http.MethodGet, b.serviceURL, path, nil)
+	case "messages.send":
+		path := "/api/rooms/" + pathSegment(stringParam(params, "room_id")) + "/messages"
+		return b.authedJSON(http.MethodPost, b.serviceURL, path, map[string]string{"content": stringParam(params, "content")})
+	case "messages.delete":
+		path := "/api/rooms/" + pathSegment(stringParam(params, "room_id")) + "/messages/" + pathSegment(stringParam(params, "message_id"))
+		return b.authedJSON(http.MethodDelete, b.serviceURL, path, nil)
+	case "profiles.lookup":
+		ids := stringSliceParam(params, "user_ids")
+		if len(ids) == 0 {
+			return map[string]any{"profiles": []any{}}, nil
+		}
+		return b.authedJSON(http.MethodPost, b.controlURL, "/api/profiles/lookup", map[string]any{"user_ids": ids})
 	case "daemon.snapshot":
 		return b.daemonSnapshot()
 	case "network.connect", "network.disconnect", "network.enter", "network.leave",
@@ -207,33 +260,66 @@ func (b *bridge) dispatch(method string, raw json.RawMessage) (any, error) {
 	}
 }
 
-func (b *bridge) daemonSnapshot() (any, error) {
-	c, err := client.Dial(b.socketPath)
-	if err != nil {
-		return map[string]any{"daemon_available": false}, nil
+// daemonClient returns the cached daemon connection, dialing on first use.
+// The gRPC connection re-authenticates through its context dialer, so it
+// survives daemon restarts; dropDaemon handles the cases it does not.
+func (b *bridge) daemonClient() (*client.Client, error) {
+	b.daemonMu.Lock()
+	defer b.daemonMu.Unlock()
+	if b.daemon != nil {
+		return b.daemon, nil
 	}
-	defer c.Close()
-	status, err := c.Status()
+	c, err := client.Dial(b.socketPath)
 	if err != nil {
 		return nil, err
 	}
+	b.daemon = c
+	return c, nil
+}
+
+// dropDaemon discards the cached connection after a transport-level failure
+// so the next call redials. Daemon rejections (*client.DaemonError) keep it.
+func (b *bridge) dropDaemon(c *client.Client, err error) {
+	var rejection *client.DaemonError
+	if err == nil || errors.As(err, &rejection) {
+		return
+	}
+	b.daemonMu.Lock()
+	defer b.daemonMu.Unlock()
+	if b.daemon == c {
+		_ = c.Close()
+		b.daemon = nil
+	}
+}
+
+func (b *bridge) daemonSnapshot() (any, error) {
+	c, err := b.daemonClient()
+	if err != nil {
+		return map[string]any{"daemon_available": false}, nil
+	}
+	status, err := c.Status()
+	if err != nil {
+		b.dropDaemon(c, err)
+		return map[string]any{"daemon_available": false}, nil
+	}
 	peers, err := c.ListPeers()
 	if err != nil {
+		b.dropDaemon(c, err)
 		return nil, err
 	}
 	voice, err := c.VoiceStatus()
 	if err != nil {
+		b.dropDaemon(c, err)
 		return nil, err
 	}
 	return map[string]any{"daemon_available": true, "status": status, "peers": peers, "voice": voice}, nil
 }
 
 func (b *bridge) daemonCommand(method string, p map[string]any) (any, error) {
-	c, err := client.Dial(b.socketPath)
+	c, err := b.daemonClient()
 	if err != nil {
 		return nil, errors.New("daemon unavailable")
 	}
-	defer c.Close()
 	switch method {
 	case "network.connect":
 		err = c.Connect()
@@ -259,9 +345,27 @@ func (b *bridge) daemonCommand(method string, p map[string]any) (any, error) {
 		err = c.SetAudioDevices(stringParam(p, "capture_id"), stringParam(p, "playback_id"))
 	case "voice.devices":
 		capture, playback, listErr := c.ListAudioDevices()
+		b.dropDaemon(c, listErr)
 		return map[string]any{"capture": capture, "playback": playback}, listErr
 	}
+	b.dropDaemon(c, err)
 	return map[string]bool{"ok": err == nil}, err
+}
+
+// messagesPath builds the room message-history path with optional pagination.
+func messagesPath(roomID, before string, limit int) string {
+	query := url.Values{}
+	if before != "" {
+		query.Set("before", before)
+	}
+	if limit > 0 {
+		query.Set("limit", strconv.Itoa(limit))
+	}
+	path := "/api/rooms/" + pathSegment(roomID) + "/messages"
+	if encoded := query.Encode(); encoded != "" {
+		path += "?" + encoded
+	}
+	return path
 }
 
 func (b *bridge) authedJSON(method, base, path string, body any) (any, error) {
@@ -347,6 +451,18 @@ func stringParam(p map[string]any, key string) string {
 	return strings.TrimSpace(value)
 }
 func boolParam(p map[string]any, key string) bool { value, _ := p[key].(bool); return value }
+func stringSliceParam(p map[string]any, key string) []string {
+	raw, _ := p[key].([]any)
+	values := make([]string, 0, len(raw))
+	for _, item := range raw {
+		if value, ok := item.(string); ok {
+			if value = strings.TrimSpace(value); value != "" {
+				values = append(values, value)
+			}
+		}
+	}
+	return values
+}
 func numberParam(p map[string]any, key string, fallback float64) float64 {
 	value, ok := p[key].(float64)
 	if !ok {
