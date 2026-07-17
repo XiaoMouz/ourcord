@@ -28,7 +28,7 @@
 | `JWT_SECRET` | control + service 共用 | 不要再叫 `CONTROL_INTERNAL_SECRET` |
 | SignalDO WS 鉴权 | `control/src/index.ts` | `?token&pk`，DO 假设上游已校验 |
 | limiter ctx | `relay/pkg/limiter` | 禁止 nil context |
-| VPN IP 池 | `198.18.0.0/15` + 部署级随机 ULA `/48` | RFC2544 v4 + 自生成 ULA；避 Tailscale/ISP CGNAT 冲突 |
+| VPN IP 池 | `198.18.0.0/15` + 部署级随机 ULA `/48` | 分配自 `198.19.0.2` 起（避 Clash fake-ip 默认段）；避 Tailscale/ISP CGNAT 冲突 |
 | 中继链 | WireGuard `AllowedIPs` | DERP 不感知拓扑 |
 | 文件优先级 | 自建 → 分享 → 大厅 → R2 | R2 受配额控制 |
 | 运营者中继凭证 | control `ADMIN_TOKEN` ↔ relay `OURCORD_RELAY_AUTH_TOKEN` | lobby/rental 长驻节点用；personal 仍走用户 JWT |

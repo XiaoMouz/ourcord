@@ -48,6 +48,7 @@ OurCord 是一个面向 5–10 人小群体的通讯平台，**底层是自建�
 
 ### 3.2 VPN 地址池（U 系列后已迁段）
 - IPv4：`198.18.0.0/15`（RFC 2544 基准段）。**不再用** `100.64.0.0/10`，因其与 Tailscale 默认池及中国部分大宽带 ISP 的家宽 CGNAT 同段，会被路由表/接口冲突。
+- **分配从上半段 `198.19.0.0/16` 起（U3）**：Clash/mihomo 默认 `fake-ip-range` 是 `198.18.0.1/16`，恰为池的下半段，且双方都从低位顺序分配——daemon 自身的 `/32` 路由会精确遮蔽代理分给 control 域名的假 IP（表现为注册成功但 fetch-config 超时）。下半段仅作耗尽兜底，**不要把分配起点改回 198.18**。daemon 侧有配套探测：control 域名解析进池内时打 WARN 并拼进 fetch 失败错误（`controlFakeIPHint`）。
 - IPv6：**部署级随机 ULA `/48`**（首次注册时由 `ipam.generateULAPrefix` 生成、`KV.vpn_ula_prefix` 持久化）。**不再用** Tailscale 的 `fd7a:115c:a1e0::/48` 字面量。
 - 分配在 `control/src/peers.ts` 完成，**必须保证原子性**（DB UNIQUE + 事务 retry）。不要用纯 KV 计数器。
 - 路由策略：daemon 在 connect/applyConfig 时用 `tun.SyncPeerV4Routes` 给每个 peer 装 v4 `/32` 路由（不抢 `/15` 整段），v6 在 TUN 上线时一次性装 `/48` 路由。这样与 Tailscale / ZeroTier / 任何同机 VPN 工具完全互不干扰。

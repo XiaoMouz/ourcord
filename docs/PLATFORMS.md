@@ -276,8 +276,9 @@ netsh advfirewall firewall add rule name="OurCord daemon" dir=in action=allow pr
 | `ip ... addr add ...: exit status 2` | 多半是 `iproute2` 缺失或 ifname 冲突；`ip link show` 看是否已存在同名 dev。 |
 | `no route to host` 到 peer VPN IP | 1) `ip a` / `ifconfig utun*` / `Get-NetAdapter` 确认 TUN 有期望地址；2) `ip -4 route show dev utun*` / `netstat -rn -f inet` 确认 peer `/32` 已装；3) 防火墙是否拦了出站 UDP。 |
 | 一直走中继（DERP），不打洞 | STUN 不可达或对端是对称 NAT。`ourcord-cli status` 看 `PeerCount` 与连接路径；daemon 日志（X9 结构化 JSON）含 ICE 候选信息。 |
-| 启动时 `WARN: VPN pool 198.18.0.0/15 may conflict ...` | 已有路由覆盖了 198.18 段（常见于同机跑 Tailscale/lab 网）。daemon 仍会装 per-peer `/32`（优先级高），通常不影响——参见 `daemon/AGENTS.md`「TUN 路由」节。 |
-| 子网冲突历史背景 | U 系列已把 v4 池迁到 `198.18.0.0/15` + 随机 ULA `/48`，避开 `100.64/10` 与 `fd7a:115c:a1e0::/48`。详见 `daemon/AGENTS.md`。 |
+| 启动时 `WARN: VPN pool 198.18.0.0/15 may conflict ...` | 已有路由覆盖了 198.18/198.19 段（常见于同机跑 Tailscale/lab 网/Clash TUN）。daemon 仍会装 per-peer `/32`（优先级高），通常不影响——参见 `daemon/AGENTS.md`「TUN 路由」节。 |
+| `fetch initial config: ... context deadline exceeded`，且日志有 `fake-ip DNS proxy` WARN | **与 Clash/mihomo 共存问题**：其默认 `fake-ip-range: 198.18.0.1/16` 落在 VPN 池内，control 域名被解析成假 IP 后可能被本机 `/32` 路由黑洞。两种解法任选：1) Clash 配置加 `dns.fake-ip-filter: ["+.mou.best"]`；2) 把 `fake-ip-range` 移出 `198.18.0.0/15`（如 `28.0.0.1/8`）。U3 后 control 分配的地址从 `198.19.x` 起，默认配置的 Clash 已可直接共存；此报错多见于旧地址（198.18.0.x）设备，重新注册设备即可换新段。 |
+| 子网冲突历史背景 | U 系列已把 v4 池迁到 `198.18.0.0/15` + 随机 ULA `/48`，避开 `100.64/10` 与 `fd7a:115c:a1e0::/48`；U3 又把分配起点提到上半段 `198.19.0.0/16`，避开 Clash 默认 fake-ip 段。详见 `daemon/AGENTS.md`。 |
 | `read /var/lib/ourcord/device.token: ...` 或 `read /var/lib/ourcord/token: ...` | 设备未 enroll/exchange，且旧 JWT 兼容 token 也不存在。优先配置 `OURCORD_DEVICE_TOKEN` 或写入 `<state-dir>/device.token`（mode `0600`）；旧路径可用 `OURCORD_DAEMON_JWT` / `<state-dir>/token`。Token 安全语义见 `SECURITY.md` §3 / Y7。 |
 
 ---
