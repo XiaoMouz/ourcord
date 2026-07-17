@@ -34,7 +34,7 @@ func main() {
 	var (
 		addr         = flag.String("addr", ":443", "listen address (host:port)")
 		controlURL   = flag.String("control-url", "", "OurCord control plane URL")
-		authToken    = flag.String("auth-token", "", "Bearer token for control plane auth")
+		authToken    = flag.String("auth-token", relayAuthTokenFromEnv(), "Bearer token for control plane auth (or OURCORD_RELAY_AUTH_TOKEN)")
 		relayID      = flag.String("relay-id", "", "relay server ID (from control plane registration); leave empty on first run")
 		region       = flag.String("region", "unknown", "geographic region name")
 		hostname     = flag.String("hostname", "", "public hostname clients connect to (required for control registration)")
@@ -324,6 +324,10 @@ func main() {
 	if err := srv.Serve(limitedLn); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("Server error: %v", err)
 	}
+}
+
+func relayAuthTokenFromEnv() string {
+	return strings.TrimSpace(os.Getenv("OURCORD_RELAY_AUTH_TOKEN"))
 }
 
 func configureRuntimeLogging(component, rawLevel, format, filePath string) error {

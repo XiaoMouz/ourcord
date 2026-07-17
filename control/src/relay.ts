@@ -175,7 +175,11 @@ export async function getRelayMap(request: Request, env: Env): Promise<Response>
 // Per-relay denylist entries are added to `keys`; their DERP equivalents
 // are looked up via the peers table when present.
 export async function getBannedKeys(request: Request, env: Env): Promise<Response> {
-  const authResult = await requireAuth(request, env);
+  // Official lobby/rental relays use the same long-lived operator credential
+  // for registration and denylist sync. Falling through to requireAuth keeps
+  // personal relays on their short-lived user JWT path.
+  const operatorId = authenticateOperatorRelay(request, env);
+  const authResult = operatorId ? { sub: operatorId } : await requireAuth(request, env);
   if (authResult instanceof Response) return authResult;
 
   const url = new URL(request.url);
@@ -302,4 +306,3 @@ async function invalidateRelayCache(env: Env): Promise<void> {
   // surgery; if/when caching returns it will need to walk per-user keys.
   void env;
 }
-

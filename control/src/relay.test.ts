@@ -391,6 +391,20 @@ describe("getBannedKeys (GET /api/relay/banned-keys)", () => {
     expect(resp.status).toBe(401);
   });
 
+  it("accepts the long-lived operator relay token", async () => {
+    const cap = makeDB([{ all: { results: [] } }]);
+    const env = makeEnv(cap.db, {
+      ADMIN_TOKEN: "operator-secret",
+      ADMIN_USER_IDS: "operator-user",
+    });
+    const resp = await getBannedKeys(await getReq("operator-secret"), env);
+    expect(resp.status).toBe(200);
+    expect(await resp.json()).toEqual({ keys: [], derp_keys: [] });
+    // Operator auth avoids the user-ban lookup performed by requireAuth.
+    expect(cap.sqls).toHaveLength(1);
+    expect(cap.sqls[0]).toMatch(/JOIN bans/);
+  });
+
   it("returns deduped union of WG keys + DERP node keys; no relay_id → no per-relay query", async () => {
     const token = await makeToken();
     const cap = makeDB([
