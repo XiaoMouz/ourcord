@@ -11,10 +11,18 @@ respawned on death). Do not revert to `--once` per-call spawning: the UI polls
 (auth codes) into the process command line.
 
 Frontend layout: `src/App.tsx` orchestrates state; `src/components/*` are pure
-presenters; `src/{bridge,prefs,messages,names}.ts` hold the typed bridge
-surface and testable logic (voice-pref persistence, message merging,
-display-name cache). Daemon/service knowledge belongs in the Go bridge or
-`daemon/pkg/client`, never in components.
+presenters; `src/{bridge,prefs,messages,names,quality,format,menu}.ts` hold the
+typed bridge surface and testable logic (voice-pref persistence, message
+merging, display-name cache, connection-quality grading, formatting, menu
+clamping). `src/dialog.tsx` provides promise-based in-app `confirm`/`prompt`
+(the app never uses browser dialogs). Daemon/service knowledge belongs in the
+Go bridge or `daemon/pkg/client`, never in components.
+
+File transfers (`files.upload`/`files.download`) run through the Go bridge on a
+separate context-bounded HTTP client (not the 15s API client) so large files
+are not truncated. Upload follows the service's tiered flow
+(initiate → PUT to the R2 proxy or a presigned backend → complete); the WebView
+only passes an OS file-picker path (`tauri-plugin-dialog`), never bytes.
 
 ```bash
 # frontend

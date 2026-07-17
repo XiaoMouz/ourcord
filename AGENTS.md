@@ -187,7 +187,7 @@ go work sync
 - ✅ **阶段一**：VPN 核心 + 控制层 + DERP 节点 + daemon 连接管线 + IPC + 路由（含 A-B-C 链配置能力）+ 限速 + 封禁双 key 体系 + IPAM 198.18/15+ULA 已闭环。per-peer ICE 自动直连、startup/runtime DERP fallback、1:1 pair network、service `vpn_namespace`、A-B-C next-hop 与 next-hop 后直达恢复，均已通过真实 control/service/relay/daemon + OrbStack 验证。
 - ✅ **阶段二**：网络完整性与自治主线已闭环：A-B-C 拓扑计算/路由下发/daemon 连通性反馈、设备级凭证、control↔service HMAC 短签名、房间作用域 peer refresh、CLI/status、自治文件后端直传/complete/health v1 均已实现。连通性报告已用 epoch+sequence 仲裁、以 source-owned 有向边保存；direct/DERP/A-B-C/recovery 已有发布验收 workflow。路径抖动已有 per-peer 转换计数/dwell/flapping 遥测与 ICE 退避降噪；Windows Wintun 地址/路由同步（`addr_windows.go` + winipcfg）已落地并由 CI `windows-native` job 用真 Wintun 适配器验收。剩余为可选附加（Minecraft LAN）与打包/UI（阶段三/四）。
 - 🚧 **阶段三**：语音 v1 已落地（逐 peer E2E 加密、RTP/UDP over overlay、jitter/loss、mute/deafen、真 Opus + malgo 音频设备与设备选择），Windows Tauri 客户端已接入正式语音 UI、VAD/PTT；视频、屏幕共享和远控待实现。
-- 🚧 **阶段四**：Windows Tauri/React 客户端、NSIS 安装器、SCM 服务包装、深链登录、签名 beta 更新流水线和 mou.best 下载落地页（`ui/web`）已落地；桌面客户端已含文字房间聊天（service messages API）、成员列表、房间管理、音频设备选择与显示名编辑，Tauri 壳与 Go bridge 之间为**常驻 sidecar**（行分隔 JSON、按 id 关联，禁止回退到每调用 `--once` 起进程——见 `ui/desktop/README.md`）；Windows 真机发布验收、macOS/Linux/Flutter/Web 客户端与运营监控待完成。
+- 🚧 **阶段四**：Windows Tauri/React 客户端、NSIS 安装器、SCM 服务包装、深链登录、签名 beta 更新流水线和 mou.best 下载落地页（`ui/web`）已落地；桌面客户端已对齐 Discord 操作体验——文字房间聊天+附件收发（service files API 分层上传/下载）、成员列表、房间管理+排序、音频设备、显示名编辑、加载骨架屏/语音连接态、逐参与者连接质量、常驻语音状态栏、连接诊断面板（peer 详情/force-derp/ping/传输计数/设备吊销）、应用内弹窗与右键菜单。Tauri 壳与 Go bridge 之间为**常驻 sidecar**（行分隔 JSON、按 id 关联，禁止回退到每调用 `--once` 起进程——见 `ui/desktop/README.md`）；文件传输在 bridge 走独立无超时 HTTP client。Windows 真机发布验收、macOS/Linux/Flutter/Web 客户端与运营监控待完成。
 - 📋 **阶段二可选附加**：Minecraft LAN 联机；是否作为阶段二差异化能力仍需在网络完整性主线之后确认。
 
 判断改动归属哪个阶段，避免提前实现尚未冻结的设计。

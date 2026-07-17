@@ -53,6 +53,6 @@
 
 阶段三媒体：**语音 v1 已落地**（`daemon/pkg/media`，engine+E2E 加密+relay 验收，`ourcord-cli voice`），Windows Tauri 客户端已接入正式语音 UI（VAD/PTT）。默认构建 PCM 纯 Go/CGO=0；真 Opus+硬件音频和设备列举/切换在 `voice` tag 后（cgo，见 `daemon/AGENTS.md`）。剩余阶段三：视频/屏幕共享/远控。
 
-阶段四已开工：Windows Tauri/React 客户端（`ui/desktop`）、NSIS 安装器、SCM 服务包装、深链登录、签名 beta 更新流水线（`desktop-release.yml`）与 mou.best 下载落地页（`ui/web`，与 daemon 无 IPC）已落地；桌面客户端已补齐文字房间聊天、成员列表、房间管理、音频设备选择、显示名编辑，Tauri 壳 ↔ Go bridge 为**常驻 sidecar**（NDJSON + id 关联，别改回每调用 spawn，见 `ui/desktop/README.md`），语音偏好持久化在前端 localStorage（daemon 不回报 threshold）。Windows 真机发布验收、macOS/Linux/Flutter/Web 客户端与运营监控待做。UI 一律作为 presenter 复用 `daemon/pkg/client` 核心。
+阶段四已开工：Windows Tauri/React 客户端（`ui/desktop`）、NSIS 安装器、SCM 服务包装、深链登录、签名 beta 更新流水线（`desktop-release.yml`）与 mou.best 下载落地页（`ui/web`，与 daemon 无 IPC）已落地；桌面客户端已对齐 Discord 操作体验：文字房间聊天+附件（收发，走 service files API 分层上传/下载）、成员列表、房间管理+拖动排序、音频设备选择、显示名编辑、加载骨架屏/语音连接态、逐参与者连接质量（信号格）、常驻语音状态栏、连接诊断面板（peer 详情/force-derp/ping/传输计数/设备吊销，对齐 TUI/CLI 深度）、应用内弹窗替代浏览器 prompt/confirm、右键上下文菜单。Tauri 壳 ↔ Go bridge 为**常驻 sidecar**（NDJSON + id 关联，别改回每调用 spawn，见 `ui/desktop/README.md`）；文件传输走 bridge 独立无超时 HTTP client，语音偏好持久化在前端 localStorage（daemon 不回报 threshold）。Windows 真机发布验收、macOS/Linux/Flutter/Web 客户端与运营监控待做。UI 一律作为 presenter 复用 `daemon/pkg/client` 核心。
 
 Minecraft LAN 属阶段二可选附加（注意：近期 commit 里的 M1–M3 指语音里程碑，不是 Minecraft 系列编号）。
