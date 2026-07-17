@@ -108,9 +108,9 @@ func main() {
 		if *hostname == "" {
 			log.Fatalf("--hostname required when --control-url is set")
 		}
-		// Parse port out of addr (best effort) for heartbeat reporting.
-		// I9: log Sscanf parse failures instead of swallowing them, so a
-		// mis-typed --addr is visible in the logs (port stays at 443).
+		// Public port for control registration: --public-port wins (reverse
+		// proxy, e.g. Caddy terminating on 443); otherwise derived from
+		// --addr. I9: a mis-typed --addr port is fatal, not silently 443.
 		port, portErr := relayRegistrationPort(*addr, *publicPort)
 		if portErr != nil {
 			log.Fatalf("invalid relay public port: %v", portErr)
@@ -338,6 +338,8 @@ func relayRegistrationPort(listenAddr string, publicPort int) (int, error) {
 	}
 	_, rawPort, err := net.SplitHostPort(listenAddr)
 	if err != nil {
+		// I9: keep the fallback visible instead of silently registering 443.
+		log.Printf("warn: could not split host/port from --addr %q (registering port 443): %v", listenAddr, err)
 		return 443, nil
 	}
 	var port int
