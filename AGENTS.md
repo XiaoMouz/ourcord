@@ -29,10 +29,11 @@ OurCord 是一个面向 5–10 人小群体的通讯平台，**底层是自建�
 | 自治文件后端 | `filebackend/` | Go | 用户/大厅自建服务器 |
 | DERP 中继 | `relay/` | Go (fork tailscale/derp) | 用户/官方裸机或 VPS |
 | 客户端 daemon | `daemon/` | Go (wireguard-go + pion/ice) | 跑在终端用户机器上 |
-| UI | `ui/{desktop,mobile,web}` | Tauri / Flutter / React | 通过 IPC 与 daemon 通信 |
+| UI 客户端 | `ui/desktop`（已落地）/ `ui/mobile`（占位） | Tauri + React / Flutter | 通过 gRPC IPC 与 daemon 通信 |
+| 官网/下载页 | `ui/web` | React (vinext) + Cloudflare Workers | `npm run deploy:apex`；纯落地页，**不与 daemon 通信** |
 | 共享 proto | `proto/` | Protobuf v1 契约 | 给 daemon ↔ UI 用 |
 
-详见各子目录的 `AGENTS.md`。
+`control/`、`service/`、`relay/`、`daemon/` 各有自己的 `AGENTS.md`，改对应模块前先读。
 
 ---
 
@@ -101,6 +102,16 @@ R2 配额由后端控制（大小、永久/临时数量、保存天数）。元�
 - 残余风险：D1 写入异常时 verifier 会降级到 per-isolate 缓存以保持可用性，
   该异常窗口内跨 isolate 重放理论上可行；需要更高保证时改为 D1 故障 fail-closed。
   旧的静态 `X-Internal-Token` 已被拒收，不要回退。
+
+### 3.10 运营者中继凭证（ADMIN_TOKEN）
+- control env `ADMIN_TOKEN` 是长期运营者凭证：官方 lobby/rental relay 在
+  `/api/relay/register` 与 `/api/relay/banned-keys` 上以 `Authorization: Bearer`
+  发送它（用户 JWT 寿命仅 1 小时，不适合长驻 relay）。personal 模式 relay
+  仍走用户 JWT，**不要**把 ADMIN_TOKEN 下发给个人节点。
+- 归属：命中时行归到 `ADMIN_USER_IDS` 的第一个 id；`ADMIN_USER_IDS` 为空则
+  整体回落 JWT 校验并 401（fail-secure）。
+- relay 侧从 env `OURCORD_RELAY_AUTH_TOKEN` 读取，避免凭证出现在进程参数里。
+- 实现：`control/src/relay.ts` `authenticateOperatorRelay`（常数时间比较）。
 
 ---
 
@@ -175,7 +186,7 @@ go work sync
 - ✅ **阶段一**：VPN 核心 + 控制层 + DERP 节点 + daemon 连接管线 + IPC + 路由（含 A-B-C 链配置能力）+ 限速 + 封禁双 key 体系 + IPAM 198.18/15+ULA 已闭环。per-peer ICE 自动直连、startup/runtime DERP fallback、1:1 pair network、service `vpn_namespace`、A-B-C next-hop 与 next-hop 后直达恢复，均已通过真实 control/service/relay/daemon + OrbStack 验证。
 - ✅ **阶段二**：网络完整性与自治主线已闭环：A-B-C 拓扑计算/路由下发/daemon 连通性反馈、设备级凭证、control↔service HMAC 短签名、房间作用域 peer refresh、CLI/status、自治文件后端直传/complete/health v1 均已实现。连通性报告已用 epoch+sequence 仲裁、以 source-owned 有向边保存；direct/DERP/A-B-C/recovery 已有发布验收 workflow。路径抖动已有 per-peer 转换计数/dwell/flapping 遥测与 ICE 退避降噪；Windows Wintun 地址/路由同步（`addr_windows.go` + winipcfg）已落地并由 CI `windows-native` job 用真 Wintun 适配器验收。剩余为可选附加（Minecraft LAN）与打包/UI（阶段三/四）。
 - 🚧 **阶段三**：语音 v1 已落地（逐 peer E2E 加密、RTP/UDP over overlay、jitter/loss、mute/deafen、真 Opus + malgo 音频设备与设备选择），Windows Tauri 客户端已接入正式语音 UI、VAD/PTT；视频、屏幕共享和远控待实现。
-- 🚧 **阶段四**：Windows Tauri/React 客户端、NSIS 安装器、SCM 服务包装、深链登录和签名 beta 更新流水线已落地；Windows 真机发布验收、macOS/Linux/Flutter/Web 与运营监控待完成。
+- 🚧 **阶段四**：Windows Tauri/React 客户端、NSIS 安装器、SCM 服务包装、深链登录、签名 beta 更新流水线和 mou.best 下载落地页（`ui/web`）已落地；Windows 真机发布验收、macOS/Linux/Flutter/Web 客户端与运营监控待完成。
 - 📋 **阶段二可选附加**：Minecraft LAN 联机；是否作为阶段二差异化能力仍需在网络完整性主线之后确认。
 
 判断改动归属哪个阶段，避免提前实现尚未冻结的设计。

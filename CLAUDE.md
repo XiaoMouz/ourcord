@@ -31,6 +31,7 @@
 | VPN IP 池 | `198.18.0.0/15` + 部署级随机 ULA `/48` | RFC2544 v4 + 自生成 ULA；避 Tailscale/ISP CGNAT 冲突 |
 | 中继链 | WireGuard `AllowedIPs` | DERP 不感知拓扑 |
 | 文件优先级 | 自建 → 分享 → 大厅 → R2 | R2 受配额控制 |
+| 运营者中继凭证 | control `ADMIN_TOKEN` ↔ relay `OURCORD_RELAY_AUTH_TOKEN` | lobby/rental 长驻节点用；personal 仍走用户 JWT |
 
 详细背景见 `AGENTS.md` 第 3 节。
 
@@ -50,4 +51,8 @@
 
 客户端已把 **UI 无关的核心** 抽到 `daemon/pkg/client`（typed ops + 设备/诊断 + `Watch` view-model）；IPC 传输已从 JSON 换成 **gRPC over 认证 UDS**（`proto/ourcord/v1`，bindings 提交在 `daemon/pkg/pb`，CI diff 校验）。`ourcord-cli`/`ourcord-tui` 只是 presenter，共用同一核心——阶段四多平台 GUI 的复用底座，**presenter 里不要写 daemon 逻辑**（详见 `docs/ui/client-core.md`）。
 
-阶段三媒体已开工：**语音 v1 已落地**（`daemon/pkg/media`，engine+E2E 加密+relay 验收，`ourcord-cli voice`）。默认构建 PCM 纯 Go/CGO=0；真 Opus+硬件音频和设备列举/切换在 `voice` tag 后（cgo，见 `daemon/AGENTS.md`）。剩余阶段三：正式语音 UI、视频/屏幕共享/远控。仍不要提前做阶段四正式产品 GUI（Tauri/Flutter/React）。Minecraft LAN（M 系列）属阶段二可选附加。
+阶段三媒体：**语音 v1 已落地**（`daemon/pkg/media`，engine+E2E 加密+relay 验收，`ourcord-cli voice`），Windows Tauri 客户端已接入正式语音 UI（VAD/PTT）。默认构建 PCM 纯 Go/CGO=0；真 Opus+硬件音频和设备列举/切换在 `voice` tag 后（cgo，见 `daemon/AGENTS.md`）。剩余阶段三：视频/屏幕共享/远控。
+
+阶段四已开工：Windows Tauri/React 客户端（`ui/desktop`）、NSIS 安装器、SCM 服务包装、深链登录、签名 beta 更新流水线（`desktop-release.yml`）与 mou.best 下载落地页（`ui/web`，与 daemon 无 IPC）已落地；Windows 真机发布验收、macOS/Linux/Flutter/Web 客户端与运营监控待做。UI 一律作为 presenter 复用 `daemon/pkg/client` 核心。
+
+Minecraft LAN 属阶段二可选附加（注意：近期 commit 里的 M1–M3 指语音里程碑，不是 Minecraft 系列编号）。

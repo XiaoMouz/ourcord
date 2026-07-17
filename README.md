@@ -32,7 +32,7 @@ DERP 中继节点 (Go)            ←→  UI (Tauri / Flutter / React)
 
 ### 前提条件
 - Go 1.26.1+
-- Node.js 18+
+- Node.js 24 LTS（各 package.json `engines` 钉在 `>=24 <25`）
 - Cloudflare 账号 (Workers + D1 + KV + R2)
 
 ### 控制层部署
