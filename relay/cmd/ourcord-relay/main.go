@@ -38,6 +38,7 @@ func main() {
 		relayID      = flag.String("relay-id", "", "relay server ID (from control plane registration); leave empty on first run")
 		region       = flag.String("region", "unknown", "geographic region name")
 		hostname     = flag.String("hostname", "", "public hostname clients connect to (required for control registration)")
+		publicPort   = flag.Int("public-port", 0, "public TCP port reported to control (0=derive from --addr)")
 		mode         = flag.String("mode", "personal", "relay mode: personal | lobby | rental")
 		capacityKbps = flag.Int("capacity-kbps", 10000, "soft total capacity hint reported to control plane")
 		limitKbps    = flag.Int("limit-kbps", 0, "per-connection bandwidth limit in kbps (0=unlimited; 128 recommended for voice floor)")
@@ -110,11 +111,9 @@ func main() {
 		// Parse port out of addr (best effort) for heartbeat reporting.
 		// I9: log Sscanf parse failures instead of swallowing them, so a
 		// mis-typed --addr is visible in the logs (port stays at 443).
-		port := 443
-		if _, p, err := net.SplitHostPort(*addr); err == nil {
-			if _, serr := fmt.Sscanf(p, "%d", &port); serr != nil {
-				log.Printf("warn: could not parse port %q from --addr (defaulting to %d): %v", p, port, serr)
-			}
+		port, portErr := relayRegistrationPort(*addr, *publicPort)
+		if portErr != nil {
+			log.Fatalf("invalid relay public port: %v", portErr)
 		}
 		cc = controlclient.New(*controlURL, *authToken, *relayID, controlclient.Identity{
 			Region:       *region,
@@ -328,6 +327,24 @@ func main() {
 
 func relayAuthTokenFromEnv() string {
 	return strings.TrimSpace(os.Getenv("OURCORD_RELAY_AUTH_TOKEN"))
+}
+
+func relayRegistrationPort(listenAddr string, publicPort int) (int, error) {
+	if publicPort < 0 || publicPort > 65535 {
+		return 0, fmt.Errorf("--public-port must be between 0 and 65535")
+	}
+	if publicPort != 0 {
+		return publicPort, nil
+	}
+	_, rawPort, err := net.SplitHostPort(listenAddr)
+	if err != nil {
+		return 443, nil
+	}
+	var port int
+	if _, err := fmt.Sscanf(rawPort, "%d", &port); err != nil || port < 0 || port > 65535 {
+		return 0, fmt.Errorf("could not derive a valid port from --addr %q", listenAddr)
+	}
+	return port, nil
 }
 
 func configureRuntimeLogging(component, rawLevel, format, filePath string) error {
