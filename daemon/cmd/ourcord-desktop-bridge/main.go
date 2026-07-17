@@ -251,6 +251,16 @@ func (b *bridge) dispatch(method string, raw json.RawMessage) (any, error) {
 		return b.authedJSON(http.MethodPost, b.controlURL, "/api/profiles/lookup", map[string]any{"user_ids": ids})
 	case "daemon.snapshot":
 		return b.daemonSnapshot()
+	case "daemon.profile":
+		return b.daemonProfile()
+	case "diagnostics.ping":
+		return b.daemonPing()
+	case "diagnostics.force_derp":
+		return b.forceDERP(stringParam(params, "public_key"), stringParam(params, "reason"))
+	case "devices.list":
+		return b.listDevices()
+	case "devices.revoke":
+		return b.revokeDevice(stringParam(params, "id"))
 	case "network.connect", "network.disconnect", "network.enter", "network.leave",
 		"voice.join", "voice.leave", "voice.mute", "voice.deafen", "voice.input_mode",
 		"voice.ptt", "voice.devices", "voice.set_devices":
@@ -258,6 +268,84 @@ func (b *bridge) dispatch(method string, raw json.RawMessage) (any, error) {
 	default:
 		return nil, errors.New("unsupported bridge method")
 	}
+}
+
+// daemonProfile reports local enrollment identity (public key, device id,
+// enrolled state) so the UI can show device/account status.
+func (b *bridge) daemonProfile() (any, error) {
+	c, err := b.daemonClient()
+	if err != nil {
+		return map[string]any{"enrolled": false, "daemon_available": false}, nil
+	}
+	profile, err := c.LocalProfile()
+	if err != nil {
+		b.dropDaemon(c, err)
+		return nil, err
+	}
+	return map[string]any{"daemon_available": true, "profile": profile}, nil
+}
+
+// daemonPing round-trips the daemon control socket for a liveness check.
+func (b *bridge) daemonPing() (any, error) {
+	c, err := b.daemonClient()
+	if err != nil {
+		return nil, errors.New("daemon unavailable")
+	}
+	start := time.Now()
+	if err := c.Ping(); err != nil {
+		b.dropDaemon(c, err)
+		return nil, err
+	}
+	return map[string]any{"ok": true, "rtt_ms": time.Since(start).Milliseconds()}, nil
+}
+
+// forceDERP pins a peer to the relay path for diagnostics (mirrors the TUI's
+// "D" action and the CLI force-derp command).
+func (b *bridge) forceDERP(publicKey, reason string) (any, error) {
+	if publicKey == "" {
+		return nil, errors.New("public_key required")
+	}
+	c, err := b.daemonClient()
+	if err != nil {
+		return nil, errors.New("daemon unavailable")
+	}
+	err = c.ForceDERP(publicKey, reason)
+	b.dropDaemon(c, err)
+	return map[string]bool{"ok": err == nil}, err
+}
+
+// listDevices returns the account's enrolled device records (metadata only)
+// from the control plane using the stored account JWT.
+func (b *bridge) listDevices() (any, error) {
+	token, err := b.token()
+	if err != nil {
+		return nil, errors.New("not authenticated")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	devices, err := client.ListDevices(ctx, b.http, b.controlURL, token)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"devices": devices}, nil
+}
+
+// revokeDevice revokes one device credential by id without touching the
+// account's other devices.
+func (b *bridge) revokeDevice(id string) (any, error) {
+	if id == "" {
+		return nil, errors.New("device id required")
+	}
+	token, err := b.token()
+	if err != nil {
+		return nil, errors.New("not authenticated")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := client.RevokeDevice(ctx, b.http, b.controlURL, token, id); err != nil {
+		return nil, err
+	}
+	return map[string]bool{"ok": true}, nil
 }
 
 // daemonClient returns the cached daemon connection, dialing on first use.

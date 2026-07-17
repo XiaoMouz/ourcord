@@ -4,7 +4,7 @@ import { loadVoicePrefs, saveVoicePrefs, type VoiceMode } from "../prefs";
 
 type DeviceLists = { capture: AudioDevice[]; playback: AudioDevice[] };
 
-export default function SettingsModal({ snapshot, auth, close, refreshSnapshot, refreshAuth, logout, onError }: {
+export default function SettingsModal({ snapshot, auth, close, refreshSnapshot, refreshAuth, logout, onError, openDiagnostics }: {
   snapshot: Snapshot;
   auth: AuthState;
   close: () => void;
@@ -12,6 +12,7 @@ export default function SettingsModal({ snapshot, auth, close, refreshSnapshot, 
   refreshAuth: () => Promise<void>;
   logout: () => Promise<void>;
   onError: (message: string) => void;
+  openDiagnostics: () => void;
 }) {
   const [prefs, setPrefs] = useState(() => loadVoicePrefs());
   const [devices, setDevices] = useState<DeviceLists>();
@@ -127,7 +128,10 @@ export default function SettingsModal({ snapshot, auth, close, refreshSnapshot, 
             <div><dt>路径切换</dt><dd>{snapshot.status?.path_flaps_total ?? 0}</dd></div>
             <div><dt>Peer</dt><dd>{snapshot.peers?.length ?? 0}</dd></div>
           </dl>
-          {snapshot.status?.vpn_active && <button className="secondary" onClick={() => void disconnectVPN()}>断开 VPN</button>}
+          <div className="diag-actions">
+            <button className="secondary" onClick={openDiagnostics}>打开连接诊断</button>
+            {snapshot.status?.vpn_active && <button className="secondary" onClick={() => void disconnectVPN()}>断开 VPN</button>}
+          </div>
         </div>
 
         {notice && <p className="notice">{notice}</p>}

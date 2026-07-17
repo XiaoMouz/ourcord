@@ -14,6 +14,7 @@ import VoiceStage from "./components/VoiceStage";
 import ChatPane from "./components/ChatPane";
 import CallBar from "./components/CallBar";
 import SettingsModal from "./components/SettingsModal";
+import DiagnosticsModal from "./components/DiagnosticsModal";
 import { LobbyRailSkeleton, RoomPanelSkeleton, Spinner } from "./components/Skeleton";
 
 const PTT_SHORTCUT = "Ctrl+Shift+Space";
@@ -30,6 +31,7 @@ export default function App() {
   const [selectedRoomID, setSelectedRoomID] = useState("");
   const [snapshot, setSnapshot] = useState<Snapshot>({ daemon_available: false });
   const [settings, setSettings] = useState(false);
+  const [diagnostics, setDiagnostics] = useState(false);
   const [busy, setBusy] = useState(false);
   const [lobbiesLoaded, setLobbiesLoaded] = useState(false);
   const [membersLoading, setMembersLoading] = useState(false);
@@ -279,6 +281,8 @@ export default function App() {
     </section>
     {settings && <SettingsModal snapshot={snapshot} auth={auth} close={() => setSettings(false)}
       refreshSnapshot={refreshSnapshot} refreshAuth={refreshAuth} onError={setError}
+      openDiagnostics={() => { setSettings(false); setDiagnostics(true); }}
       logout={async () => { await bridge("auth.logout"); location.reload(); }} />}
+    {diagnostics && <DiagnosticsModal snapshot={snapshot} close={() => setDiagnostics(false)} onError={setError} />}
   </main>;
 }
