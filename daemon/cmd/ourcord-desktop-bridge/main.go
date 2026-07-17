@@ -14,6 +14,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"net/url"
 	"os"
@@ -51,6 +52,7 @@ type bridge struct {
 	controlURL string
 	serviceURL string
 	http       *http.Client
+	fileHTTP   *http.Client // no client-level timeout; file transfers are context-bounded
 	socketPath string
 
 	daemonMu sync.Mutex
@@ -64,6 +66,7 @@ func main() {
 		controlURL: envOr("OURCORD_CONTROL_URL", client.DefaultControlURL),
 		serviceURL: envOr("OURCORD_SERVICE_URL", "https://service.ourcord.mou.best"),
 		http:       &http.Client{Timeout: 15 * time.Second},
+		fileHTTP:   &http.Client{},
 		socketPath: envOr("OURCORD_DAEMON_SOCKET", ipc.DefaultSocketPath()),
 	}
 	enc := json.NewEncoder(os.Stdout)
@@ -252,7 +255,13 @@ func (b *bridge) dispatch(method string, raw json.RawMessage) (any, error) {
 		return b.authedJSON(http.MethodGet, b.serviceURL, path, nil)
 	case "messages.send":
 		path := "/api/rooms/" + pathSegment(stringParam(params, "room_id")) + "/messages"
-		return b.authedJSON(http.MethodPost, b.serviceURL, path, map[string]string{"content": stringParam(params, "content")})
+		payload := map[string]any{"content": stringParam(params, "content")}
+		if attachments := stringSliceParam(params, "attachments"); len(attachments) > 0 {
+			payload["attachments"] = attachments
+		}
+		return b.authedJSON(http.MethodPost, b.serviceURL, path, payload)
+	case "files.upload":
+		return b.uploadFile(stringParam(params, "room_id"), stringParam(params, "path"))
 	case "messages.delete":
 		path := "/api/rooms/" + pathSegment(stringParam(params, "room_id")) + "/messages/" + pathSegment(stringParam(params, "message_id"))
 		return b.authedJSON(http.MethodDelete, b.serviceURL, path, nil)
@@ -453,6 +462,101 @@ func (b *bridge) daemonCommand(method string, p map[string]any) (any, error) {
 	return map[string]bool{"ok": err == nil}, err
 }
 
+// uploadFile reads a local file and runs the service's tiered upload: initiate
+// (declaring exact size + a param-free mime type), then either an authed PUT to
+// the R2 proxy or a presigned PUT to a registered backend followed by an authed
+// complete. Returns the file id for attaching to a message.
+func (b *bridge) uploadFile(roomID, path string) (any, error) {
+	if roomID == "" || path == "" {
+		return nil, errors.New("room_id and path required")
+	}
+	token, err := b.token()
+	if err != nil {
+		return nil, errors.New("not authenticated")
+	}
+	info, err := os.Stat(path)
+	if err != nil || info.IsDir() {
+		return nil, errors.New("file not found")
+	}
+	filename := safeFilename(filepath.Base(path))
+	initPath := "/api/rooms/" + pathSegment(roomID) + "/files"
+	initBody := map[string]any{"filename": filepath.Base(path), "mime_type": detectMIME(path), "size_bytes": info.Size()}
+	initData, err := b.api(http.MethodPost, b.serviceURL, initPath, token, initBody)
+	if err != nil {
+		return nil, err
+	}
+	var init struct {
+		ID              string `json:"id"`
+		StorageLocation string `json:"storage_location"`
+		UploadURL       string `json:"upload_url"`
+		CompleteURL     string `json:"complete_url"`
+		UploadToken     string `json:"upload_token"`
+	}
+	if err := json.Unmarshal(initData, &init); err != nil || init.ID == "" {
+		return nil, errors.New("upload could not be started")
+	}
+
+	if init.StorageLocation == "r2" {
+		// R2 proxy PUT is authed and enforces an exact byte count.
+		if err := b.putFile(strings.TrimRight(b.serviceURL, "/")+init.UploadURL, token, path, info.Size()); err != nil {
+			return nil, err
+		}
+	} else {
+		// Backend PUT is presigned (no auth); then complete with the token.
+		if err := b.putFile(init.UploadURL, "", path, info.Size()); err != nil {
+			return nil, err
+		}
+		if init.CompleteURL != "" {
+			if _, err := b.api(http.MethodPost, b.serviceURL, init.CompleteURL, token, map[string]string{"upload_token": init.UploadToken}); err != nil {
+				return nil, fmt.Errorf("finalize upload: %w", err)
+			}
+		}
+	}
+	return map[string]any{"file_id": init.ID, "filename": filename, "size_bytes": info.Size()}, nil
+}
+
+// putFile streams a local file as the body of a PUT with an exact Content-Length.
+func (b *bridge) putFile(url, token, path string, size int64) error {
+	file, err := os.Open(path)
+	if err != nil {
+		return errors.New("file not found")
+	}
+	defer file.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, url, file)
+	if err != nil {
+		return err
+	}
+	req.ContentLength = size
+	req.Header.Set("Content-Type", detectMIME(path))
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := b.fileHTTP.Do(req)
+	if err != nil {
+		return errors.New("upload failed")
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("upload failed (%d)", resp.StatusCode)
+	}
+	return nil
+}
+
+// detectMIME resolves a param-free media type from the file extension; the
+// control plane rejects parameters (e.g. "; charset=..."), so they are stripped.
+func detectMIME(path string) string {
+	mimeType := mime.TypeByExtension(strings.ToLower(filepath.Ext(path)))
+	if mimeType == "" {
+		return "application/octet-stream"
+	}
+	if idx := strings.IndexByte(mimeType, ';'); idx >= 0 {
+		mimeType = strings.TrimSpace(mimeType[:idx])
+	}
+	return mimeType
+}
+
 // downloadFile fetches a room attachment and saves it to the OS downloads
 // directory. The service serves R2-backed files as raw bytes and
 // backend-hosted files as a JSON {url} redirect, so this follows both: it
@@ -503,7 +607,7 @@ func (b *bridge) fetchStream(method, url, token string) (io.ReadCloser, string, 
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
-	resp, err := b.http.Do(req)
+	resp, err := b.fileHTTP.Do(req)
 	if err != nil {
 		cancel()
 		return nil, "", errors.New("download failed")

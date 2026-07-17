@@ -13,7 +13,7 @@ const ALLOWED_METHODS: &[&str] = &[
     "profile.update", "profiles.lookup", "lobbies.list", "lobbies.create",
     "lobbies.join", "lobbies.invite", "lobbies.members", "rooms.create",
     "rooms.update", "rooms.delete", "messages.list", "messages.send",
-    "messages.delete", "files.list", "files.download",
+    "messages.delete", "files.list", "files.download", "files.upload",
     "daemon.snapshot", "daemon.profile", "diagnostics.ping",
     "diagnostics.force_derp", "devices.list", "devices.revoke", "network.connect",
     "network.disconnect", "network.enter", "network.leave", "voice.join",
@@ -188,6 +188,7 @@ pub fn run() {
             if let Some(window) = app.get_webview_window("main") { let _ = window.set_focus(); }
         }))
         .plugin(tauri_plugin_deep_link::init())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_process::init())

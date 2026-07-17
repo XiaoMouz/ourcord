@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -54,6 +55,19 @@ func TestSafeFilename(t *testing.T) {
 		if got := safeFilename(tt.in); got != tt.want {
 			t.Errorf("safeFilename(%q) = %q, want %q", tt.in, got, tt.want)
 		}
+	}
+}
+
+func TestDetectMIME(t *testing.T) {
+	if got := detectMIME("photo.PNG"); got != "image/png" {
+		t.Errorf("detectMIME(png) = %q, want image/png", got)
+	}
+	// Extensions that resolve with a charset parameter must be stripped.
+	if got := detectMIME("notes.txt"); strings.Contains(got, ";") || !strings.HasPrefix(got, "text/plain") {
+		t.Errorf("detectMIME(txt) = %q, want param-free text/plain", got)
+	}
+	if got := detectMIME("mystery.zzz"); got != "application/octet-stream" {
+		t.Errorf("detectMIME(unknown) = %q, want application/octet-stream", got)
 	}
 }
 

@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { open } from "@tauri-apps/plugin-dialog";
 import { bridge, type FileRecord, type Message, type Room } from "../bridge";
 import { mergeMessages, senderIDs } from "../messages";
 import { formatBytes, parseAttachments } from "../format";
-import { ChatSkeleton } from "./Skeleton";
+import { ChatSkeleton, Spinner } from "./Skeleton";
 import ContextMenu, { type MenuItem } from "./ContextMenu";
 import { useDialog } from "../dialog";
 
@@ -37,6 +38,7 @@ export default function ChatPane({ room, myUserID, canModerate, getName, ensureN
   const [menu, setMenu] = useState<{ x: number; y: number; items: MenuItem[] } | null>(null);
   const [files, setFiles] = useState<Record<string, FileRecord>>({});
   const [downloading, setDownloading] = useState("");
+  const [uploading, setUploading] = useState(false);
   const listRef = useRef<HTMLDivElement>(null);
   const stickToBottom = useRef(true);
 
@@ -120,6 +122,24 @@ export default function ChatPane({ room, myUserID, canModerate, getName, ensureN
     } catch (e) { onError(String(e)); } finally { setSending(false); }
   }
 
+  async function attach() {
+    if (uploading) return;
+    let path: string | null;
+    try { path = (await open({ multiple: false, directory: false })) as string | null; }
+    catch (e) { onError(String(e)); return; }
+    if (!path) return;
+    setUploading(true);
+    try {
+      const uploaded = await bridge<{ file_id: string; filename: string }>("files.upload", { room_id: room.id, path });
+      // The message carries the attachment; content is optional (a bare caption).
+      await bridge("messages.send", { room_id: room.id, content: draft.trim(), attachments: [uploaded.file_id] });
+      setDraft("");
+      stickToBottom.current = true;
+      await poll();
+      onNotice(`已发送附件 ${uploaded.filename}`);
+    } catch (e) { onError(String(e)); } finally { setUploading(false); }
+  }
+
   async function remove(message: Message) {
     const ok = await dialog.confirm({ title: "删除这条消息？", message: message.content.slice(0, 120), confirmLabel: "删除", danger: true });
     if (!ok) return;
@@ -175,8 +195,11 @@ export default function ChatPane({ room, myUserID, canModerate, getName, ensureN
       </article>)}
     </div>
     <form className="chat-composer" onSubmit={(e) => { e.preventDefault(); void send(); }}>
-      <input value={draft} onChange={(e) => setDraft(e.target.value)} placeholder={`发送到 #${room.name}`} maxLength={4000} />
-      <button type="submit" disabled={sending || !draft.trim()}>发送</button>
+      <button type="button" className="chat-attach" title="上传附件" disabled={uploading} onClick={() => void attach()}>
+        {uploading ? <Spinner /> : "＋"}
+      </button>
+      <input value={draft} onChange={(e) => setDraft(e.target.value)} placeholder={uploading ? "上传中…" : `发送到 #${room.name}`} maxLength={4000} disabled={uploading} />
+      <button type="submit" disabled={sending || uploading || !draft.trim()}>发送</button>
     </form>
     {menu && <ContextMenu x={menu.x} y={menu.y} items={menu.items} onClose={() => setMenu(null)} />}
   </div>;

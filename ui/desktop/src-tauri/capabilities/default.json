@@ -6,6 +6,6 @@
   "permissions": [
     "core:default", "deep-link:default", "opener:default",
     "global-shortcut:allow-register", "global-shortcut:allow-unregister",
-    "updater:default", "process:allow-restart"
+    "updater:default", "process:allow-restart", "dialog:allow-open"
   ]
 }
