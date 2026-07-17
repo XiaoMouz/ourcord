@@ -12,6 +12,7 @@ import (
 	"log"
 	"net"
 	"net/netip"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -884,6 +885,16 @@ func (d *daemon) connect(ctx context.Context) error {
 		return fmt.Errorf("parse assigned IPs: %w", err)
 	}
 
+	// A fake-ip DNS proxy (Clash/mihomo; default fake-ip-range 198.18.0.1/16)
+	// answers the control hostname with an address inside our VPN pool; once
+	// the TUN's host routes are up that traffic can black-hole. Detect it
+	// before creating the TUN so the eventual config-fetch timeout carries an
+	// actionable message instead of a bare context deadline.
+	fakeIPHint := controlFakeIPHint(d.controlURL)
+	if fakeIPHint != "" {
+		log.Printf("WARN: %s", fakeIPHint)
+	}
+
 	d.derpMgr = derpMgr
 	d.iceMgr = iceMgr
 	tunIf, err := d.tunFactory()("utun", prefixes)
@@ -921,6 +932,9 @@ func (d *daemon) connect(ctx context.Context) error {
 		_ = iceMgr.Close()
 		d.derpMgr = nil
 		_ = derpMgr.Close()
+		if fakeIPHint != "" {
+			return fmt.Errorf("fetch initial config: %w (%s)", err, fakeIPHint)
+		}
 		return fmt.Errorf("fetch initial config: %w", err)
 	}
 	if err := applyConfig(tunIf, table, d.keyPair.Private, cfg); err != nil {
@@ -1867,8 +1881,7 @@ func parseAssignedPrefixes(ip4, ip6 string) ([]netip.Prefix, error) {
 // detectVPNSubnetConflicts returns a list of existing OS routes that overlap
 // with our VPN pool 198.18.0.0/15. Best-effort: warns the user but doesn't
 // abort, since we install per-peer /32 routes (which take precedence over a
-// generic /15 entry already in the table). Returns empty slice on Windows /
-// unknown OS.
+// generic /15 entry already in the table). Returns empty slice on unknown OS.
 func detectVPNSubnetConflicts() []string {
 	switch runtime.GOOS {
 	case "linux":
@@ -1876,26 +1889,73 @@ func detectVPNSubnetConflicts() []string {
 		if err != nil {
 			return nil
 		}
-		return scanForOverlap(string(out), "198.18.")
+		return scanForOverlap(string(out), "198.18.", "198.19.")
 	case "darwin":
 		out, err := exec.Command("netstat", "-rn", "-f", "inet").Output()
 		if err != nil {
 			return nil
 		}
-		return scanForOverlap(string(out), "198.18")
+		return scanForOverlap(string(out), "198.18", "198.19")
+	case "windows":
+		// Clash-style TUN proxies live on Windows too; `route print` is the
+		// portable way to see their fake-ip routes without extra deps.
+		out, err := exec.Command("route", "print", "-4").Output()
+		if err != nil {
+			return nil
+		}
+		return scanForOverlap(string(out), "198.18.", "198.19.")
 	}
 	return nil
 }
 
-func scanForOverlap(text, needle string) []string {
+// controlFakeIPHint resolves the control-plane hostname and reports when its
+// v4 answers land inside the VPN pool — the signature of a fake-ip DNS proxy
+// (Clash/mihomo's default fake-ip-range 198.18.0.1/16 sits inside our
+// 198.18.0.0/15). Best-effort: parse or resolution failures return "".
+func controlFakeIPHint(controlURL string) string {
+	u, err := url.Parse(controlURL)
+	if err != nil {
+		return ""
+	}
+	host := u.Hostname()
+	if host == "" {
+		return ""
+	}
+	if ip, err := netip.ParseAddr(host); err == nil {
+		return vpnPoolFakeIPMessage(host, []netip.Addr{ip})
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	addrs, err := net.DefaultResolver.LookupNetIP(ctx, "ip4", host)
+	if err != nil {
+		return ""
+	}
+	return vpnPoolFakeIPMessage(host, addrs)
+}
+
+// vpnPoolFakeIPMessage is the pure classification half of controlFakeIPHint.
+func vpnPoolFakeIPMessage(host string, addrs []netip.Addr) string {
+	for _, a := range addrs {
+		if tun.VPNv4Pool.Contains(a.Unmap()) {
+			return fmt.Sprintf("control host %q resolves to %s inside the VPN pool %s — a fake-ip DNS proxy (e.g. Clash) is intercepting it; add this domain to the proxy's fake-ip-filter or move its fake-ip-range outside the pool",
+				host, a.Unmap(), tun.VPNv4Pool)
+		}
+	}
+	return ""
+}
+
+func scanForOverlap(text string, needles ...string) []string {
 	var hits []string
 	for _, line := range strings.Split(text, "\n") {
 		l := strings.TrimSpace(line)
 		if l == "" || strings.HasPrefix(l, "Destination") || strings.HasPrefix(l, "Routing") {
 			continue
 		}
-		if strings.Contains(l, needle) {
-			hits = append(hits, l)
+		for _, needle := range needles {
+			if strings.Contains(l, needle) {
+				hits = append(hits, l)
+				break
+			}
 		}
 	}
 	return hits
