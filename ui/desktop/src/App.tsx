@@ -7,6 +7,7 @@ import { bridge, type AuthState, type LobbyEntry, type Member, type Profile, typ
 import { parseOurCordLink, type OurCordLink } from "./deepLink";
 import { loadVoicePrefs } from "./prefs";
 import { createNameCache, displayName } from "./names";
+import { useDialog } from "./dialog";
 import Login from "./components/Login";
 import LobbyRail from "./components/LobbyRail";
 import RoomPanel from "./components/RoomPanel";
@@ -21,6 +22,7 @@ const PTT_SHORTCUT = "Ctrl+Shift+Space";
 type InviteLink = Extract<OurCordLink, { kind: "invite" }>;
 
 export default function App() {
+  const dialog = useDialog();
   const [auth, setAuth] = useState<AuthState>({ loading: true, authenticated: false });
   const [loginURLs, setLoginURLs] = useState<{ google_url: string; github_url: string }>();
   const [notice, setNotice] = useState("");
@@ -165,6 +167,11 @@ export default function App() {
     catch (e) { setError(String(e)); } finally { setBusy(false); }
   }
 
+  const copyText = useCallback(async (text: string, label: string) => {
+    try { await navigator.clipboard.writeText(text); setNotice(`${label}已复制`); }
+    catch { setError("复制失败"); }
+  }, []);
+
   async function joinVoice(room: Room) {
     if (!room.vpn_namespace) return;
     setBusy(true); setConnectingRoomID(room.id); setSelectedRoomID(room.id); setError("");
@@ -203,8 +210,17 @@ export default function App() {
 
   async function promptAction(kind: "createLobby" | "joinLobby" | "invite") {
     try {
-      if (kind === "createLobby") { const name = prompt("大厅名称"); if (name) await bridge("lobbies.create", { name }); }
-      if (kind === "joinLobby") { const lobby_id = prompt("大厅 ID"); const code = prompt("邀请码"); if (lobby_id && code) await bridge("lobbies.join", { lobby_id, code }); }
+      if (kind === "createLobby") {
+        const name = await dialog.promptText("创建大厅", { label: "大厅名称", placeholder: "例如：周末开黑", required: true, maxLength: 80 });
+        if (name) await bridge("lobbies.create", { name });
+      }
+      if (kind === "joinLobby") {
+        const values = await dialog.prompt({ title: "加入大厅", fields: [
+          { name: "lobby_id", label: "大厅 ID", required: true },
+          { name: "code", label: "邀请码", required: true },
+        ] });
+        if (values) await bridge("lobbies.join", { lobby_id: values.lobby_id, code: values.code });
+      }
       if (kind === "invite" && selectedLobby) {
         const result = await bridge<{ code: string }>("lobbies.invite", { lobby_id: selectedLobby.lobby.id });
         await navigator.clipboard.writeText(`ourcord://invite?lobby_id=${selectedLobby.lobby.id}&code=${result.code}`);
@@ -216,21 +232,22 @@ export default function App() {
 
   async function createRoom(type: "text" | "voice") {
     if (!selectedLobby) return;
-    const name = prompt(type === "text" ? "文字房间名称" : "语音房间名称");
+    const name = await dialog.promptText(type === "text" ? "新建文字房间" : "新建语音房间", { label: "房间名称", required: true, maxLength: 80 });
     if (!name) return;
     try { await bridge("rooms.create", { lobby_id: selectedLobby.lobby.id, name, type }); await refreshLobbies(); }
     catch (e) { setError(String(e)); }
   }
 
   async function renameRoom(room: Room) {
-    const name = prompt("新的房间名称", room.name);
+    const name = await dialog.promptText("重命名房间", { label: "房间名称", initial: room.name, required: true, maxLength: 80 });
     if (!name || name === room.name) return;
     try { await bridge("rooms.update", { room_id: room.id, name }); await refreshLobbies(); }
     catch (e) { setError(String(e)); }
   }
 
   async function deleteRoom(room: Room) {
-    if (!confirm(`确定删除房间「${room.name}」？其中的消息与文件将一并删除。`)) return;
+    const ok = await dialog.confirm({ title: `删除房间「${room.name}」`, message: "其中的消息与文件将一并删除，无法恢复。", confirmLabel: "删除", danger: true });
+    if (!ok) return;
     try {
       await bridge("rooms.delete", { room_id: room.id });
       if (selectedRoomID === room.id) setSelectedRoomID("");
@@ -262,7 +279,7 @@ export default function App() {
       onSelectRoom={selectRoom} onCreateRoom={(type) => void createRoom(type)} onInvite={() => void promptAction("invite")}
       onRenameRoom={(room) => void renameRoom(room)} onDeleteRoom={(room) => void deleteRoom(room)}
       onOpenSettings={() => setSettings(true)} onLeaveVoice={() => void leaveVoice()}
-      refreshSnapshot={refreshSnapshot} onError={setError} />
+      refreshSnapshot={refreshSnapshot} onError={setError} onCopy={(text, label) => void copyText(text, label)} />
     <section className="voice-stage">
       <header className="stage-header">
         <div><span className="eyebrow">{showChat ? "文字房间" : "语音房间"}</span><h1>{stageTitle}</h1></div>
@@ -272,7 +289,7 @@ export default function App() {
       {notice && !error && <div className="notice-banner">{notice}<button onClick={() => setNotice("")}>×</button></div>}
       {showChat && selectedRoom
         ? <ChatPane key={selectedRoom.id} room={selectedRoom} myUserID={myUserID} canModerate={canManage}
-            getName={getName} ensureNames={ensureNames} onError={setError} />
+            getName={getName} ensureNames={ensureNames} onError={setError} onCopy={(text, label) => void copyText(text, label)} />
         : connecting
           ? <div className="participants"><div className="empty-state"><div className="pulse-ring connecting">◖</div><h3>正在连接语音…</h3><p>建立加密隧道并协商最优路径。</p></div></div>
           : <VoiceStage snapshot={snapshot} />}

@@ -3,6 +3,7 @@ import { bridge, type Device, type LocalProfile, type Snapshot } from "../bridge
 import { pathLabel } from "../quality";
 import { pathTone, relativeTime, shortKey } from "../format";
 import { Spinner } from "./Skeleton";
+import { useDialog } from "../dialog";
 
 // Diagnostics + device management (mirrors the TUI's peer-detail view and the
 // CLI diagnostics/devices commands, which the desktop client lacked). Reachable
@@ -12,6 +13,7 @@ export default function DiagnosticsModal({ snapshot, close, onError }: {
   close: () => void;
   onError: (message: string) => void;
 }) {
+  const dialog = useDialog();
   const [profile, setProfile] = useState<LocalProfile>();
   const [devices, setDevices] = useState<Device[]>();
   const [devicesError, setDevicesError] = useState("");
@@ -45,7 +47,8 @@ export default function DiagnosticsModal({ snapshot, close, onError }: {
 
   async function revoke(device: Device) {
     if (device.public_key === profile?.public_key) { onError("不能吊销当前设备"); return; }
-    if (!confirm(`吊销设备「${device.name || device.id}」？该设备将需要重新登录。`)) return;
+    const ok = await dialog.confirm({ title: `吊销设备「${device.name || device.id}」`, message: "该设备将需要重新登录。", confirmLabel: "吊销", danger: true });
+    if (!ok) return;
     try { await bridge("devices.revoke", { id: device.id }); await refreshDevices(); }
     catch (e) { onError(String(e)); }
   }

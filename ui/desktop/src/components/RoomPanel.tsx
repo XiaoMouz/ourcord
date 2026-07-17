@@ -1,10 +1,14 @@
+import { useState } from "react";
 import type { LobbyEntry, Member, Room, Snapshot } from "../bridge";
 import { Spinner } from "./Skeleton";
 import VoiceStatusBar from "./VoiceStatusBar";
+import ContextMenu, { type MenuItem } from "./ContextMenu";
 
 const ROLE_LABELS: Record<string, string> = { owner: "所有者", admin: "管理员", guest: "访客" };
 
-export default function RoomPanel({ lobby, members, membersLoading, getName, selectedRoomID, connectingRoomID, snapshot, busy, canManage, accountName, onSelectRoom, onCreateRoom, onInvite, onRenameRoom, onDeleteRoom, onOpenSettings, onLeaveVoice, refreshSnapshot, onError }: {
+type MenuState = { x: number; y: number; items: MenuItem[] };
+
+export default function RoomPanel({ lobby, members, membersLoading, getName, selectedRoomID, connectingRoomID, snapshot, busy, canManage, accountName, onSelectRoom, onCreateRoom, onInvite, onRenameRoom, onDeleteRoom, onOpenSettings, onLeaveVoice, refreshSnapshot, onError, onCopy }: {
   lobby?: LobbyEntry;
   members: Member[];
   membersLoading: boolean;
@@ -24,17 +28,36 @@ export default function RoomPanel({ lobby, members, membersLoading, getName, sel
   onLeaveVoice: () => void;
   refreshSnapshot: () => Promise<void>;
   onError: (message: string) => void;
+  onCopy: (text: string, label: string) => void;
 }) {
+  const [menu, setMenu] = useState<MenuState | null>(null);
   const rooms = lobby?.rooms ?? [];
   const textRooms = rooms.filter((room) => room.type === "text");
   const voiceRooms = rooms.filter((room) => room.type === "voice");
+
+  function openRoomMenu(e: React.MouseEvent, room: Room) {
+    e.preventDefault();
+    const items: MenuItem[] = [{ label: "复制房间 ID", onSelect: () => onCopy(room.id, "房间 ID") }];
+    if (canManage) items.push(
+      { label: "重命名", onSelect: () => onRenameRoom(room) },
+      { label: "删除房间", danger: true, onSelect: () => onDeleteRoom(room) },
+    );
+    setMenu({ x: e.clientX, y: e.clientY, items });
+  }
+  function openMemberMenu(e: React.MouseEvent, member: Member) {
+    e.preventDefault();
+    setMenu({ x: e.clientX, y: e.clientY, items: [
+      { label: "复制用户 ID", onSelect: () => onCopy(member.user_id, "用户 ID") },
+      { label: "复制显示名", onSelect: () => onCopy(getName(member.user_id), "显示名") },
+    ] });
+  }
 
   function roomRow(room: Room, icon: string) {
     const live = room.type === "voice" && snapshot.voice?.joined && snapshot.status?.network_id === room.vpn_namespace;
     const connecting = room.id === connectingRoomID;
     const className = selectedRoomID === room.id ? "room active" : "room";
     return <div key={room.id} className={busy ? className + " disabled" : className} role="button" tabIndex={0}
-      onClick={() => !busy && onSelectRoom(room)}
+      onClick={() => !busy && onSelectRoom(room)} onContextMenu={(e) => openRoomMenu(e, room)}
       onKeyDown={(e) => e.key === "Enter" && !busy && onSelectRoom(room)}>
       <span className="room-icon">{icon}</span>
       <span className="room-name">{room.name}</span>
@@ -67,7 +90,7 @@ export default function RoomPanel({ lobby, members, membersLoading, getName, sel
       <div className="member-list">
         {membersLoading && members.length === 0
           ? [0, 1, 2].map((i) => <div key={i} className="member"><div className="member-avatar skeleton-block" /><span className="skeleton-line" style={{ width: `${40 + i * 12}%` }} /></div>)
-          : members.map((member) => <div key={member.user_id} className="member">
+          : members.map((member) => <div key={member.user_id} className="member" onContextMenu={(e) => openMemberMenu(e, member)}>
               <div className="member-avatar">{getName(member.user_id).slice(0, 1).toUpperCase()}</div>
               <span className="member-name">{getName(member.user_id)}</span>
               {member.role !== "member" && <em>{ROLE_LABELS[member.role] ?? member.role}</em>}
@@ -81,5 +104,6 @@ export default function RoomPanel({ lobby, members, membersLoading, getName, sel
       <div><strong>{accountName ?? "OurCord 用户"}</strong><small>{snapshot.daemon_available ? "daemon 已连接" : "daemon 离线"}</small></div>
       <button title="设置" onClick={onOpenSettings}>⚙</button>
     </footer>
+    {menu && <ContextMenu x={menu.x} y={menu.y} items={menu.items} onClose={() => setMenu(null)} />}
   </aside>;
 }
