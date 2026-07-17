@@ -259,7 +259,8 @@ export default function App() {
       snapshot={snapshot} busy={busy} canManage={canManage} accountName={auth.profile?.user?.display_name}
       onSelectRoom={selectRoom} onCreateRoom={(type) => void createRoom(type)} onInvite={() => void promptAction("invite")}
       onRenameRoom={(room) => void renameRoom(room)} onDeleteRoom={(room) => void deleteRoom(room)}
-      onOpenSettings={() => setSettings(true)} />
+      onOpenSettings={() => setSettings(true)} onLeaveVoice={() => void leaveVoice()}
+      refreshSnapshot={refreshSnapshot} onError={setError} />
     <section className="voice-stage">
       <header className="stage-header">
         <div><span className="eyebrow">{showChat ? "文字房间" : "语音房间"}</span><h1>{stageTitle}</h1></div>

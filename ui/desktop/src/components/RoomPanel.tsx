@@ -1,9 +1,10 @@
 import type { LobbyEntry, Member, Room, Snapshot } from "../bridge";
 import { Spinner } from "./Skeleton";
+import VoiceStatusBar from "./VoiceStatusBar";
 
 const ROLE_LABELS: Record<string, string> = { owner: "所有者", admin: "管理员", guest: "访客" };
 
-export default function RoomPanel({ lobby, members, membersLoading, getName, selectedRoomID, connectingRoomID, snapshot, busy, canManage, accountName, onSelectRoom, onCreateRoom, onInvite, onRenameRoom, onDeleteRoom, onOpenSettings }: {
+export default function RoomPanel({ lobby, members, membersLoading, getName, selectedRoomID, connectingRoomID, snapshot, busy, canManage, accountName, onSelectRoom, onCreateRoom, onInvite, onRenameRoom, onDeleteRoom, onOpenSettings, onLeaveVoice, refreshSnapshot, onError }: {
   lobby?: LobbyEntry;
   members: Member[];
   membersLoading: boolean;
@@ -20,6 +21,9 @@ export default function RoomPanel({ lobby, members, membersLoading, getName, sel
   onRenameRoom: (room: Room) => void;
   onDeleteRoom: (room: Room) => void;
   onOpenSettings: () => void;
+  onLeaveVoice: () => void;
+  refreshSnapshot: () => Promise<void>;
+  onError: (message: string) => void;
 }) {
   const rooms = lobby?.rooms ?? [];
   const textRooms = rooms.filter((room) => room.type === "text");
@@ -70,6 +74,8 @@ export default function RoomPanel({ lobby, members, membersLoading, getName, sel
             </div>)}
       </div>
     </div>
+    <VoiceStatusBar snapshot={snapshot} connecting={!!connectingRoomID && !snapshot.voice?.joined}
+      busy={busy} onLeave={onLeaveVoice} refresh={refreshSnapshot} onError={onError} />
     <footer className="account">
       <div className="avatar">{accountName?.slice(0, 1).toUpperCase() ?? "U"}</div>
       <div><strong>{accountName ?? "OurCord 用户"}</strong><small>{snapshot.daemon_available ? "daemon 已连接" : "daemon 离线"}</small></div>
