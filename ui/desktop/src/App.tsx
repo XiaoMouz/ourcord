@@ -255,6 +255,21 @@ export default function App() {
     } catch (e) { setError(String(e)); }
   }
 
+  // reorderRoom swaps a room with its same-type neighbor by writing the
+  // neighbor's position onto it (service orders rooms by position).
+  async function reorderRoom(room: Room, direction: -1 | 1) {
+    if (!selectedLobby) return;
+    const siblings = selectedLobby.rooms.filter((r) => r.type === room.type).sort((a, b) => a.position - b.position);
+    const index = siblings.findIndex((r) => r.id === room.id);
+    const target = siblings[index + direction];
+    if (!target) return;
+    try {
+      await bridge("rooms.update", { room_id: room.id, position: target.position });
+      await bridge("rooms.update", { room_id: target.id, position: room.position });
+      await refreshLobbies();
+    } catch (e) { setError(String(e)); }
+  }
+
   if (auth.loading) return <div className="splash"><div className="brand-mark">O</div><p>正在连接安全客户端…</p></div>;
   if (!auth.authenticated) return <Login busy={busy} notice={notice} error={error} loginURLs={loginURLs} onMagic={(email) => void sendMagic(email)} />;
 
@@ -278,6 +293,7 @@ export default function App() {
       snapshot={snapshot} busy={busy} canManage={canManage} accountName={auth.profile?.user?.display_name}
       onSelectRoom={selectRoom} onCreateRoom={(type) => void createRoom(type)} onInvite={() => void promptAction("invite")}
       onRenameRoom={(room) => void renameRoom(room)} onDeleteRoom={(room) => void deleteRoom(room)}
+      onReorderRoom={(room, dir) => void reorderRoom(room, dir)}
       onOpenSettings={() => setSettings(true)} onLeaveVoice={() => void leaveVoice()}
       refreshSnapshot={refreshSnapshot} onError={setError} onCopy={(text, label) => void copyText(text, label)} />
     <section className="voice-stage">
@@ -289,7 +305,8 @@ export default function App() {
       {notice && !error && <div className="notice-banner">{notice}<button onClick={() => setNotice("")}>×</button></div>}
       {showChat && selectedRoom
         ? <ChatPane key={selectedRoom.id} room={selectedRoom} myUserID={myUserID} canModerate={canManage}
-            getName={getName} ensureNames={ensureNames} onError={setError} onCopy={(text, label) => void copyText(text, label)} />
+            getName={getName} ensureNames={ensureNames} onError={setError} onNotice={setNotice}
+            onCopy={(text, label) => void copyText(text, label)} />
         : connecting
           ? <div className="participants"><div className="empty-state"><div className="pulse-ring connecting">◖</div><h3>正在连接语音…</h3><p>建立加密隧道并协商最优路径。</p></div></div>
           : <VoiceStage snapshot={snapshot} />}

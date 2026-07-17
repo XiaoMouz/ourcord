@@ -41,6 +41,22 @@ func TestStringSliceParam(t *testing.T) {
 	}
 }
 
+func TestSafeFilename(t *testing.T) {
+	tests := []struct{ in, want string }{
+		{"photo.png", "photo.png"},
+		{"../../etc/passwd", "_.._etc_passwd"},
+		{"a\\b/c.txt", "a_b_c.txt"},
+		{"  spaced.jpg  ", "spaced.jpg"},
+		{"...hidden", "hidden"},
+		{"", ""},
+	}
+	for _, tt := range tests {
+		if got := safeFilename(tt.in); got != tt.want {
+			t.Errorf("safeFilename(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
 func TestHandleRejectsUnknownMethod(t *testing.T) {
 	b := &bridge{}
 	resp := b.handle(request{ID: "7", Method: "definitely.not.a.method"})

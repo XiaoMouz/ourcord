@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { bridge, type Message, type Room } from "../bridge";
+import { bridge, type FileRecord, type Message, type Room } from "../bridge";
 import { mergeMessages, senderIDs } from "../messages";
+import { formatBytes, parseAttachments } from "../format";
 import { ChatSkeleton } from "./Skeleton";
 import ContextMenu, { type MenuItem } from "./ContextMenu";
 import { useDialog } from "../dialog";
@@ -16,7 +17,7 @@ function formatTime(createdAt: number): string {
   return sameDay ? time : `${date.toLocaleDateString()} ${time}`;
 }
 
-export default function ChatPane({ room, myUserID, canModerate, getName, ensureNames, onError, onCopy }: {
+export default function ChatPane({ room, myUserID, canModerate, getName, ensureNames, onError, onCopy, onNotice }: {
   room: Room;
   myUserID: string;
   canModerate: boolean;
@@ -24,6 +25,7 @@ export default function ChatPane({ room, myUserID, canModerate, getName, ensureN
   ensureNames: (userIDs: string[]) => Promise<void>;
   onError: (message: string) => void;
   onCopy: (text: string, label: string) => void;
+  onNotice: (message: string) => void;
 }) {
   const dialog = useDialog();
   const [messages, setMessages] = useState<Message[]>([]);
@@ -33,6 +35,8 @@ export default function ChatPane({ room, myUserID, canModerate, getName, ensureN
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [reachedStart, setReachedStart] = useState(false);
   const [menu, setMenu] = useState<{ x: number; y: number; items: MenuItem[] } | null>(null);
+  const [files, setFiles] = useState<Record<string, FileRecord>>({});
+  const [downloading, setDownloading] = useState("");
   const listRef = useRef<HTMLDivElement>(null);
   const stickToBottom = useRef(true);
 
@@ -51,6 +55,35 @@ export default function ChatPane({ room, myUserID, canModerate, getName, ensureN
     const timer = window.setInterval(() => void poll(), POLL_MS);
     return () => clearInterval(timer);
   }, [poll]);
+
+  // Resolve attachment ids to file metadata lazily: only hit files.list when a
+  // message references an id we have not indexed yet.
+  useEffect(() => {
+    const needed = new Set<string>();
+    for (const message of messages) for (const id of parseAttachments(message.attachments)) if (!files[id]) needed.add(id);
+    if (needed.size === 0) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const data = await bridge<{ files: FileRecord[] }>("files.list", { room_id: room.id });
+        if (cancelled) return;
+        setFiles((current) => {
+          const next = { ...current };
+          for (const file of data.files ?? []) next[file.id] = file;
+          return next;
+        });
+      } catch { /* attachments render as generic chips until this succeeds */ }
+    })();
+    return () => { cancelled = true; };
+  }, [messages, files, room.id]);
+
+  async function download(fileID: string, filename: string) {
+    setDownloading(fileID);
+    try {
+      const result = await bridge<{ saved_path: string }>("files.download", { room_id: room.id, file_id: fileID, filename });
+      onNotice(`已保存到 ${result.saved_path}`);
+    } catch (e) { onError(String(e)); } finally { setDownloading(""); }
+  }
 
   useEffect(() => {
     const list = listRef.current;
@@ -126,7 +159,18 @@ export default function ChatPane({ room, myUserID, canModerate, getName, ensureN
               <button className="chat-delete" title="删除消息" onClick={() => void remove(message)}>×</button>
             )}
           </header>
-          <p>{message.content}</p>
+          {message.content && <p>{message.content}</p>}
+          {parseAttachments(message.attachments).map((fileID) => {
+            const file = files[fileID];
+            return <button key={fileID} className="attachment" disabled={downloading === fileID}
+              title={file ? file.mime_type : "下载附件"} onClick={() => void download(fileID, file?.filename ?? fileID)}>
+              <span className="attachment-icon">📎</span>
+              <span className="attachment-meta">
+                <strong>{file?.filename ?? "附件"}</strong>
+                <small>{file ? formatBytes(file.size_bytes) : "点击下载"}{downloading === fileID ? " · 下载中…" : ""}</small>
+              </span>
+            </button>;
+          })}
         </div>
       </article>)}
     </div>

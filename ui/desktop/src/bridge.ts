@@ -12,6 +12,7 @@ export type LobbyEntry = {
 };
 export type Member = { lobby_id: string; user_id: string; role: "owner" | "admin" | "member" | "guest"; joined_at: number };
 export type Message = { id: string; room_id: string; user_id: string; content: string; attachments?: string; created_at: number };
+export type FileRecord = { id: string; room_id: string; uploader_id: string; filename: string; size_bytes: number; mime_type: string; created_at: number; upload_status?: string };
 export type Profile = { id: string; display_name: string };
 export type AudioDevice = { id: string; name: string; is_default: boolean };
 export type Peer = {

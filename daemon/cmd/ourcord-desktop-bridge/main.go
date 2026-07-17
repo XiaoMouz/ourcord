@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -230,10 +231,22 @@ func (b *bridge) dispatch(method string, raw json.RawMessage) (any, error) {
 		return b.authedJSON(http.MethodPost, b.serviceURL, path, map[string]string{"name": stringParam(params, "name"), "type": roomType})
 	case "rooms.update":
 		path := "/api/rooms/" + pathSegment(stringParam(params, "room_id"))
-		return b.authedJSON(http.MethodPatch, b.serviceURL, path, map[string]string{"name": stringParam(params, "name")})
+		payload := map[string]any{}
+		if name := stringParam(params, "name"); name != "" {
+			payload["name"] = name
+		}
+		if _, ok := params["position"]; ok {
+			payload["position"] = int(numberParam(params, "position", 0))
+		}
+		return b.authedJSON(http.MethodPatch, b.serviceURL, path, payload)
 	case "rooms.delete":
 		path := "/api/rooms/" + pathSegment(stringParam(params, "room_id"))
 		return b.authedJSON(http.MethodDelete, b.serviceURL, path, nil)
+	case "files.list":
+		path := "/api/rooms/" + pathSegment(stringParam(params, "room_id")) + "/files"
+		return b.authedJSON(http.MethodGet, b.serviceURL, path, nil)
+	case "files.download":
+		return b.downloadFile(stringParam(params, "room_id"), stringParam(params, "file_id"), stringParam(params, "filename"))
 	case "messages.list":
 		path := messagesPath(stringParam(params, "room_id"), stringParam(params, "before"), int(numberParam(params, "limit", 50)))
 		return b.authedJSON(http.MethodGet, b.serviceURL, path, nil)
@@ -438,6 +451,132 @@ func (b *bridge) daemonCommand(method string, p map[string]any) (any, error) {
 	}
 	b.dropDaemon(c, err)
 	return map[string]bool{"ok": err == nil}, err
+}
+
+// downloadFile fetches a room attachment and saves it to the OS downloads
+// directory. The service serves R2-backed files as raw bytes and
+// backend-hosted files as a JSON {url} redirect, so this follows both: it
+// streams the download to disk (bypassing the 1 MB api() cap) and returns the
+// saved path for the UI to reveal. Uploading stays a separate concern.
+func (b *bridge) downloadFile(roomID, fileID, filename string) (any, error) {
+	if roomID == "" || fileID == "" {
+		return nil, errors.New("room_id and file_id required")
+	}
+	token, err := b.token()
+	if err != nil {
+		return nil, errors.New("not authenticated")
+	}
+	url := strings.TrimRight(b.serviceURL, "/") + "/api/rooms/" + pathSegment(roomID) + "/files/" + pathSegment(fileID) + "/download"
+	body, contentType, err := b.fetchStream(http.MethodGet, url, token)
+	if err != nil {
+		return nil, err
+	}
+	defer body.Close()
+	// Backend-hosted files answer with a JSON redirect; follow it unauthenticated.
+	if strings.HasPrefix(contentType, "application/json") {
+		data, _ := io.ReadAll(io.LimitReader(body, 1<<20))
+		var redirect struct {
+			URL string `json:"url"`
+		}
+		if json.Unmarshal(data, &redirect) != nil || redirect.URL == "" {
+			return nil, errors.New("download unavailable")
+		}
+		next, _, err := b.fetchStream(http.MethodGet, redirect.URL, "")
+		if err != nil {
+			return nil, err
+		}
+		defer next.Close()
+		return b.saveDownload(filename, fileID, next)
+	}
+	return b.saveDownload(filename, fileID, body)
+}
+
+// fetchStream issues a GET and returns the still-open body for streaming. The
+// caller must Close it.
+func (b *bridge) fetchStream(method, url, token string) (io.ReadCloser, string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	req, err := http.NewRequestWithContext(ctx, method, url, nil)
+	if err != nil {
+		cancel()
+		return nil, "", err
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := b.http.Do(req)
+	if err != nil {
+		cancel()
+		return nil, "", errors.New("download failed")
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		resp.Body.Close()
+		cancel()
+		return nil, "", fmt.Errorf("download failed (%d)", resp.StatusCode)
+	}
+	return &cancelReadCloser{ReadCloser: resp.Body, cancel: cancel}, resp.Header.Get("Content-Type"), nil
+}
+
+type cancelReadCloser struct {
+	io.ReadCloser
+	cancel context.CancelFunc
+}
+
+func (c *cancelReadCloser) Close() error {
+	err := c.ReadCloser.Close()
+	c.cancel()
+	return err
+}
+
+// saveDownload writes a stream to <downloads>/<filename>, avoiding overwrite by
+// suffixing the file id, and returns the saved path.
+func (b *bridge) saveDownload(filename, fileID string, src io.Reader) (any, error) {
+	name := safeFilename(filename)
+	if name == "" {
+		name = "ourcord-" + pathSegment(fileID)
+	}
+	dir := downloadsDir()
+	target := filepath.Join(dir, name)
+	if _, err := os.Stat(target); err == nil {
+		ext := filepath.Ext(name)
+		target = filepath.Join(dir, strings.TrimSuffix(name, ext)+"-"+pathSegment(fileID)+ext)
+	}
+	out, err := os.Create(target)
+	if err != nil {
+		return nil, fmt.Errorf("save file: %w", err)
+	}
+	if _, err := io.Copy(out, io.LimitReader(src, 512<<20)); err != nil {
+		out.Close()
+		return nil, fmt.Errorf("save file: %w", err)
+	}
+	if err := out.Close(); err != nil {
+		return nil, fmt.Errorf("save file: %w", err)
+	}
+	return map[string]string{"saved_path": target}, nil
+}
+
+// downloadsDir resolves the user's Downloads folder, falling back to the OS
+// temp dir when the home directory is unavailable.
+func downloadsDir() string {
+	if home, err := os.UserHomeDir(); err == nil {
+		candidate := filepath.Join(home, "Downloads")
+		if info, err := os.Stat(candidate); err == nil && info.IsDir() {
+			return candidate
+		}
+		return home
+	}
+	return os.TempDir()
+}
+
+// safeFilename strips path separators and control characters so a server-named
+// file cannot escape the downloads directory.
+func safeFilename(name string) string {
+	name = strings.TrimSpace(name)
+	name = strings.NewReplacer("/", "_", "\\", "_", "\x00", "").Replace(name)
+	name = strings.TrimLeft(name, ".")
+	if len(name) > 180 {
+		name = name[len(name)-180:]
+	}
+	return name
 }
 
 // messagesPath builds the room message-history path with optional pagination.

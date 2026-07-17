@@ -8,7 +8,7 @@ const ROLE_LABELS: Record<string, string> = { owner: "所有者", admin: "管理
 
 type MenuState = { x: number; y: number; items: MenuItem[] };
 
-export default function RoomPanel({ lobby, members, membersLoading, getName, selectedRoomID, connectingRoomID, snapshot, busy, canManage, accountName, onSelectRoom, onCreateRoom, onInvite, onRenameRoom, onDeleteRoom, onOpenSettings, onLeaveVoice, refreshSnapshot, onError, onCopy }: {
+export default function RoomPanel({ lobby, members, membersLoading, getName, selectedRoomID, connectingRoomID, snapshot, busy, canManage, accountName, onSelectRoom, onCreateRoom, onInvite, onRenameRoom, onDeleteRoom, onReorderRoom, onOpenSettings, onLeaveVoice, refreshSnapshot, onError, onCopy }: {
   lobby?: LobbyEntry;
   members: Member[];
   membersLoading: boolean;
@@ -24,6 +24,7 @@ export default function RoomPanel({ lobby, members, membersLoading, getName, sel
   onInvite: () => void;
   onRenameRoom: (room: Room) => void;
   onDeleteRoom: (room: Room) => void;
+  onReorderRoom: (room: Room, direction: -1 | 1) => void;
   onOpenSettings: () => void;
   onLeaveVoice: () => void;
   refreshSnapshot: () => Promise<void>;
@@ -32,13 +33,18 @@ export default function RoomPanel({ lobby, members, membersLoading, getName, sel
 }) {
   const [menu, setMenu] = useState<MenuState | null>(null);
   const rooms = lobby?.rooms ?? [];
-  const textRooms = rooms.filter((room) => room.type === "text");
-  const voiceRooms = rooms.filter((room) => room.type === "voice");
+  const byPosition = (a: Room, b: Room) => a.position - b.position;
+  const textRooms = rooms.filter((room) => room.type === "text").sort(byPosition);
+  const voiceRooms = rooms.filter((room) => room.type === "voice").sort(byPosition);
 
   function openRoomMenu(e: React.MouseEvent, room: Room) {
     e.preventDefault();
+    const siblings = rooms.filter((r) => r.type === room.type).sort((a, b) => a.position - b.position);
+    const index = siblings.findIndex((r) => r.id === room.id);
     const items: MenuItem[] = [{ label: "复制房间 ID", onSelect: () => onCopy(room.id, "房间 ID") }];
     if (canManage) items.push(
+      { label: "上移", disabled: index <= 0, onSelect: () => onReorderRoom(room, -1) },
+      { label: "下移", disabled: index >= siblings.length - 1, onSelect: () => onReorderRoom(room, 1) },
       { label: "重命名", onSelect: () => onRenameRoom(room) },
       { label: "删除房间", danger: true, onSelect: () => onDeleteRoom(room) },
     );
