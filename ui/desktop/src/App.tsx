@@ -308,7 +308,7 @@ export default function App() {
             getName={getName} ensureNames={ensureNames} onError={setError} onNotice={setNotice}
             onCopy={(text, label) => void copyText(text, label)} />
         : connecting
-          ? <div className="participants"><div className="empty-state"><div className="pulse-ring connecting">◖</div><h3>正在连接语音…</h3><p>建立加密隧道并协商最优路径。</p></div></div>
+          ? <div className="participants"><div className="empty-state"><div className="pulse-ring connecting">◖</div><h3>正在连接语音…</h3></div></div>
           : <VoiceStage snapshot={snapshot} />}
       {(inVoice || connecting || !showChat) && <CallBar snapshot={snapshot} busy={busy} shortcut={PTT_SHORTCUT}
         onLeave={() => void leaveVoice()} refresh={refreshSnapshot} onError={setError} />}

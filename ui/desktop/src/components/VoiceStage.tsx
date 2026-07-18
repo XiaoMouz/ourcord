@@ -33,7 +33,7 @@ export default function VoiceStage({ snapshot }: { snapshot: Snapshot }) {
     {!snapshot.voice?.joined && <div className="empty-state">
       <div className="pulse-ring">◎</div>
       <h3>{snapshot.daemon_available ? "选一个房间开始通话" : "后台服务未运行"}</h3>
-      <p>{snapshot.daemon_available ? "语音将优先通过 P2P 加密隧道传输。" : "请重新启动 OurCord 或检查 Windows 服务。"}</p>
+      <p>{snapshot.daemon_available ? "在左侧选择语音房间加入。" : "请重新启动 OurCord 或检查 Windows 服务。"}</p>
     </div>}
   </div>;
 }

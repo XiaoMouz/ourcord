@@ -26,8 +26,7 @@ export default function Login({ busy, notice, error, loginURLs, onMagic }: {
     </section>
     <aside className="login-art">
       <div className="mesh"><i/><i/><i/><i/></div>
-      <h2>P2P 优先，保持自治。</h2>
-      <p>语音穿过你自己的加密覆盖网络，直连失败时才使用中继。</p>
+      <h2>朋友在线，数据在你手里。</h2>
     </aside>
   </main>;
 }
