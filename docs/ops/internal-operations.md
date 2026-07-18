@@ -62,6 +62,14 @@ Cloudflare's runtime logs. Use the Cloudflare dashboard or `wrangler tail` for
 the matching Worker during an incident. Do not add JWTs, device tokens,
 upload secrets, Authorization headers, or private keys to a log field.
 
+## Fleet health at a glance
+
+For a live view of the relay fleet and file-backend health without tailing
+logs, sign in to the operator console at `/admin` on the deployed site (an
+operator account in the control `ADMIN_USER_IDS` allowlist). It reads the
+admin-gated `GET /api/control/fleet` endpoint. Field dictionary and an alert
+playbook are in [`monitoring.md`](./monitoring.md).
+
 ## Collect a support bundle
 
 Ask the user to run this locally after a failure:
