@@ -4,6 +4,7 @@ import { registerPeer, getPeerConfig, lookupPeers, reportPeerConnectivity } from
 import { getStunServers, addStunServer } from "./stun";
 import { registerRelay, getRelayMap, getBannedKeys, denyPeerOnRelay, allowPeerOnRelay } from "./relay";
 import { createBan, removeBan, checkBan } from "./ban";
+import { getFleetStatus } from "./ops";
 import { requestOTP, verifyOTP, oauthRedirect, oauthCallback, requestDesktopMagic, confirmDesktopMagicPage, confirmDesktopMagic, exchangeDesktopCode } from "./authHandler";
 import { getMe, updateMe, lookupProfiles } from "./profile";
 import { enrollDevice, exchangeDeviceToken, listDevices, revokeDevice } from "./devices";
@@ -237,6 +238,9 @@ export default {
           ts: Date.now(),
         });
       }
+
+      // Admin-gated operator fleet view (relay detail + backend health rollup).
+      if (method === "GET" && path === "/api/control/fleet") return getFleetStatus(request, env);
 
       // ── Ban management ─────────────────────────────────────────────────────
       if (method === "POST" && path === "/api/ban") return createBan(request, env);
