@@ -11,7 +11,7 @@
     "sync:release": "bash scripts/sync-release.sh",
     "deploy:apex": "npm run sync:release && npm run build && wrangler deploy --config wrangler.apex.jsonc",
     "start": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vinext start",
-    "test": "npm run build && node --test tests/rendered-html.test.mjs",
+    "test": "npm run build && node --test tests/*.test.mjs",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
     "db:generate": "drizzle-kit generate"
   },
