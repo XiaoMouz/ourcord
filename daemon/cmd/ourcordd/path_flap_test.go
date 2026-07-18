@@ -93,6 +93,72 @@ func TestObservePathTransitionsFlapsAndDrains(t *testing.T) {
 	}
 }
 
+func TestFlapStateNextHysteresis(t *testing.T) {
+	// Set: reaching the threshold flips on regardless of prior state.
+	if !flapStateNext(false, flapThreshold) || !flapStateNext(true, flapThreshold) {
+		t.Fatal("windowLen >= flapThreshold must set flapping")
+	}
+	// Hold: once flapping, a window pruned just below the threshold must NOT
+	// clear the flag — this is the marginal 3↔4 oscillation being damped.
+	for n := flapThreshold - 1; n > flapClearThreshold; n-- {
+		if !flapStateNext(true, n) {
+			t.Fatalf("flapping must hold at windowLen=%d (clear bound %d)", n, flapClearThreshold)
+		}
+	}
+	// Clear: only a drained window releases the flag.
+	if flapStateNext(true, flapClearThreshold) || flapStateNext(true, 0) {
+		t.Fatal("flapping must clear once the window drains to <= flapClearThreshold")
+	}
+	// A non-flapping peer below the set threshold stays clear (no re-arm from
+	// an isolated transition).
+	if flapStateNext(false, flapThreshold-1) || flapStateNext(false, 1) {
+		t.Fatal("sub-threshold window must not set flapping")
+	}
+}
+
+func TestFlapHysteresisHoldsThroughMarginalPrune(t *testing.T) {
+	pk := mustTestKey(0x75)
+	tbl := routing.NewTable()
+	tbl.Upsert(derpRoute(pk, "198.18.0.75"))
+	d := &daemon{table: tbl}
+	base := time.Unix(3_000_000, 0)
+	d.observePathTransitionsLocked(base) // baseline "derp"
+
+	// Four quick toggles → flapping.
+	for i := 1; i <= flapThreshold; i++ {
+		if i%2 == 1 {
+			tbl.SetICEReady(pk, true)
+		} else {
+			tbl.SetDERPFallback(pk, "direct-health-lost")
+		}
+		d.observePathTransitionsLocked(base.Add(time.Duration(i) * time.Second))
+	}
+	if !d.pathState[pk].flapping {
+		t.Fatal("expected flapping after threshold toggles")
+	}
+
+	// Quiet ticks prune the window to 3, then 2 — pre-hysteresis this cleared
+	// the flag (and released the ICE damp) the moment it dipped under 4.
+	d.observePathTransitionsLocked(base.Add(flapWindow + 2*time.Second)) // keeps transitions at 3s,4s → len 2..3
+	st := d.pathState[pk]
+	if len(st.window) >= flapThreshold {
+		t.Fatalf("test premise broken: window should have pruned below threshold, len=%d", len(st.window))
+	}
+	if !st.flapping {
+		t.Fatalf("flapping must hold while the window is only partially drained (len=%d)", len(st.window))
+	}
+
+	// Once the window fully drains past the clear bound, the flag releases.
+	d.observePathTransitionsLocked(base.Add(flapWindow + time.Duration(flapThreshold+1)*time.Second))
+	st = d.pathState[pk]
+	if len(st.window) > flapClearThreshold {
+		t.Fatalf("test premise broken: window should have drained to <=%d, len=%d", flapClearThreshold, len(st.window))
+	}
+	if st.flapping {
+		t.Fatalf("flapping must clear after the window drains (len=%d)", len(st.window))
+	}
+}
+
 func TestPathTelemetrySnapshotDwellAndRollup(t *testing.T) {
 	a, b := mustTestKey(0x73), mustTestKey(0x74)
 	tbl := routing.NewTable()

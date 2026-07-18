@@ -15,11 +15,28 @@ import (
 // contract, and fed back into the ICE backoff to damp a chronically-unstable
 // peer instead of re-upgrading it on every tick.
 const (
-	flapObserveTick  = 2 * time.Second
-	flapWindow       = 60 * time.Second
-	flapThreshold    = 4               // ≥ this many transitions inside flapWindow ⇒ flapping
-	flapDampInterval = 2 * time.Minute // backoff floor applied to a flapping peer (≤ iceRetryCap)
+	flapObserveTick = 2 * time.Second
+	flapWindow      = 60 * time.Second
+	flapThreshold   = 4 // ≥ this many transitions inside flapWindow ⇒ flapping
+	// Hysteresis clear bound: once flapping, the flag holds until the window has
+	// drained to ≤ this many transitions. Without it a path hovering at the
+	// 3↔4 boundary toggles the flag on every prune, and that toggle propagates —
+	// ICE damp released → re-upgrade → transition → damp re-applied — plus the
+	// control-side FLAP_PENALTY flips with each connectivity report, oscillating
+	// next-hop selection. Set-at-4 / clear-at-≤1 keeps an isolated late
+	// transition from re-arming while damping the marginal-path churn.
+	flapClearThreshold = 1
+	flapDampInterval   = 2 * time.Minute // backoff floor applied to a flapping peer (≤ iceRetryCap)
 )
+
+// flapStateNext applies the set/clear hysteresis to a peer's flapping flag
+// given the pruned window length. Pure so it is unit-testable.
+func flapStateNext(flapping bool, windowLen int) bool {
+	if windowLen >= flapThreshold {
+		return true
+	}
+	return flapping && windowLen > flapClearThreshold
+}
 
 // peerPathState tracks one peer's effective-path history. Guarded by connMu.
 type peerPathState struct {
@@ -61,7 +78,7 @@ func (d *daemon) observePathTransitionsLocked(now time.Time) {
 		}
 		st.window = pruneWindow(st.window, now.Add(-flapWindow))
 		if path == st.lastPath {
-			st.flapping = len(st.window) >= flapThreshold
+			st.flapping = flapStateNext(st.flapping, len(st.window))
 			continue
 		}
 		log.Printf("peer path flap: %s %s→%s count=%d", r.PublicKey.String()[:12], st.lastPath, path, st.transitions+1)
@@ -69,7 +86,7 @@ func (d *daemon) observePathTransitionsLocked(now time.Time) {
 		st.lastChange = now
 		st.transitions++
 		st.window = append(st.window, now)
-		st.flapping = len(st.window) >= flapThreshold
+		st.flapping = flapStateNext(st.flapping, len(st.window))
 	}
 	// Drop state for peers that left the network so the map can't grow unbounded.
 	for pk := range d.pathState {
