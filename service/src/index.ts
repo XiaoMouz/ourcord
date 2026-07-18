@@ -4,6 +4,7 @@ import { createLobby, listLobbies, getLobby, joinLobby, listMembers, updateMembe
 import { getMessages, sendMessage, deleteMessage } from "./messages";
 import { initiateUpload, uploadToR2, completeExternalUpload, listFiles, getDownloadUrl, getFilePolicy, updateFilePolicy, runR2Cleanup } from "./files";
 import { registerBackend, listBackends, deactivateBackend, shareBackend, unshareBackend, checkBackendHealth, runBackendHealthChecks } from "./backends";
+import { getBackendHealthSummary } from "./opsBackends";
 import { json, constantTimeEqual } from "./auth";
 import { verifyInternalRequest } from "./internalAuth";
 import { checkRateLimit } from "./ratelimit";
@@ -173,6 +174,16 @@ export default {
           vpn_namespace: room.vpn_namespace,
           lobby_id: room.lobby_id,
         });
+      }
+
+      // Internal: file-backend health rollup for the control operator view
+      // (control/src/ops.ts → /api/control/fleet). Same signed-header auth as
+      // member-ids; returns aggregate counts only, never upload_secret.
+      if (method === "GET" && parts[1] === "internal" && parts[2] === "backends" && parts[3] === "health-summary") {
+        if (!env.SERVICE_INTERNAL_TOKEN || !(await verifyInternalRequest(request, env.SERVICE_INTERNAL_TOKEN, env.DB))) {
+          return json({ error: "Forbidden" }, 403);
+        }
+        return json(await getBackendHealthSummary(env));
       }
 
       // ── Admin ──────────────────────────────────────────────────────────────
