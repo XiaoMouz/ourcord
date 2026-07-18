@@ -6,7 +6,6 @@ package main
 import (
 	"context"
 	"crypto/tls"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -26,7 +25,6 @@ import (
 	"github.com/ourcord/ourcord/relay/pkg/state"
 	"tailscale.com/derp/derpserver"
 	"tailscale.com/net/stunserver"
-	"tailscale.com/tailcfg"
 	"tailscale.com/types/logger"
 )
 
@@ -148,29 +146,18 @@ func main() {
 	// be reliably rejected — the WebSocket Sec-WebSocket-Protocol header is
 	// not set by DERP clients, so an HTTP-layer check is a no-op.
 	admitMux := http.NewServeMux()
-	admitMux.HandleFunc("/internal/derp-admit", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			http.Error(w, "method", http.StatusMethodNotAllowed)
-			return
-		}
-		var req tailcfg.DERPAdmitClientRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, "bad json", http.StatusBadRequest)
-			return
-		}
-		allow := true
-		// G12: req.NodePublic is a Tailscale DERP node key (NodePublic.String()
-		// → "nodekey:HEX..."), NOT a WireGuard base64 public key. The control
-		// plane returns both sets via /api/relay/banned-keys (keys + derp_keys);
-		// we use the DERP-side set here so a banned user can't reconnect via
-		// pure DERP. The legacy IsBanned(WG-key) check is intentionally omitted
-		// here because the comparison would always miss.
-		if cc != nil && cc.BanList().IsBannedDERP(req.NodePublic.String()) {
-			allow = false
-		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(tailcfg.DERPAdmitClientResponse{Allow: allow})
-	})
+	// G12: req.NodePublic is a Tailscale DERP node key (NodePublic.String()
+	// → "nodekey:HEX..."), NOT a WireGuard base64 public key. The control plane
+	// returns both sets via /api/relay/banned-keys (keys + derp_keys); we use
+	// the DERP-side set here so a banned user can't reconnect via pure DERP. The
+	// legacy IsBanned(WG-key) check is intentionally omitted here because the
+	// comparison would always miss. A nil predicate (no control plane) admits
+	// everyone.
+	var isBannedDERP func(string) bool
+	if cc != nil {
+		isBannedDERP = func(k string) bool { return cc.BanList().IsBannedDERP(k) }
+	}
+	admitMux.HandleFunc("/internal/derp-admit", derpAdmitHandler(isBannedDERP))
 
 	admitLn, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -208,10 +195,7 @@ func main() {
 	mux.HandleFunc("/generate_204", derpserver.ServeNoContent)
 
 	// Health / status endpoint
-	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(w, `{"status":"ok","region":%q,"ts":%d}`, *region, time.Now().Unix())
-	})
+	mux.HandleFunc("/health", healthHandler(*region))
 
 	// Wire the admission controller into derpserver. Fail-open so a broken
 	// loopback doesn't take down the relay; ban evasion is bounded by the
