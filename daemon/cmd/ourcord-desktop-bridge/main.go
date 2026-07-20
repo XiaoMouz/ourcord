@@ -284,8 +284,8 @@ func (b *bridge) dispatch(method string, raw json.RawMessage) (any, error) {
 	case "devices.revoke":
 		return b.revokeDevice(stringParam(params, "id"))
 	case "network.connect", "network.disconnect", "network.enter", "network.leave",
-		"voice.join", "voice.leave", "voice.mute", "voice.deafen", "voice.input_mode",
-		"voice.ptt", "voice.devices", "voice.set_devices":
+		"voice.join", "voice.join_network", "voice.leave", "voice.mute", "voice.deafen",
+		"voice.input_mode", "voice.ptt", "voice.devices", "voice.set_devices":
 		return b.daemonCommand(method, params)
 	default:
 		return nil, errors.New("unsupported bridge method")
@@ -441,6 +441,14 @@ func (b *bridge) daemonCommand(method string, p map[string]any) (any, error) {
 		err = c.LeaveNetwork()
 	case "voice.join":
 		err = c.VoiceJoin()
+	case "voice.join_network":
+		// The leave/connect/enter/join orchestration lives in the client core;
+		// prefs only apply when the UI sends a mode (it owns the persisted values).
+		var prefs *client.VoiceInputPrefs
+		if mode := stringParam(p, "mode"); mode != "" {
+			prefs = &client.VoiceInputPrefs{Mode: mode, ThresholdDBFS: numberParam(p, "threshold_dbfs", -45), HangoverMS: uint32(numberParam(p, "hangover_ms", 300))}
+		}
+		err = c.JoinVoiceNetwork(stringParam(p, "network_id"), prefs)
 	case "voice.leave":
 		err = c.VoiceLeave()
 	case "voice.mute":

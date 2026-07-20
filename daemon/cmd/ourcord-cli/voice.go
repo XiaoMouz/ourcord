@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"flag"
 	"fmt"
 	"os"
 
@@ -24,6 +25,17 @@ func runVoice(socketPath string, args []string) int {
 
 	switch args[0] {
 	case "join":
+		// voice join [--network <id>] — with --network, run the core
+		// JoinVoiceNetwork orchestration (leave voice / switch network /
+		// connect / enter) instead of only joining the current network's voice.
+		fs := flag.NewFlagSet("voice join", flag.ContinueOnError)
+		network := fs.String("network", "", "room vpn_namespace to switch to before joining voice")
+		if err := fs.Parse(args[1:]); err != nil {
+			return 1
+		}
+		if *network != "" {
+			return emitOK(cli.JoinVoiceNetwork(*network, nil))
+		}
 		return emitOK(cli.VoiceJoin())
 	case "leave":
 		return emitOK(cli.VoiceLeave())

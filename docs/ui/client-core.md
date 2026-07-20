@@ -37,9 +37,16 @@ error. The stable field contract is `proto/ourcord/v1/daemon.proto`.
 | C5b | No interactive TUI. | — | **Fixed** — `cmd/ourcord-tui` (Bubble Tea) renders `client.Watch` snapshots and drives connect/disconnect/enter-network/leave via the typed `client` ops. Model logic is unit-tested; it shares 100% of its daemon logic with the CLI. |
 
 `daemon/pkg/client` is now the complete UI-agnostic surface: daemon IPC ops
-(`client.go`), device/control-plane ops (`devices.go`), and diagnostics
-collection (`diagnostics.go`). `cmd/ourcord-cli` contains only presenters and has
-no core logic left.
+(`client.go`), device/control-plane ops (`devices.go`), diagnostics
+collection (`diagnostics.go`), and orchestration ops (`orchestrate.go`).
+`cmd/ourcord-cli` contains only presenters and has no core logic left.
+
+Orchestration ops compose the single-step ops into product flows so every
+presenter shares one implementation. `client.JoinVoiceNetwork(networkID, prefs)`
+is the canonical "join a room's voice" flow (leave current voice → switch
+network → connect VPN → enter → optional input prefs → join); presenters must
+call it rather than re-implement the sequence. Consumers: desktop bridge
+`voice.join_network`, `ourcord-cli voice join --network`.
 
 ## Status
 
