@@ -176,19 +176,10 @@ export default function App() {
     if (!room.vpn_namespace) return;
     setBusy(true); setConnectingRoomID(room.id); setSelectedRoomID(room.id); setError("");
     try {
-      // Re-read the daemon state instead of trusting the 1 Hz poll: the join
-      // decision (leave/connect/enter) must not race a stale snapshot.
-      const fresh = await bridge<Snapshot>("daemon.snapshot");
-      if (fresh.voice?.joined && fresh.status?.network_id === room.vpn_namespace) {
-        return;
-      }
-      if (fresh.voice?.joined) await bridge("voice.leave");
-      if (fresh.status?.network_id && fresh.status.network_id !== room.vpn_namespace) await bridge("network.leave");
-      if (!fresh.status?.vpn_active) await bridge("network.connect");
-      await bridge("network.enter", { network_id: room.vpn_namespace });
+      // The leave/connect/enter/join orchestration lives in the client core
+      // (JoinVoiceNetwork); the presenter only supplies the persisted prefs.
       const prefs = loadVoicePrefs();
-      await bridge("voice.input_mode", { mode: prefs.mode, threshold_dbfs: prefs.threshold_dbfs, hangover_ms: prefs.hangover_ms });
-      await bridge("voice.join");
+      await bridge("voice.join_network", { network_id: room.vpn_namespace, mode: prefs.mode, threshold_dbfs: prefs.threshold_dbfs, hangover_ms: prefs.hangover_ms });
       await refreshSnapshot();
     } catch (e) { setError(String(e)); } finally { setBusy(false); setConnectingRoomID(""); }
   }
@@ -309,7 +300,7 @@ export default function App() {
             onCopy={(text, label) => void copyText(text, label)} />
         : connecting
           ? <div className="participants"><div className="empty-state"><div className="pulse-ring connecting">◖</div><h3>正在连接语音…</h3></div></div>
-          : <VoiceStage snapshot={snapshot} />}
+          : <VoiceStage snapshot={snapshot} selfName={auth.profile?.user?.display_name} />}
       {(inVoice || connecting || !showChat) && <CallBar snapshot={snapshot} busy={busy} shortcut={PTT_SHORTCUT}
         onLeave={() => void leaveVoice()} refresh={refreshSnapshot} onError={setError} />}
     </section>

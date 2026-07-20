@@ -2,9 +2,17 @@ import type { Snapshot } from "../bridge";
 import { voiceQuality } from "../quality";
 import SignalBars from "./SignalBars";
 
-export default function VoiceStage({ snapshot }: { snapshot: Snapshot }) {
+export default function VoiceStage({ snapshot, selfName }: { snapshot: Snapshot; selfName?: string }) {
   const participants = snapshot.voice?.participants ?? [];
+  const voice = snapshot.voice;
   return <div className="participants">
+    {voice?.joined && <article className={voice.local_speaking && !voice.muted ? "participant speaking" : "participant"}>
+      <div className="participant-avatar">{(selfName || "我").slice(0, 1).toUpperCase()}</div>
+      <div className="participant-info">
+        <strong>{selfName ? `${selfName}（你）` : "你"}</strong>
+        <span>{voice.muted ? "已静音" : voice.local_speaking ? "说话中" : ""}</span>
+      </div>
+    </article>}
     {participants.map((participant) => {
       const peer = snapshot.peers?.find((p) => p.public_key === participant.public_key);
       const quality = voiceQuality(peer?.latency_ms ?? NaN, participant.loss_percent, participant.jitter_ms);
