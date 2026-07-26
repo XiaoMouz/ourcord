@@ -17,6 +17,10 @@ command -v gh >/dev/null 2>&1 || {
   echo "gh is required to sync the private release asset" >&2
   exit 1
 }
+command -v node >/dev/null 2>&1 || {
+  echo "Node.js is required to normalize the updater manifest" >&2
+  exit 1
+}
 
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT
@@ -34,6 +38,10 @@ if [[ -z "$release_installer" || "$release_installer" == "null" ]]; then
 fi
 
 mkdir -p "$output_dir"
+rm -f \
+  "$output_dir"/*.exe \
+  "$output_dir"/*.exe.sig \
+  "$output_dir/latest.json"
 gh release download "$tag" \
   --repo "$repo" \
   --pattern "$release_installer" \
