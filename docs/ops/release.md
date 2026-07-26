@@ -33,8 +33,12 @@ the same steps can be run locally with the `pnpm` scripts below.
    `JWT_SECRET` is the shared control↔service HMAC (never call it
    `CONTROL_INTERNAL_SECRET`). `SERVICE_INTERNAL_TOKEN` gates the signed
    control→service internal calls.
-3. In GitHub repo settings add secrets `CLOUDFLARE_API_TOKEN` (Workers + D1 edit
-   scope) and, if the token isn't account-scoped, `CLOUDFLARE_ACCOUNT_ID`.
+3. In GitHub repo settings add secrets `CLOUDFLARE_API_TOKEN` and
+   `CLOUDFLARE_ACCOUNT_ID`. Use Cloudflare's **Edit Cloudflare Workers**
+   token template, scoped only to the production account/zone. The Deploy
+   workflow uses it for control/service; the Desktop public beta workflow uses
+   it to publish the newly built installer and updater manifest to
+   `ourcord.mou.best`.
 
 ## Deploy
 
@@ -58,6 +62,22 @@ publisher is unverified, but the updater signature still protects downloaded
 updates. Set the variable to `true` and provision the documented Azure secrets
 and variables when a trusted publisher certificate is available.
 
+The **Desktop public beta** workflow is also the single publication pipeline:
+
+1. build the Windows x64 NSIS installer and Tauri updater signature;
+2. update the private `desktop-beta` GitHub Release;
+3. pass the exact installer to the website job as a short-lived Actions
+   artifact;
+4. publish it at the stable
+   `https://ourcord.mou.best/downloads/OurCord-Windows-x64-setup.exe` URL,
+   alongside `latest.json`;
+5. download the public installer again and require its SHA-256 to match the
+   Windows build before the workflow can turn green.
+
+The stable website filename intentionally does not contain the app version.
+Versioned filenames remain in the GitHub Release, while the homepage and
+Tauri updater always follow the latest successfully deployed beta.
+
 `pnpm run migrate` applies any un-applied migrations in `migrations/`. Recent
 schema changes that ship this way: service `0004_internal_nonces` (replay guard)
 and control `0006_peer_connectivity_flap` (path-flap columns) — both must be
@@ -66,6 +86,9 @@ applied before their new code runs.
 ## Verify after deploy
 
 - `curl https://<control>/` and `https://<service>/` return healthy.
+- A successful Desktop public beta run shows both `windows-x64` and
+  `Publish installer to website` green; the homepage download and
+  `/downloads/latest.json` must resolve without GitHub authentication.
 - `npx wrangler d1 migrations list ourcord-service --remote` shows `0004…`
   applied; `ourcord-control` shows `0006…` applied.
 - Smoke a device enroll → exchange → `/api/peers/config` round-trip, and a

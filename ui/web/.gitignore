@@ -40,4 +40,4 @@ next-env.d.ts
 /.wrangler/
 /outputs/
 /work/
-/public/downloads/*.exe
+/public/downloads/*
