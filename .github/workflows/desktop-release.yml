@@ -251,13 +251,13 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: pnpm tauri build --no-bundle --config src-tauri/tauri.release.conf.json
-      - name: Bundle DMG and updater artifacts
+      - name: Bundle app, DMG and updater artifacts
         working-directory: ui/desktop
         env:
           CI: "true"
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: pnpm tauri bundle --bundles dmg --config src-tauri/tauri.release.conf.json
+        run: pnpm tauri bundle --bundles app,dmg --config src-tauri/tauri.release.conf.json
       - name: Verify and stage macOS artifacts
         run: |
           set -euo pipefail

@@ -28,6 +28,7 @@ test("desktop release hands the installer to the website deployment", () => {
   assert.match(workflow, /name:\s*website-downloads/);
   assert.match(workflow, /needs:\s*\[windows-x64, macos-arm64\]/);
   assert.match(workflow, /runs-on:\s*macos-15/);
+  assert.match(workflow, /tauri bundle --bundles app,dmg/);
   assert.match(workflow, /actions\/upload-artifact@/);
   assert.match(workflow, /actions\/download-artifact@/);
   assert.match(workflow, /wrangler deploy --config wrangler\.apex\.jsonc/);
