@@ -4,6 +4,8 @@ import test from "node:test";
 
 const installerAsset = readFileSync(new URL("../app/release.ts", import.meta.url), "utf8")
   .match(/^export const installerAsset = "(.+)";$/m)?.[1];
+const macInstallerAsset = readFileSync(new URL("../app/release.ts", import.meta.url), "utf8")
+  .match(/^export const macInstallerAsset = "(.+)";$/m)?.[1];
 
 async function render() {
   const workerUrl = new URL("../dist/server/index.js", import.meta.url);
@@ -21,12 +23,15 @@ test("server-renders the OurCord download landing page", async () => {
   assert.equal(response.status, 200);
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
   const html = await response.text();
-  assert.match(html, /<title>OurCord — 朋友在线，数据在你手里<\/title>/i);
-  assert.match(html, /朋友在线/);
-  assert.match(html, /下载 Windows Beta/);
+  assert.match(html, /<title>OurCord<\/title>/i);
+  assert.doesNotMatch(html, /朋友在线|数据在你手里/);
+  assert.match(html, /下载 x64 安装包/);
+  assert.match(html, /下载 Apple Silicon 测试版/);
   assert.ok(installerAsset, "installerAsset extracted from app/release.ts");
+  assert.ok(macInstallerAsset, "macInstallerAsset extracted from app/release.ts");
   assert.ok(html.includes(`/downloads/${installerAsset}`), "download link uses installerAsset");
-  assert.match(html, /当前安装包未签名/);
+  assert.ok(html.includes(`/downloads/${macInstallerAsset}`), "download link uses macInstallerAsset");
+  assert.match(html, /Apple 公证/);
   assert.doesNotMatch(html, /codex-preview|react-loading-skeleton|Your site is taking shape/);
 });
 

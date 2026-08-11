@@ -54,8 +54,8 @@ Manual equivalent (service first):
 
 ## Desktop beta signing
 
-The desktop beta workflow always signs updater artifacts with the Tauri updater
-key. Windows Authenticode signing is optional: leave the repository variable
+The desktop beta workflow always signs Windows and macOS updater artifacts with
+the Tauri updater key. Windows Authenticode signing is optional: leave the repository variable
 `ENABLE_AZURE_SIGNING` unset (or set it to anything other than `true`) for an
 unsigned beta installer. Windows SmartScreen will warn users because the
 publisher is unverified, but the updater signature still protects downloaded
@@ -64,15 +64,28 @@ and variables when a trusted publisher certificate is available.
 
 The **Desktop public beta** workflow is also the single publication pipeline:
 
-1. build the Windows x64 NSIS installer and Tauri updater signature;
-2. update the private `desktop-beta` GitHub Release;
-3. pass the exact installer to the website job as a short-lived Actions
-   artifact;
-4. publish it at the stable
-   `https://ourcord.mou.best/downloads/OurCord-Windows-x64-setup.exe` URL,
-   alongside `latest.json`;
-5. download the public installer again and require its SHA-256 to match the
-   Windows build before the workflow can turn green.
+1. build the Windows x64 NSIS installer and Apple Silicon macOS DMG;
+2. sign both Tauri updater payloads and merge their entries into `latest.json`;
+3. update the private `desktop-beta` GitHub Release;
+4. pass the exact installers to the website job as short-lived Actions
+   artifacts;
+5. publish them at stable `ourcord.mou.best/downloads/` URLs;
+6. download both public installers again and require their SHA-256 values to
+   match the platform builds before the workflow can turn green.
+
+The same workflow builds an Apple Silicon DMG on `macos-15`, ad-hoc signs the
+application bundle, and publishes both the DMG and the signed
+`darwin-aarch64` updater archive. It is intentionally not Apple-notarized yet,
+so Gatekeeper displays an unidentified-developer warning. This first macOS beta
+is for UI, account, and chat testing: the privileged launchd daemon/helper is
+not bundled yet, so VPN and media networking still require a manually installed
+daemon.
+
+Stable public artifacts are:
+
+- `OurCord-Windows-x64-setup.exe`
+- `OurCord-macOS-arm64.dmg`
+- `OurCord-macOS-arm64.app.tar.gz` (updater payload)
 
 The stable website filename intentionally does not contain the app version.
 Versioned filenames remain in the GitHub Release, while the homepage and
@@ -86,8 +99,8 @@ applied before their new code runs.
 ## Verify after deploy
 
 - `curl https://<control>/` and `https://<service>/` return healthy.
-- A successful Desktop public beta run shows both `windows-x64` and
-  `Publish installer to website` green; the homepage download and
+- A successful Desktop public beta run shows `windows-x64`, `macos-arm64`, and
+  `Publish installer to website` green; both homepage downloads and
   `/downloads/latest.json` must resolve without GitHub authentication.
 - `npx wrangler d1 migrations list ourcord-service --remote` shows `0004…`
   applied; `ourcord-control` shows `0006…` applied.

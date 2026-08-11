@@ -14,18 +14,18 @@ export async function generateMetadata(): Promise<Metadata> {
 
   return {
     metadataBase,
-    title: "OurCord — 朋友在线，数据在你手里",
-    description: "OurCord — 朋友在线，数据在你手里。",
+    title: "OurCord",
+    description: "OurCord desktop beta downloads.",
     openGraph: {
-      title: "OurCord — 朋友在线，数据在你手里",
-      description: "OurCord — 朋友在线，数据在你手里。",
+      title: "OurCord",
+      description: "OurCord desktop beta downloads.",
       type: "website",
       images: [{ url: "/og.png", width: 1536, height: 1024, alt: "OurCord" }],
     },
     twitter: {
       card: "summary_large_image",
-      title: "OurCord — 朋友在线，数据在你手里",
-      description: "OurCord — 朋友在线，数据在你手里。",
+      title: "OurCord",
+      description: "OurCord desktop beta downloads.",
       images: ["/og.png"],
     },
   };

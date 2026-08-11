@@ -1,51 +1,45 @@
-import { releaseUrl } from "./release";
+import { macReleaseUrl, windowsReleaseUrl } from "./release";
 
 export default function Home() {
   return (
     <main className="landing">
-      <div className="ambient ambientOne" aria-hidden="true" />
-      <div className="ambient ambientTwo" aria-hidden="true" />
+      <div className="metalGrain" aria-hidden="true" />
 
       <header className="brandBar">
-        <a className="brand" href="/" aria-label="OurCord 首页">
-          <span className="brandMark" aria-hidden="true">
-            <span />
-            <span />
-            <span />
-          </span>
-          <span>OurCord</span>
-        </a>
-        <span className="betaPill">PUBLIC BETA</span>
+        <a className="brand" href="/" aria-label="OurCord 首页">OurCord</a>
+        <span className="buildLabel">PUBLIC BETA</span>
       </header>
 
-      <section className="hero">
-        <div className="copy">
-          <h1>朋友在线，<br />数据在你手里。</h1>
+      <section className="downloadHero" aria-labelledby="product-name">
+        <h1 id="product-name">OurCord</h1>
 
-          <div className="actions">
-            <a className="downloadButton" href={releaseUrl} download>
-              <span className="windowsMark" aria-hidden="true"><i /><i /><i /><i /></span>
-              <span><strong>下载 Windows Beta</strong><small>Windows 10 / 11 · x64</small></span>
-              <span className="arrow" aria-hidden="true">↗</span>
-            </a>
-          </div>
+        <div className="metalRule" aria-hidden="true"><span /></div>
 
-          <p className="notice">当前安装包未签名，Windows 会显示“未知发布者”提示。</p>
+        <div className="downloads" aria-label="客户端下载">
+          <a className="downloadCard" href={windowsReleaseUrl} download>
+            <span className="platform">Windows</span>
+            <strong>下载 x64 安装包</strong>
+            <small>Windows 10 / 11</small>
+            <span className="downloadArrow" aria-hidden="true">&#8595;</span>
+          </a>
+
+          <a className="downloadCard" href={macReleaseUrl} download>
+            <span className="platform">macOS</span>
+            <strong>下载 Apple Silicon 测试版</strong>
+            <small>macOS 12+ · UI / 账户测试</small>
+            <span className="downloadArrow" aria-hidden="true">&#8595;</span>
+          </a>
         </div>
 
-        <div className="network" aria-hidden="true">
-          <div className="networkGlow" />
-          <div className="orbit orbitOne" />
-          <div className="orbit orbitTwo" />
-          <div className="link linkOne" />
-          <div className="link linkTwo" />
-          <div className="link linkThree" />
-          <div className="node nodeMain"><span>O</span><em>you</em></div>
-          <div className="node nodeA"><span>A</span></div>
-          <div className="node nodeB"><span>B</span></div>
-          <div className="node nodeC"><span>C</span></div>
-        </div>
+        <p className="releaseNote">
+          测试版暂未经过平台商店签名或 Apple 公证，首次打开会显示安全提示。
+        </p>
       </section>
+
+      <footer className="landingFooter">
+        <span>OURCORD / DESKTOP</span>
+        <span>2026</span>
+      </footer>
     </main>
   );
 }

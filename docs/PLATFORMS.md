@@ -197,6 +197,10 @@ pass quick on utun0
 
 无差异——都走同一条 `utun` 路径，`wireguard-go` 已编译两架构。`ifconfig <utunN> inet <addr> <addr>`、`route -n add -inet6 ...`、`route -n add -inet -host ...` 命令完全一致（见 `addr_darwin.go`）。
 
+当前公开测试包只提供 Apple Silicon DMG，覆盖 UI、账户与聊天测试。应用包使用
+ad-hoc 签名、尚未 Apple notarize，首次打开会出现 Gatekeeper 提示。该 DMG 暂不捆绑
+需要 root 权限的 `ourcordd`；完整 VPN/语音链路测试仍需按本节手动安装 daemon。
+
 ---
 
 ## 4. Windows
@@ -285,7 +289,7 @@ netsh advfirewall firewall add rule name="OurCord daemon" dir=in action=allow pr
 
 ## 7. Known gaps
 
-- **macOS launchd helper 一键安装**：当前需手动 `sudo` 启动或自行写 plist；`SMJobBless` 集成仍待做。
+- **macOS launchd helper 一键安装**：Apple Silicon UI/账户测试 DMG 已由发布流水线生成；当前仍需手动 `sudo` 启动 daemon 或自行写 plist，`SMJobBless` 集成仍待做。
 - **Windows 发布验收**：NSIS 安装器、SCM 服务包装、Azure Artifact Signing 与 Tauri updater 流水线已实现，但仍需在配置 Azure/GitHub secrets 后完成签名产物和真机安装/升级验收。
 - **账户隔离**：当前 Windows daemon enrollment profile 是机器级单账户；同机多 Windows SID 并行使用不同 OurCord 账户尚未实现。
 - **其他平台自动更新**：当前 updater 发布流水线仅覆盖 Windows beta channel。
