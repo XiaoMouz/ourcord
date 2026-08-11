@@ -11,9 +11,8 @@ export default function Login({ busy, notice, error, loginURLs, onMagic }: {
   const [email, setEmail] = useState("");
   return <main className="login-shell">
     <section className="login-card">
-      <div className="brand"><div className="brand-mark">O</div><div><h1>OurCord</h1><p>属于你们的小群体网络</p></div></div>
+      <div className="brand"><div className="brand-mark">O</div><h1>OurCord</h1></div>
       <h2>欢迎回来</h2>
-      <p className="muted">使用邮箱链接或已有账号继续。令牌只会保存在系统凭据库中。</p>
       <label>邮箱地址<input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@example.com" onKeyDown={(e) => e.key === "Enter" && onMagic(email)} /></label>
       <button className="primary" disabled={busy || !email.includes("@")} onClick={() => onMagic(email)}>发送 Magic Link</button>
       <div className="divider"><span>或</span></div>
@@ -26,7 +25,6 @@ export default function Login({ busy, notice, error, loginURLs, onMagic }: {
     </section>
     <aside className="login-art">
       <div className="mesh"><i/><i/><i/><i/></div>
-      <h2>朋友在线，数据在你手里。</h2>
     </aside>
   </main>;
 }
