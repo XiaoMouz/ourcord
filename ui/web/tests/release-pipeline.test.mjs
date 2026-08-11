@@ -58,5 +58,6 @@ test("deployment verifies the public installer checksum", () => {
   assert.match(workflow, /sha256sum "\$file"/);
   assert.match(workflow, /sha256sum "\$downloaded"/);
   assert.match(workflow, /installer checksum mismatch/);
+  assert.match(workflow, /website metadata did not propagate/);
   assert.match(workflow, /OurCord-macOS-arm64\.dmg/);
 });

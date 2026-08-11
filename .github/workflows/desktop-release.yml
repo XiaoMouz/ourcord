@@ -448,17 +448,31 @@ jobs:
             public/downloads/OurCord-macOS-arm64.app.tar.gz \
             https://ourcord.mou.best/downloads/OurCord-macOS-arm64.app.tar.gz
 
-          curl --fail --silent --show-error \
-            "https://ourcord.mou.best/downloads/latest.json" |
-            jq -e \
-              '.platforms["windows-x86_64"].url ==
-                 "https://ourcord.mou.best/downloads/OurCord-Windows-x64-setup.exe" and
-               .platforms["darwin-aarch64"].url ==
-                 "https://ourcord.mou.best/downloads/OurCord-macOS-arm64.app.tar.gz"' \
-              >/dev/null
-          homepage="$(curl --fail --silent --show-error https://ourcord.mou.best/)"
-          grep --fixed-strings "/downloads/OurCord-Windows-x64-setup.exe" <<<"$homepage" >/dev/null
-          grep --fixed-strings "/downloads/OurCord-macOS-arm64.dmg" <<<"$homepage" >/dev/null
+          verify_metadata() {
+            local manifest homepage
+            for attempt in $(seq 1 12); do
+              if manifest="$(curl --fail --silent --show-error \
+                   https://ourcord.mou.best/downloads/latest.json)" &&
+                 jq -e \
+                   '.platforms["windows-x86_64"].url ==
+                      "https://ourcord.mou.best/downloads/OurCord-Windows-x64-setup.exe" and
+                    .platforms["darwin-aarch64"].url ==
+                      "https://ourcord.mou.best/downloads/OurCord-macOS-arm64.app.tar.gz"' \
+                   <<<"$manifest" >/dev/null &&
+                 homepage="$(curl --fail --silent --show-error https://ourcord.mou.best/)" &&
+                 grep --fixed-strings "/downloads/OurCord-Windows-x64-setup.exe" \
+                   <<<"$homepage" >/dev/null &&
+                 grep --fixed-strings "/downloads/OurCord-macOS-arm64.dmg" \
+                   <<<"$homepage" >/dev/null; then
+                return 0
+              fi
+              sleep 10
+            done
+            echo "::error::website metadata did not propagate after deployment"
+            exit 1
+          }
+
+          verify_metadata
       - name: Publish combined updater manifest to GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
