@@ -3,6 +3,7 @@ import type { LobbyEntry, Member, Room, Snapshot } from "../bridge";
 import { Spinner } from "./Skeleton";
 import VoiceStatusBar from "./VoiceStatusBar";
 import ContextMenu, { type MenuItem } from "./ContextMenu";
+import { IconButton, InitialAvatar, Tooltip, cx } from "./ui";
 
 const ROLE_LABELS: Record<string, string> = { owner: "所有者", admin: "管理员", guest: "访客" };
 
@@ -61,54 +62,61 @@ export default function RoomPanel({ lobby, members, membersLoading, getName, sel
   function roomRow(room: Room, icon: string) {
     const live = room.type === "voice" && snapshot.voice?.joined && snapshot.status?.network_id === room.vpn_namespace;
     const connecting = room.id === connectingRoomID;
-    const className = selectedRoomID === room.id ? "room active" : "room";
-    return <div key={room.id} className={busy ? className + " disabled" : className} role="button" tabIndex={0}
-      onClick={() => !busy && onSelectRoom(room)} onContextMenu={(e) => openRoomMenu(e, room)}
-      onKeyDown={(e) => e.key === "Enter" && !busy && onSelectRoom(room)}>
-      <span className="room-icon">{icon}</span>
-      <span className="room-name">{room.name}</span>
-      {connecting && <span className="room-status"><Spinner /></span>}
-      {live && !connecting && <span className="live-dot"/>}
-      {canManage && <span className="manage">
-        <button title="重命名" onClick={(e) => { e.stopPropagation(); onRenameRoom(room); }}>✎</button>
-        <button title="删除房间" onClick={(e) => { e.stopPropagation(); onDeleteRoom(room); }}>×</button>
-      </span>}
-    </div>;
+    return <li key={room.id}>
+      <div className={cx("group flex min-w-0 items-center gap-2", selectedRoomID === room.id && "menu-active", busy && "pointer-events-none opacity-50")}
+        role="button" tabIndex={0} onClick={() => !busy && onSelectRoom(room)} onContextMenu={(e) => openRoomMenu(e, room)}
+        onKeyDown={(e) => e.key === "Enter" && !busy && onSelectRoom(room)}>
+        <span className="w-4 shrink-0 text-center text-base-content/45">{icon}</span>
+        <span className="min-w-0 flex-1 truncate">{room.name}</span>
+        {connecting && <Spinner />}
+        {live && !connecting && <Tooltip label="已加入"><span className="status status-success status-sm" /></Tooltip>}
+        {canManage && <span className="hidden shrink-0 items-center group-hover:flex">
+          <IconButton label="重命名房间" className="btn-xs" onClick={(e) => { e.stopPropagation(); onRenameRoom(room); }}>✎</IconButton>
+          <IconButton label="删除房间" className="btn-xs text-error" onClick={(e) => { e.stopPropagation(); onDeleteRoom(room); }}>×</IconButton>
+        </span>}
+      </div>
+    </li>;
   }
 
-  return <aside className="room-panel">
-    <header>
-      <div><span className="eyebrow">大厅</span><h2>{lobby?.lobby.name ?? "创建一个大厅"}</h2></div>
-      {lobby && canManage && <button className="icon-button" onClick={onInvite}>邀请</button>}
+  return <aside className="flex min-w-0 flex-col border-r border-base-300 bg-base-100">
+    <header className="navbar min-h-16 border-b border-base-300 px-4">
+      <div className="min-w-0 flex-1"><h2 className="truncate font-semibold">{lobby?.lobby.name ?? "OurCord"}</h2></div>
+      {lobby && canManage && <button className="btn btn-ghost btn-sm" onClick={onInvite}>邀请</button>}
     </header>
-    <div className="room-scroll">
-      <div className="section-title"><span>文字房间</span>{lobby && canManage && <button title="新建文字房间" onClick={() => onCreateRoom("text")}>＋</button>}</div>
-      <div className="room-list">
+    <div className="min-h-0 flex-1 overflow-y-auto px-2 py-3">
+      <div className="flex h-8 items-center justify-between px-2 text-xs font-semibold uppercase tracking-wide text-base-content/45">
+        <span>文字房间</span>{lobby && canManage && <IconButton label="新建文字房间" className="btn-xs" onClick={() => onCreateRoom("text")}>＋</IconButton>}
+      </div>
+      <ul className="menu menu-sm w-full p-0">
         {textRooms.map((room) => roomRow(room, "#"))}
-        {textRooms.length === 0 && <p className="empty">还没有文字房间</p>}
+        {textRooms.length === 0 && <li className="px-3 py-2 text-xs text-base-content/40">暂无房间</li>}
+      </ul>
+      <div className="mt-3 flex h-8 items-center justify-between px-2 text-xs font-semibold uppercase tracking-wide text-base-content/45">
+        <span>语音房间</span>{lobby && canManage && <IconButton label="新建语音房间" className="btn-xs" onClick={() => onCreateRoom("voice")}>＋</IconButton>}
       </div>
-      <div className="section-title"><span>语音房间</span>{lobby && canManage && <button title="新建语音房间" onClick={() => onCreateRoom("voice")}>＋</button>}</div>
-      <div className="room-list">
+      <ul className="menu menu-sm w-full p-0">
         {voiceRooms.map((room) => roomRow(room, "◖"))}
-        {voiceRooms.length === 0 && <p className="empty">还没有语音房间</p>}
+        {voiceRooms.length === 0 && <li className="px-3 py-2 text-xs text-base-content/40">暂无房间</li>}
+      </ul>
+      <div className="mt-3 flex h-8 items-center px-2 text-xs font-semibold uppercase tracking-wide text-base-content/45">
+        成员{membersLoading ? "" : ` · ${members.length}`}
       </div>
-      <div className="section-title"><span>成员{membersLoading ? "" : ` · ${members.length}`}</span></div>
-      <div className="member-list">
+      <ul className="list">
         {membersLoading && members.length === 0
-          ? [0, 1, 2].map((i) => <div key={i} className="member"><div className="member-avatar skeleton-block" /><span className="skeleton-line" style={{ width: `${40 + i * 12}%` }} /></div>)
-          : members.map((member) => <div key={member.user_id} className="member" onContextMenu={(e) => openMemberMenu(e, member)}>
-              <div className="member-avatar">{getName(member.user_id).slice(0, 1).toUpperCase()}</div>
-              <span className="member-name">{getName(member.user_id)}</span>
-              {member.role !== "member" && <em>{ROLE_LABELS[member.role] ?? member.role}</em>}
-            </div>)}
-      </div>
+          ? [0, 1, 2].map((i) => <li key={i} className="list-row items-center px-2 py-2"><div className="skeleton h-7 w-7 rounded-full" /><div className="skeleton h-3" style={{ width: `${40 + i * 12}%` }} /></li>)
+          : members.map((member) => <li key={member.user_id} className="list-row items-center px-2 py-2" onContextMenu={(e) => openMemberMenu(e, member)}>
+              <InitialAvatar name={getName(member.user_id)} size="sm" />
+              <span className="min-w-0 flex-1 truncate text-sm">{getName(member.user_id)}</span>
+              {member.role !== "member" && <span className="badge badge-ghost badge-xs">{ROLE_LABELS[member.role] ?? member.role}</span>}
+            </li>)}
+      </ul>
     </div>
     <VoiceStatusBar snapshot={snapshot} connecting={!!connectingRoomID && !snapshot.voice?.joined}
       busy={busy} onLeave={onLeaveVoice} refresh={refreshSnapshot} onError={onError} />
-    <footer className="account">
-      <div className="avatar">{accountName?.slice(0, 1).toUpperCase() ?? "U"}</div>
-      <div><strong>{accountName ?? "OurCord 用户"}</strong><small>{snapshot.daemon_available ? "daemon 已连接" : "daemon 离线"}</small></div>
-      <button title="设置" onClick={onOpenSettings}>⚙</button>
+    <footer className="flex items-center gap-3 border-t border-base-300 bg-base-200 px-3 py-3">
+      <InitialAvatar name={accountName ?? "OurCord 用户"} size="sm" online={snapshot.daemon_available} />
+      <div className="min-w-0 flex-1"><strong className="block truncate text-sm">{accountName ?? "OurCord 用户"}</strong><small className="block text-xs text-base-content/45">{snapshot.daemon_available ? "后台服务在线" : "后台服务离线"}</small></div>
+      <IconButton label="设置" onClick={onOpenSettings}>⚙</IconButton>
     </footer>
     {menu && <ContextMenu x={menu.x} y={menu.y} items={menu.items} onClose={() => setMenu(null)} />}
   </aside>;

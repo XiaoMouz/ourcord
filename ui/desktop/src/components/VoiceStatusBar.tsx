@@ -1,6 +1,7 @@
 import { bridge, type Snapshot } from "../bridge";
 import { connectionLabel, meanPeerLatency, pathLabel, voiceQuality } from "../quality";
 import SignalBars from "./SignalBars";
+import { IconButton, cx } from "./ui";
 
 // Persistent voice panel (Discord's bottom-left status). Shows connection
 // state + representative ping + path, with quick mute/disconnect, and stays
@@ -27,20 +28,24 @@ export default function VoiceStatusBar({ snapshot, connecting, busy, onLeave, re
     catch (e) { onError(String(e)); }
   }
 
-  return <div className={connecting ? "voice-status connecting" : "voice-status"}>
-    <div className="voice-status-head">
+  return <div className={cx("card card-border mx-3 mb-3 bg-base-200", connecting && "border-primary/40")}>
+    <div className="card-body gap-3 p-3">
+    <div className="flex items-center gap-3">
       <SignalBars quality={quality} />
-      <div className="voice-status-text">
-        <strong>{label}</strong>
-        <small>{connecting ? "协商路径中" : `${pathLabel(snapshot.status?.path_summary)}${latency > 0 ? ` · ${latency}ms` : ""}`}</small>
+      <div className="min-w-0 flex-1">
+        <strong className="block truncate text-sm text-success">{label}</strong>
+        <small className="block truncate text-xs text-base-content/50">{connecting ? "协商路径中" : `${pathLabel(snapshot.status?.path_summary)}${latency > 0 ? ` · ${latency}ms` : ""}`}</small>
       </div>
-      <button className="voice-status-hangup" title="断开语音" disabled={busy} onClick={onLeave}>⏻</button>
+      <IconButton label="断开语音" className="btn-error btn-soft" disabled={busy} onClick={onLeave}>⏻</IconButton>
     </div>
-    {joined && <div className="voice-status-actions">
-      <button className={snapshot.voice?.muted ? "active" : ""} onClick={() => void toggleMute()}>
+    {joined && <div className="flex items-center gap-2">
+      <button className={cx("btn btn-sm flex-1", snapshot.voice?.muted && "btn-error btn-soft")} onClick={() => void toggleMute()}>
         {snapshot.voice?.muted ? "已静音" : "静音"}
       </button>
-      <span className={snapshot.voice?.transmitting ? "tx on" : "tx"}>{snapshot.voice?.transmitting ? "发送中" : "空闲"}</span>
+      <span className={cx("badge badge-sm", snapshot.voice?.transmitting ? "badge-success" : "badge-ghost")}>
+        {snapshot.voice?.transmitting ? "发送中" : "空闲"}
+      </span>
     </div>}
+    </div>
   </div>;
 }

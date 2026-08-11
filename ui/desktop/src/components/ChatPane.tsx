@@ -6,6 +6,7 @@ import { formatBytes, parseAttachments } from "../format";
 import { ChatSkeleton, Spinner } from "./Skeleton";
 import ContextMenu, { type MenuItem } from "./ContextMenu";
 import { useDialog } from "../dialog";
+import { EmptyState, IconButton, InitialAvatar, Tooltip, cx } from "./ui";
 
 const PAGE_SIZE = 50;
 const POLL_MS = 3000;
@@ -159,47 +160,55 @@ export default function ChatPane({ room, myUserID, canModerate, getName, ensureN
     setMenu({ x: e.clientX, y: e.clientY, items });
   }
 
-  if (!loaded) return <div className="chat-pane"><ChatSkeleton /><div className="chat-composer" /></div>;
+  if (!loaded) return <div className="flex min-h-0 flex-1 flex-col"><ChatSkeleton /><div className="h-20 shrink-0 border-t border-base-300 bg-base-100" /></div>;
 
-  return <div className="chat-pane">
-    <div className="chat-scroll" ref={listRef} onScroll={onScroll}>
+  return <div className="flex min-h-0 flex-1 flex-col bg-base-200">
+    <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5" ref={listRef} onScroll={onScroll}>
       {!reachedStart && messages.length >= PAGE_SIZE && (
-        <button className="chat-older" disabled={loadingOlder} onClick={() => void loadOlder()}>
-          {loadingOlder ? "加载中…" : "加载更早的消息"}
-        </button>
+        <div className="mb-5 flex justify-center"><button className="btn btn-ghost btn-sm" disabled={loadingOlder} onClick={() => void loadOlder()}>
+          {loadingOlder && <Spinner />}加载更早的消息
+        </button></div>
       )}
-      {messages.length === 0 && <p className="empty">还没有消息，来说点什么吧。</p>}
-      {messages.map((message) => <article key={message.id} className="chat-message" onContextMenu={(e) => openMessageMenu(e, message)}>
-        <div className="chat-avatar">{getName(message.user_id).slice(0, 1).toUpperCase()}</div>
-        <div className="chat-body">
-          <header>
-            <strong>{getName(message.user_id)}</strong>
+      {messages.length === 0 && <div className="h-full"><EmptyState icon="#" title="暂无消息" /></div>}
+      {messages.map((message) => <article key={message.id} className={cx("chat", message.user_id === myUserID ? "chat-end" : "chat-start")} onContextMenu={(e) => openMessageMenu(e, message)}>
+        <div className="chat-image"><InitialAvatar name={getName(message.user_id)} size="sm" /></div>
+        <header className="chat-header mb-1 flex items-center gap-2 text-xs text-base-content/55">
+            <strong className="text-sm text-base-content">{getName(message.user_id)}</strong>
             <time>{formatTime(message.created_at)}</time>
             {(message.user_id === myUserID || canModerate) && (
-              <button className="chat-delete" title="删除消息" onClick={() => void remove(message)}>×</button>
+              <Tooltip label="删除消息"><button className="btn btn-ghost btn-circle btn-xs text-error" onClick={() => void remove(message)}>×</button></Tooltip>
             )}
-          </header>
+        </header>
+        <div className={cx("chat-bubble max-w-xl whitespace-pre-wrap break-words", message.user_id === myUserID ? "chat-bubble-primary" : "bg-base-100 text-base-content")}>
           {message.content && <p>{message.content}</p>}
           {parseAttachments(message.attachments).map((fileID) => {
             const file = files[fileID];
-            return <button key={fileID} className="attachment" disabled={downloading === fileID}
-              title={file ? file.mime_type : "下载附件"} onClick={() => void download(fileID, file?.filename ?? fileID)}>
-              <span className="attachment-icon">📎</span>
-              <span className="attachment-meta">
-                <strong>{file?.filename ?? "附件"}</strong>
-                <small>{file ? formatBytes(file.size_bytes) : "点击下载"}{downloading === fileID ? " · 下载中…" : ""}</small>
-              </span>
-            </button>;
+            return <Tooltip key={fileID} label={file ? file.mime_type : "下载附件"} className="mt-2 block">
+              <button className="card card-border w-full min-w-64 bg-base-200 text-left text-base-content transition hover:bg-base-300" disabled={downloading === fileID}
+                onClick={() => void download(fileID, file?.filename ?? fileID)}>
+                <span className="card-body flex-row items-center gap-3 p-3">
+                  <span className="text-lg">📎</span>
+                  <span className="min-w-0 flex-1">
+                    <strong className="block truncate text-sm">{file?.filename ?? "附件"}</strong>
+                    <small className="block text-xs text-base-content/50">{file ? formatBytes(file.size_bytes) : "点击下载"}</small>
+                  </span>
+                  {downloading === fileID && <Spinner />}
+                </span>
+              </button>
+            </Tooltip>;
           })}
         </div>
       </article>)}
     </div>
-    <form className="chat-composer" onSubmit={(e) => { e.preventDefault(); void send(); }}>
-      <button type="button" className="chat-attach" title="上传附件" disabled={uploading} onClick={() => void attach()}>
+    <form className="flex shrink-0 items-center gap-2 border-t border-base-300 bg-base-100 p-4" onSubmit={(e) => { e.preventDefault(); void send(); }}>
+      <IconButton label="上传附件" className="btn-md" disabled={uploading} onClick={() => void attach()}>
         {uploading ? <Spinner /> : "＋"}
+      </IconButton>
+      <input className="input min-w-0 flex-1" value={draft} onChange={(e) => setDraft(e.target.value)}
+        placeholder={uploading ? "上传中…" : `发送到 #${room.name}`} maxLength={4000} disabled={uploading} />
+      <button className="btn btn-primary" type="submit" disabled={sending || uploading || !draft.trim()}>
+        {sending && <Spinner />}发送
       </button>
-      <input value={draft} onChange={(e) => setDraft(e.target.value)} placeholder={uploading ? "上传中…" : `发送到 #${room.name}`} maxLength={4000} disabled={uploading} />
-      <button type="submit" disabled={sending || uploading || !draft.trim()}>发送</button>
     </form>
     {menu && <ContextMenu x={menu.x} y={menu.y} items={menu.items} onClose={() => setMenu(null)} />}
   </div>;

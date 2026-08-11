@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { bridge, type AudioDevice, type AuthState, type Snapshot } from "../bridge";
 import { loadVoicePrefs, saveVoicePrefs, type VoiceMode } from "../prefs";
+import { ModalHeader } from "./ui";
 
 type DeviceLists = { capture: AudioDevice[]; playback: AudioDevice[] };
 
@@ -74,68 +75,70 @@ export default function SettingsModal({ snapshot, auth, close, refreshSnapshot, 
 
   const deviceUnsupported = !devicesError && devices && devices.capture.length === 0 && devices.playback.length === 0;
 
-  return <div className="modal-backdrop" onMouseDown={(e) => e.target === e.currentTarget && close()}>
-    <section className="settings">
-      <header><div><span className="eyebrow">OurCord</span><h2>设置与诊断</h2></div><button onClick={close}>×</button></header>
-      <div className="settings-grid">
-        <label>输入模式
-          <select value={prefs.mode} onChange={(e) => setPrefs({ ...prefs, mode: e.target.value as VoiceMode })}>
+  return <div className="modal modal-open" onMouseDown={(e) => e.target === e.currentTarget && close()}>
+    <section className="modal-box max-h-[88vh] max-w-2xl overflow-hidden p-0">
+      <ModalHeader title="设置" onClose={close} />
+      <div className="space-y-4 overflow-y-auto p-6" style={{ maxHeight: "calc(88vh - 5rem)" }}>
+        <section className="card card-border bg-base-200"><div className="card-body gap-4 p-5">
+          <h3 className="card-title text-base">语音</h3>
+        <fieldset className="fieldset">
+          <legend className="fieldset-legend">输入模式</legend>
+          <select className="select w-full" value={prefs.mode} onChange={(e) => setPrefs({ ...prefs, mode: e.target.value as VoiceMode })}>
             <option value="voice_activity">语音激活</option>
             <option value="push_to_talk">按键说话</option>
             <option value="open_mic">开放麦</option>
           </select>
-        </label>
-        <label>激活阈值 <strong>{prefs.threshold_dbfs} dBFS</strong>
-          <input type="range" min="-60" max="-20" value={prefs.threshold_dbfs} onChange={(e) => setPrefs({ ...prefs, threshold_dbfs: Number(e.target.value) })}/>
-        </label>
-        <button className="primary" onClick={() => void applyVoice()}>应用语音设置</button>
+        </fieldset>
+        <fieldset className="fieldset">
+          <legend className="fieldset-legend flex justify-between"><span>激活阈值</span><span>{prefs.threshold_dbfs} dBFS</span></legend>
+          <input className="range range-primary range-sm" type="range" min="-60" max="-20" value={prefs.threshold_dbfs} onChange={(e) => setPrefs({ ...prefs, threshold_dbfs: Number(e.target.value) })}/>
+        </fieldset>
+        <div className="card-actions justify-end"><button className="btn btn-primary btn-sm" onClick={() => void applyVoice()}>应用</button></div>
+        </div></section>
 
-        <div className="settings-block">
-          <h3>音频设备</h3>
-          {devicesError && <p className="empty">设备列表不可用：{devicesError}</p>}
-          {deviceUnsupported && <p className="empty">当前构建不支持设备枚举（需要 voice 构建）。</p>}
+        <section className="card card-border bg-base-200"><div className="card-body gap-4 p-5">
+          <h3 className="card-title text-base">音频设备</h3>
+          {devicesError && <div className="alert alert-error alert-soft text-sm"><span>{devicesError}</span></div>}
+          {deviceUnsupported && <div className="alert alert-warning alert-soft text-sm"><span>当前构建不支持设备枚举。</span></div>}
           {devices && !deviceUnsupported && <>
-            <label>输入设备
-              <select value={captureID} onChange={(e) => setCaptureID(e.target.value)}>
+            <fieldset className="fieldset"><legend className="fieldset-legend">输入设备</legend>
+              <select className="select w-full" value={captureID} onChange={(e) => setCaptureID(e.target.value)}>
                 {devices.capture.map((d) => <option key={d.id} value={d.id}>{d.name}{d.is_default ? "（默认）" : ""}</option>)}
               </select>
-            </label>
-            <label>输出设备
-              <select value={playbackID} onChange={(e) => setPlaybackID(e.target.value)}>
+            </fieldset>
+            <fieldset className="fieldset"><legend className="fieldset-legend">输出设备</legend>
+              <select className="select w-full" value={playbackID} onChange={(e) => setPlaybackID(e.target.value)}>
                 {devices.playback.map((d) => <option key={d.id} value={d.id}>{d.name}{d.is_default ? "（默认）" : ""}</option>)}
               </select>
-            </label>
-            <button className="secondary" onClick={() => void applyDevices()}>切换设备</button>
+            </fieldset>
+            <div className="card-actions justify-end"><button className="btn btn-sm" onClick={() => void applyDevices()}>切换设备</button></div>
           </>}
-        </div>
+        </div></section>
 
-        <div className="settings-block">
-          <h3>账号</h3>
-          <label>显示名
-            <input value={name} maxLength={64} onChange={(e) => setName(e.target.value)} placeholder="别人看到的名字" />
-          </label>
-          <button className="secondary" disabled={!name.trim() || name.trim() === auth.profile?.user?.display_name} onClick={() => void saveName()}>保存显示名</button>
-        </div>
+        <section className="card card-border bg-base-200"><div className="card-body gap-4 p-5">
+          <h3 className="card-title text-base">账号</h3>
+          <fieldset className="fieldset"><legend className="fieldset-legend">显示名</legend>
+            <input className="input w-full" value={name} maxLength={64} onChange={(e) => setName(e.target.value)} />
+          </fieldset>
+          <div className="card-actions justify-end"><button className="btn btn-sm" disabled={!name.trim() || name.trim() === auth.profile?.user?.display_name} onClick={() => void saveName()}>保存</button></div>
+        </div></section>
 
-        <div className="diagnostics">
-          <h3>网络诊断</h3>
-          <dl>
-            <div><dt>daemon</dt><dd>{snapshot.daemon_available ? "可用" : "离线"}</dd></div>
-            <div><dt>VPN</dt><dd>{snapshot.status?.vpn_active ? "已连接" : "未连接"}</dd></div>
-            {snapshot.status?.ip4 && <div><dt>VPN IPv4</dt><dd>{snapshot.status.ip4}</dd></div>}
-            <div><dt>路径</dt><dd>{snapshot.status?.path_summary ?? "inactive"}</dd></div>
-            {snapshot.status?.relay_url && <div><dt>中继</dt><dd>{snapshot.status.relay_url}</dd></div>}
-            <div><dt>路径切换</dt><dd>{snapshot.status?.path_flaps_total ?? 0}</dd></div>
-            <div><dt>Peer</dt><dd>{snapshot.peers?.length ?? 0}</dd></div>
-          </dl>
-          <div className="diag-actions">
-            <button className="secondary" onClick={openDiagnostics}>打开连接诊断</button>
-            {snapshot.status?.vpn_active && <button className="secondary" onClick={() => void disconnectVPN()}>断开 VPN</button>}
+        <section className="card card-border bg-base-200"><div className="card-body gap-4 p-5">
+          <h3 className="card-title text-base">网络</h3>
+          <div className="stats stats-vertical bg-base-100 shadow-sm sm:stats-horizontal">
+            <div className="stat px-4 py-3"><div className="stat-title text-xs">后台服务</div><div className="stat-value text-base">{snapshot.daemon_available ? "在线" : "离线"}</div></div>
+            <div className="stat px-4 py-3"><div className="stat-title text-xs">VPN</div><div className="stat-value text-base">{snapshot.status?.vpn_active ? "已连接" : "未连接"}</div></div>
+            <div className="stat px-4 py-3"><div className="stat-title text-xs">Peer</div><div className="stat-value text-base">{snapshot.peers?.length ?? 0}</div></div>
           </div>
-        </div>
+          {snapshot.status?.ip4 && <div className="badge badge-ghost font-mono">{snapshot.status.ip4}</div>}
+          <div className="card-actions justify-end">
+            <button className="btn btn-sm" onClick={openDiagnostics}>连接诊断</button>
+            {snapshot.status?.vpn_active && <button className="btn btn-sm" onClick={() => void disconnectVPN()}>断开 VPN</button>}
+          </div>
+        </div></section>
 
-        {notice && <p className="notice">{notice}</p>}
-        <button className="secondary danger-text" onClick={() => void logout()}>退出账号</button>
+        {notice && <div className="alert alert-success alert-soft text-sm"><span>{notice}</span></div>}
+        <div className="flex justify-end"><button className="btn btn-error btn-soft btn-sm" onClick={() => void logout()}>退出账号</button></div>
       </div>
     </section>
   </div>;

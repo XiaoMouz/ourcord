@@ -17,6 +17,7 @@ import CallBar from "./components/CallBar";
 import SettingsModal from "./components/SettingsModal";
 import DiagnosticsModal from "./components/DiagnosticsModal";
 import { LobbyRailSkeleton, RoomPanelSkeleton, Spinner } from "./components/Skeleton";
+import { EmptyState, IconButton, cx } from "./components/ui";
 
 const PTT_SHORTCUT = "Ctrl+Shift+Space";
 type InviteLink = Extract<OurCordLink, { kind: "invite" }>;
@@ -261,21 +262,25 @@ export default function App() {
     } catch (e) { setError(String(e)); }
   }
 
-  if (auth.loading) return <div className="splash"><div className="brand-mark">O</div><p>正在连接安全客户端…</p></div>;
+  if (auth.loading) return <div className="hero min-h-screen bg-base-300"><div className="flex flex-col items-center gap-4">
+    <div className="avatar avatar-placeholder"><div className="h-16 w-16 rounded-box bg-neutral text-neutral-content"><span className="text-2xl font-semibold">O</span></div></div>
+    <Spinner label="正在启动 OurCord" />
+  </div></div>;
   if (!auth.authenticated) return <Login busy={busy} notice={notice} error={error} loginURLs={loginURLs} onMagic={(email) => void sendMagic(email)} />;
 
-  if (!lobbiesLoaded) return <main className="app-shell">
+  if (!lobbiesLoaded) return <main className="grid h-screen min-w-[800px] grid-cols-[4.5rem_17rem_minmax(0,1fr)] bg-base-300 text-base-content">
     <LobbyRailSkeleton />
     <RoomPanelSkeleton />
-    <section className="voice-stage"><div className="empty-state"><Spinner label="正在载入你的大厅…" /></div></section>
+    <section className="hero bg-base-200"><Spinner label="正在载入大厅" /></section>
   </main>;
 
   const inVoice = !!snapshot.voice?.joined;
   const showChat = selectedRoom?.type === "text";
   const connecting = !!connectingRoomID && !inVoice;
   const stageTitle = selectedRoom ? (showChat ? `#${selectedRoom.name}` : selectedRoom.name) : "选择一个房间";
+  const path = connecting ? "waiting" : snapshot.status?.path_summary ?? "inactive";
 
-  return <main className="app-shell">
+  return <main className="grid h-screen min-w-[800px] grid-cols-[4.5rem_17rem_minmax(0,1fr)] bg-base-300 text-base-content">
     <LobbyRail lobbies={lobbies} activeID={selectedLobby?.lobby.id ?? ""}
       onSelect={(id) => { setSelectedLobbyID(id); setSelectedRoomID(""); }}
       onCreate={() => void promptAction("createLobby")} onJoin={() => void promptAction("joinLobby")} />
@@ -287,19 +292,22 @@ export default function App() {
       onReorderRoom={(room, dir) => void reorderRoom(room, dir)}
       onOpenSettings={() => setSettings(true)} onLeaveVoice={() => void leaveVoice()}
       refreshSnapshot={refreshSnapshot} onError={setError} onCopy={(text, label) => void copyText(text, label)} />
-    <section className="voice-stage">
-      <header className="stage-header">
-        <div><span className="eyebrow">{showChat ? "文字房间" : "语音房间"}</span><h1>{stageTitle}</h1></div>
-        <div className={`path-badge ${connecting ? "waiting" : snapshot.status?.path_summary ?? "inactive"}`}><span/>{connecting ? "连接中" : snapshot.status?.path_summary ?? "inactive"}</div>
+    <section className="relative flex min-w-0 flex-col overflow-hidden bg-base-200">
+      <header className="navbar min-h-16 shrink-0 border-b border-base-300 bg-base-100 px-5">
+        <div className="min-w-0 flex-1"><h1 className="truncate text-lg font-semibold">{stageTitle}</h1></div>
+        <div className={cx("badge badge-sm gap-2", path === "direct" ? "badge-success badge-soft" : path === "derp" || path === "next-hop" ? "badge-warning badge-soft" : path === "waiting" ? "badge-primary badge-soft" : "badge-ghost")}>
+          <span className={cx("status status-xs", path === "direct" ? "status-success" : path === "derp" || path === "next-hop" ? "status-warning" : path === "waiting" ? "status-primary" : "status-neutral")} />
+          {connecting ? "连接中" : path}
+        </div>
       </header>
-      {error && <div className="error-banner">{error}<button onClick={() => setError("")}>×</button></div>}
-      {notice && !error && <div className="notice-banner">{notice}<button onClick={() => setNotice("")}>×</button></div>}
+      {error && <div className="alert alert-error alert-soft m-3 mb-0 shrink-0 py-2 text-sm"><span className="min-w-0 flex-1 break-words">{error}</span><IconButton label="关闭错误" className="btn-xs" onClick={() => setError("")}>×</IconButton></div>}
+      {notice && !error && <div className="alert alert-success alert-soft m-3 mb-0 shrink-0 py-2 text-sm"><span className="min-w-0 flex-1 break-words">{notice}</span><IconButton label="关闭通知" className="btn-xs" onClick={() => setNotice("")}>×</IconButton></div>}
       {showChat && selectedRoom
         ? <ChatPane key={selectedRoom.id} room={selectedRoom} myUserID={myUserID} canModerate={canManage}
             getName={getName} ensureNames={ensureNames} onError={setError} onNotice={setNotice}
             onCopy={(text, label) => void copyText(text, label)} />
         : connecting
-          ? <div className="participants"><div className="empty-state"><div className="pulse-ring connecting">◖</div><h3>正在连接语音…</h3></div></div>
+          ? <div className="flex-1"><EmptyState icon={<span className="loading loading-ring loading-lg" />} title="正在连接语音" /></div>
           : <VoiceStage snapshot={snapshot} selfName={auth.profile?.user?.display_name} />}
       {(inVoice || connecting || !showChat) && <CallBar snapshot={snapshot} busy={busy} shortcut={PTT_SHORTCUT}
         onLeave={() => void leaveVoice()} refresh={refreshSnapshot} onError={setError} />}

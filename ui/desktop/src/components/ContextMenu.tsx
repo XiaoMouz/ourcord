@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { clampMenuPosition } from "../menu";
+import { cx } from "./ui";
 
 export type MenuItem = { label: string; onSelect: () => void; danger?: boolean; disabled?: boolean };
 
@@ -8,7 +9,7 @@ export type MenuItem = { label: string; onSelect: () => void; danger?: boolean; 
 export default function ContextMenu({ x, y, items, onClose }: {
   x: number; y: number; items: MenuItem[]; onClose: () => void;
 }) {
-  const ref = useRef<HTMLDivElement>(null);
+  const ref = useRef<HTMLUListElement>(null);
   const [pos, setPos] = useState({ left: x, top: y });
 
   useLayoutEffect(() => {
@@ -30,10 +31,11 @@ export default function ContextMenu({ x, y, items, onClose }: {
     };
   }, [onClose]);
 
-  return <div className="context-backdrop" onMouseDown={onClose} onContextMenu={(e) => { e.preventDefault(); onClose(); }}>
-    <div ref={ref} className="context-menu" style={{ left: pos.left, top: pos.top }} onMouseDown={(e) => e.stopPropagation()}>
-      {items.map((item, i) => <button key={i} className={item.danger ? "danger" : ""} disabled={item.disabled}
-        onClick={() => { item.onSelect(); onClose(); }}>{item.label}</button>)}
-    </div>
+  return <div className="fixed inset-0 z-50" onMouseDown={onClose} onContextMenu={(e) => { e.preventDefault(); onClose(); }}>
+    <ul ref={ref} className="menu menu-sm fixed w-48 rounded-box border border-base-300 bg-base-100 p-2 shadow-2xl"
+      style={{ left: pos.left, top: pos.top }} onMouseDown={(e) => e.stopPropagation()}>
+      {items.map((item, i) => <li key={i}><button className={cx(item.danger && "text-error")} disabled={item.disabled}
+        onClick={() => { item.onSelect(); onClose(); }}>{item.label}</button></li>)}
+    </ul>
   </div>;
 }

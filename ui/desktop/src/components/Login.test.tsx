@@ -11,6 +11,9 @@ describe("Login", () => {
     expect(html).toContain("OurCord");
     expect(html).toContain("欢迎回来");
     expect(html).toContain("邮箱地址");
+    expect(html).toContain('class="card card-border');
+    expect(html).toContain('class="input');
+    expect(html).toContain('class="btn btn-primary');
     expect(html).not.toContain("朋友在线");
     expect(html).not.toContain("使用邮箱链接或已有账号继续");
     expect(html).not.toContain("系统凭据库");

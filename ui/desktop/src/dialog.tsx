@@ -71,21 +71,21 @@ function DialogHost({ pending, settle }: { pending: Pending; settle: (result: bo
     settle(Object.fromEntries(Object.entries(values).map(([k, v]) => [k, v.trim()])));
   }
 
-  return <div className="modal-backdrop" onMouseDown={(e) => e.target === e.currentTarget && settle(null)}>
-    <section className="dialog" role="dialog" aria-modal="true">
-      <h2>{pending.opts.title}</h2>
-      {pending.kind === "confirm" && pending.opts.message && <p className="dialog-message">{pending.opts.message}</p>}
-      {pending.kind === "prompt" && <form onSubmit={(e) => { e.preventDefault(); submit(); }}>
-        {pending.opts.fields.map((field, index) => <label key={field.name}>{field.label}
-          <input ref={index === 0 ? firstInput : undefined} value={values[field.name] ?? ""}
+  return <div className="modal modal-open" onMouseDown={(e) => e.target === e.currentTarget && settle(null)}>
+    <section className="modal-box" role="dialog" aria-modal="true">
+      <h2 className="text-lg font-semibold">{pending.opts.title}</h2>
+      {pending.kind === "confirm" && pending.opts.message && <p className="mt-3 whitespace-pre-wrap text-sm text-base-content/60">{pending.opts.message}</p>}
+      {pending.kind === "prompt" && <form className="mt-4 space-y-3" onSubmit={(e) => { e.preventDefault(); submit(); }}>
+        {pending.opts.fields.map((field, index) => <fieldset className="fieldset" key={field.name}><legend className="fieldset-legend">{field.label}</legend>
+          <input className="input w-full" ref={index === 0 ? firstInput : undefined} value={values[field.name] ?? ""}
             placeholder={field.placeholder} maxLength={field.maxLength}
             onChange={(e) => setValues((v) => ({ ...v, [field.name]: e.target.value }))} />
-        </label>)}
+        </fieldset>)}
         <button type="submit" hidden />
       </form>}
-      <div className="dialog-actions">
-        <button className="dialog-cancel" onClick={() => settle(null)}>取消</button>
-        <button className={pending.kind === "confirm" && pending.opts.danger ? "dialog-confirm danger" : "dialog-confirm"}
+      <div className="modal-action">
+        <button className="btn" onClick={() => settle(null)}>取消</button>
+        <button className={pending.kind === "confirm" && pending.opts.danger ? "btn btn-error" : "btn btn-primary"}
           disabled={missingRequired} onClick={submit}>
           {pending.kind === "confirm" ? (pending.opts.confirmLabel ?? "确定") : (pending.opts.confirmLabel ?? "确定")}
         </button>

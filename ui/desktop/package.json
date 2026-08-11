@@ -1,7 +1,7 @@
 {
   "name": "@ourcord/desktop",
   "private": true,
-  "version": "0.1.0-beta.3",
+  "version": "0.1.0-beta.4",
   "type": "module",
   "engines": {
     "node": ">=24.0.0 <25"
@@ -9,7 +9,7 @@
   "packageManager": "pnpm@9.15.9",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build",
+    "build": "tsc -b && vite build && node scripts/verify-daisyui-css.mjs",
     "typecheck": "tsc -b --pretty false",
     "test": "vitest run",
     "tauri": "tauri"
@@ -26,11 +26,14 @@
     "react-dom": "19.2.7"
   },
   "devDependencies": {
+    "@tailwindcss/vite": "^4.3.3",
     "@tauri-apps/cli": "2.11.4",
     "@types/node": "^24.0.0",
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
     "@vitejs/plugin-react": "6.0.3",
+    "daisyui": "^5.7.16",
+    "tailwindcss": "^4.3.3",
     "typescript": "6.0.3",
     "vite": "8.1.5",
     "vitest": "4.1.10"
