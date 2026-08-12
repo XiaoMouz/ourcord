@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 const (
@@ -35,7 +36,16 @@ func DefaultSocketPath() string {
 // and authenticates every connection in Accept. A nil secret skips the HMAC
 // handshake (tests); peercred is always enforced.
 func ListenAuthenticated(socketPath string, secret []byte) (net.Listener, error) {
-	os.Remove(socketPath)
+	// Do not unlink a live daemon's socket. This matters for desktop-managed
+	// sidecars after an app crash: a replacement process must reuse the live
+	// daemon instead of orphaning it behind a newly bound socket path.
+	if conn, err := net.DialTimeout("unix", socketPath, 200*time.Millisecond); err == nil {
+		conn.Close()
+		return nil, fmt.Errorf("listen unix %s: daemon already running", socketPath)
+	}
+	if err := os.Remove(socketPath); err != nil && !os.IsNotExist(err) {
+		return nil, fmt.Errorf("remove stale unix socket %s: %w", socketPath, err)
+	}
 	ln, err := net.Listen("unix", socketPath)
 	if err != nil {
 		return nil, fmt.Errorf("listen unix %s: %w", socketPath, err)

@@ -10,6 +10,12 @@ respawned on death). Do not revert to `--once` per-call spawning: the UI polls
 `daemon.snapshot` at 1 Hz, and per-call spawning also leaks request payloads
 (auth codes) into the process command line.
 
+The Apple Silicon bundle also carries `ourcordd` as a managed sidecar. Tauri
+starts it with the app, retries after an unavailable snapshot, and stops the
+owned process when the window exits. It is user-mode only: full utun and route
+setup still requires the separately installed launchd/root helper described in
+`docs/PLATFORMS.md`.
+
 Frontend layout: `src/App.tsx` orchestrates state; `src/components/*` are pure
 presenters; `src/{bridge,prefs,messages,names,quality,format,menu}.ts` hold the
 typed bridge surface and testable logic (voice-pref persistence, message
@@ -32,6 +38,7 @@ pnpm test
 
 # bridge (from repository root)
 (cd daemon && go build -o ../ui/desktop/src-tauri/binaries/ourcord-desktop-bridge ./cmd/ourcord-desktop-bridge)
+(cd daemon && go build -o ../ui/desktop/src-tauri/binaries/ourcordd ./cmd/ourcordd)
 
 # native app (requires Rust and the Tauri Windows prerequisites)
 pnpm tauri dev

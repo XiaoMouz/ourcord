@@ -9,16 +9,45 @@ use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
 
 const ALLOWED_METHODS: &[&str] = &[
-    "auth.begin", "auth.magic", "auth.exchange", "auth.status", "auth.logout",
-    "profile.update", "profiles.lookup", "lobbies.list", "lobbies.create",
-    "lobbies.join", "lobbies.invite", "lobbies.members", "rooms.create",
-    "rooms.update", "rooms.delete", "messages.list", "messages.send",
-    "messages.delete", "files.list", "files.download", "files.upload",
-    "daemon.snapshot", "daemon.profile", "diagnostics.ping",
-    "diagnostics.force_derp", "devices.list", "devices.revoke", "network.connect",
-    "network.disconnect", "network.enter", "network.leave", "voice.join",
-    "voice.leave", "voice.mute", "voice.deafen", "voice.input_mode", "voice.ptt",
-    "voice.devices", "voice.set_devices",
+    "auth.begin",
+    "auth.magic",
+    "auth.exchange",
+    "auth.status",
+    "auth.logout",
+    "profile.update",
+    "profiles.lookup",
+    "lobbies.list",
+    "lobbies.create",
+    "lobbies.join",
+    "lobbies.invite",
+    "lobbies.members",
+    "rooms.create",
+    "rooms.update",
+    "rooms.delete",
+    "messages.list",
+    "messages.send",
+    "messages.delete",
+    "files.list",
+    "files.download",
+    "files.upload",
+    "daemon.snapshot",
+    "daemon.profile",
+    "diagnostics.ping",
+    "diagnostics.force_derp",
+    "devices.list",
+    "devices.revoke",
+    "network.connect",
+    "network.disconnect",
+    "network.enter",
+    "network.leave",
+    "voice.join",
+    "voice.leave",
+    "voice.mute",
+    "voice.deafen",
+    "voice.input_mode",
+    "voice.ptt",
+    "voice.devices",
+    "voice.set_devices",
 ];
 
 // The Go bridge answers every request (even internal panics), so a response
@@ -41,6 +70,36 @@ struct BridgeInner {
 /// which also keeps auth codes out of process command lines.
 #[derive(Default)]
 struct BridgeState(Arc<Mutex<BridgeInner>>);
+
+#[derive(Default)]
+struct DaemonState(Arc<Mutex<Option<CommandChild>>>);
+
+#[cfg(target_os = "macos")]
+fn start_bundled_daemon(
+    app: &AppHandle,
+    state: &Arc<Mutex<Option<CommandChild>>>,
+) -> Result<(), String> {
+    if state.lock().unwrap().is_some() {
+        return Ok(());
+    }
+    let (mut events, child) = app
+        .shell()
+        .sidecar("ourcordd")
+        .map_err(|_| "daemon is not installed".to_string())?
+        .spawn()
+        .map_err(|_| "daemon failed to start".to_string())?;
+    *state.lock().unwrap() = Some(child);
+    let state = Arc::clone(state);
+    tauri::async_runtime::spawn(async move {
+        while let Some(event) = events.recv().await {
+            if matches!(event, CommandEvent::Terminated(_)) {
+                state.lock().unwrap().take();
+                break;
+            }
+        }
+    });
+    Ok(())
+}
 
 fn fail_pending(inner: &mut BridgeInner, reason: &str) {
     for (_, waiter) in inner.pending.drain() {
@@ -169,7 +228,7 @@ async fn bridge_call(
             Ok(result) => result,
             Err(_) => Err(RecvTimeoutError::Disconnected),
         };
-        return match outcome {
+        let result = match outcome {
             Ok(result) => result,
             Err(RecvTimeoutError::Timeout) => {
                 state.lock().unwrap().pending.remove(&id);
@@ -177,6 +236,19 @@ async fn bridge_call(
             }
             Err(RecvTimeoutError::Disconnected) => Err("desktop bridge exited".into()),
         };
+        #[cfg(target_os = "macos")]
+        if method == "daemon.snapshot"
+            && result
+                .as_ref()
+                .ok()
+                .and_then(|value| value.get("daemon_available"))
+                .and_then(Value::as_bool)
+                == Some(false)
+        {
+            let daemon = app.state::<DaemonState>();
+            let _ = start_bundled_daemon(&app, &daemon.0);
+        }
+        return result;
     }
     Err("desktop bridge failed".into())
 }
@@ -185,7 +257,9 @@ async fn bridge_call(
 pub fn run() {
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _, _| {
-            if let Some(window) = app.get_webview_window("main") { let _ = window.set_focus(); }
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.set_focus();
+            }
         }))
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_dialog::init())
@@ -199,6 +273,25 @@ pub fn run() {
     let builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
     builder
         .manage(BridgeState::default())
+        .manage(DaemonState::default())
+        .setup(|app| {
+            #[cfg(target_os = "macos")]
+            {
+                let state = app.state::<DaemonState>();
+                if let Err(error) = start_bundled_daemon(app.handle(), &state.0) {
+                    eprintln!("{error}");
+                }
+            }
+            Ok(())
+        })
+        .on_window_event(|window, event| {
+            #[cfg(target_os = "macos")]
+            if matches!(event, tauri::WindowEvent::Destroyed) {
+                if let Some(child) = window.state::<DaemonState>().0.lock().unwrap().take() {
+                    let _ = child.kill();
+                }
+            }
+        })
         .invoke_handler(tauri::generate_handler![bridge_call])
         .run(tauri::generate_context!())
         .expect("error while running OurCord desktop");

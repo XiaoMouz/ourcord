@@ -238,13 +238,16 @@ jobs:
           };
           fs.writeFileSync("src-tauri/tauri.release.conf.json", JSON.stringify(config));
           NODE
-      - name: Build native bridge
+      - name: Build native sidecars
         run: |
           mkdir -p ui/desktop/src-tauri/binaries
           cd daemon
-          go build \
+          CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" \
             -o ../ui/desktop/src-tauri/binaries/ourcord-desktop-bridge-aarch64-apple-darwin \
             ./cmd/ourcord-desktop-bridge
+          CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" \
+            -o ../ui/desktop/src-tauri/binaries/ourcordd-aarch64-apple-darwin \
+            ./cmd/ourcordd
       - name: Compile application
         working-directory: ui/desktop
         env:
@@ -263,9 +266,12 @@ jobs:
           set -euo pipefail
           dmg="$(find ui/desktop/src-tauri/target/release/bundle/dmg -name '*.dmg' -type f -print -quit)"
           updater="$(find ui/desktop/src-tauri/target/release/bundle/macos -name '*.app.tar.gz' -type f -print -quit)"
+          app="$(find ui/desktop/src-tauri/target/release/bundle/macos -name '*.app' -type d -print -quit)"
           test -s "$dmg" || { echo "::error::DMG not found"; exit 1; }
           test -s "$updater" || { echo "::error::macOS updater archive not found"; exit 1; }
           test -s "$updater.sig" || { echo "::error::macOS updater signature not found"; exit 1; }
+          test -x "$app/Contents/MacOS/ourcord-desktop-bridge" || { echo "::error::macOS bridge sidecar not bundled"; exit 1; }
+          test -x "$app/Contents/MacOS/ourcordd" || { echo "::error::macOS daemon sidecar not bundled"; exit 1; }
           hdiutil verify "$dmg"
 
           max_asset_bytes=$((25 * 1024 * 1024))

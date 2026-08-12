@@ -77,9 +77,10 @@ The same workflow builds an Apple Silicon DMG on `macos-15`, ad-hoc signs the
 application bundle, and publishes both the DMG and the signed
 `darwin-aarch64` updater archive. It is intentionally not Apple-notarized yet,
 so Gatekeeper displays an unidentified-developer warning. This first macOS beta
-is for UI, account, and chat testing: the privileged launchd daemon/helper is
-not bundled yet, so VPN and media networking still require a manually installed
-daemon.
+bundles a user-mode `ourcordd` sidecar so daemon status, enrollment and local
+diagnostics are available without a separate install. The privileged launchd
+helper is not implemented yet, so VPN and media networking still require a
+manually installed root daemon.
 
 Stable public artifacts are:
 

@@ -3,8 +3,10 @@ package ipc
 import (
 	"context"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -23,6 +25,25 @@ func tempSocket(t *testing.T) (string, []byte) {
 		t.Fatal(err)
 	}
 	return filepath.Join(dir, "s"), secret
+}
+
+func TestListenAuthenticatedDoesNotReplaceLiveSocket(t *testing.T) {
+	sock, _ := tempSocket(t)
+	first, err := ListenAuthenticated(sock, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = first.Close() })
+
+	if _, err := ListenAuthenticated(sock, nil); err == nil || !strings.Contains(err.Error(), "already running") {
+		t.Fatalf("second listener error = %v, want already running", err)
+	}
+
+	conn, err := net.Dial("unix", sock)
+	if err != nil {
+		t.Fatalf("original listener was replaced: %v", err)
+	}
+	conn.Close()
 }
 
 // TestAuthenticatedTransportPreservesPipelinedBytes proves the prebuf replay:

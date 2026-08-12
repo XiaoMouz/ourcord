@@ -2,7 +2,7 @@
   "$schema": "https://schema.tauri.app/config/2",
   "bundle": {
     "targets": ["dmg"],
-    "externalBin": ["binaries/ourcord-desktop-bridge"],
+    "externalBin": ["binaries/ourcord-desktop-bridge", "binaries/ourcordd"],
     "resources": [],
     "macOS": {
       "minimumSystemVersion": "12.0",
