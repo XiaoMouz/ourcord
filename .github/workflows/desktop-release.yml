@@ -211,6 +211,8 @@ jobs:
           go-version-file: daemon/go.mod
           cache: true
       - uses: dtolnay/rust-toolchain@stable
+      - name: Install native audio dependencies
+        run: brew install opus opusfile pkg-config
       - name: Install dependencies
         working-directory: ui/desktop
         run: |
@@ -240,14 +242,45 @@ jobs:
           NODE
       - name: Build native sidecars
         run: |
+          set -euo pipefail
           mkdir -p ui/desktop/src-tauri/binaries
           cd daemon
           CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" \
             -o ../ui/desktop/src-tauri/binaries/ourcord-desktop-bridge-aarch64-apple-darwin \
             ./cmd/ourcord-desktop-bridge
-          CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" \
+          CGO_ENABLED=1 go build -tags voice -trimpath -ldflags="-s -w" \
             -o ../ui/desktop/src-tauri/binaries/ourcordd-aarch64-apple-darwin \
             ./cmd/ourcordd
+
+          binaries=../ui/desktop/src-tauri/binaries
+          cp -L "$(brew --prefix opus)/lib/libopus.0.dylib" "$binaries/libopus.0.dylib"
+          cp -L "$(brew --prefix opusfile)/lib/libopusfile.0.dylib" "$binaries/libopusfile.0.dylib"
+          cp -L "$(brew --prefix libogg)/lib/libogg.0.dylib" "$binaries/libogg.0.dylib"
+          chmod u+w "$binaries"/*.dylib
+
+          daemon="$binaries/ourcordd-aarch64-apple-darwin"
+          opus_dep="$(otool -L "$daemon" | awk '/libopus\.0\.dylib/{print $1; exit}')"
+          opusfile_dep="$(otool -L "$daemon" | awk '/libopusfile\.0\.dylib/{print $1; exit}')"
+          ogg_dep="$(otool -L "$binaries/libopusfile.0.dylib" | awk '/libogg\.0\.dylib/{print $1; exit}')"
+          opusfile_opus_dep="$(otool -L "$binaries/libopusfile.0.dylib" | awk '/libopus\.0\.dylib/{print $1; exit}')"
+          test -n "$opus_dep" -a -n "$opusfile_dep" -a -n "$ogg_dep" -a -n "$opusfile_opus_dep"
+
+          install_name_tool \
+            -change "$opus_dep" @executable_path/../Frameworks/libopus.0.dylib \
+            -change "$opusfile_dep" @executable_path/../Frameworks/libopusfile.0.dylib \
+            "$daemon"
+          install_name_tool \
+            -id @rpath/libopusfile.0.dylib \
+            -change "$ogg_dep" @loader_path/libogg.0.dylib \
+            -change "$opusfile_opus_dep" @loader_path/libopus.0.dylib \
+            "$binaries/libopusfile.0.dylib"
+          install_name_tool -id @rpath/libopus.0.dylib "$binaries/libopus.0.dylib"
+          install_name_tool -id @rpath/libogg.0.dylib "$binaries/libogg.0.dylib"
+
+          if otool -L "$daemon" "$binaries"/*.dylib | grep -E '/opt/homebrew|/Cellar'; then
+            echo "::error::macOS audio binaries still reference Homebrew paths"
+            exit 1
+          fi
       - name: Compile application
         working-directory: ui/desktop
         env:
@@ -272,6 +305,17 @@ jobs:
           test -s "$updater.sig" || { echo "::error::macOS updater signature not found"; exit 1; }
           test -x "$app/Contents/MacOS/ourcord-desktop-bridge" || { echo "::error::macOS bridge sidecar not bundled"; exit 1; }
           test -x "$app/Contents/MacOS/ourcordd" || { echo "::error::macOS daemon sidecar not bundled"; exit 1; }
+          for library in libopus.0.dylib libopusfile.0.dylib libogg.0.dylib; do
+            test -s "$app/Contents/Frameworks/$library" || {
+              echo "::error::macOS audio library not bundled: $library"
+              exit 1
+            }
+          done
+          if otool -L "$app/Contents/MacOS/ourcordd" "$app/Contents/Frameworks"/*.dylib \
+            | grep -E '/opt/homebrew|/Cellar'; then
+            echo "::error::bundled macOS audio binaries reference Homebrew paths"
+            exit 1
+          fi
           hdiutil verify "$dmg"
 
           max_asset_bytes=$((25 * 1024 * 1024))

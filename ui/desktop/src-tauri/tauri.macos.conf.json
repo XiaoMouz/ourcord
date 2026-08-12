@@ -6,7 +6,12 @@
     "resources": [],
     "macOS": {
       "minimumSystemVersion": "12.0",
-      "signingIdentity": "-"
+      "signingIdentity": "-",
+      "frameworks": [
+        "binaries/libopus.0.dylib",
+        "binaries/libopusfile.0.dylib",
+        "binaries/libogg.0.dylib"
+      ]
     }
   }
 }

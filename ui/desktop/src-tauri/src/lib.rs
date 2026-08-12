@@ -41,6 +41,7 @@ const ALLOWED_METHODS: &[&str] = &[
     "network.enter",
     "network.leave",
     "voice.join",
+    "voice.join_network",
     "voice.leave",
     "voice.mute",
     "voice.deafen",

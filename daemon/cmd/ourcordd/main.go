@@ -397,7 +397,7 @@ func (d *daemon) HandleIPC(ctx context.Context, req ipc.IPCRequest) ipc.IPCRespo
 	case ipc.CmdVoiceListDevices:
 		capture, playback, supported := media.AudioDevices()
 		if !supported {
-			return ipc.IPCResponse{OK: false, Error: "audio devices require a build with the voice tag"}
+			return ipc.IPCResponse{OK: false, Error: "audio devices unavailable"}
 		}
 		return ipc.IPCResponse{OK: true, Data: toDeviceList(capture, playback)}
 	case ipc.CmdVoiceSetDevices:
