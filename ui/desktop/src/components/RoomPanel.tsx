@@ -1,19 +1,14 @@
 import { useState } from "react";
-import type { LobbyEntry, Member, Room, Snapshot } from "../bridge";
+import type { LobbyEntry, Room, Snapshot } from "../bridge";
 import { Spinner } from "./Skeleton";
 import VoiceStatusBar from "./VoiceStatusBar";
 import ContextMenu, { type MenuItem } from "./ContextMenu";
 import { IconButton, InitialAvatar, Tooltip, cx } from "./ui";
 
-const ROLE_LABELS: Record<string, string> = { owner: "所有者", admin: "管理员", guest: "访客" };
-
 type MenuState = { x: number; y: number; items: MenuItem[] };
 
-export default function RoomPanel({ lobby, members, membersLoading, getName, selectedRoomID, connectingRoomID, snapshot, busy, canManage, accountName, onSelectRoom, onCreateRoom, onInvite, onRenameRoom, onDeleteRoom, onReorderRoom, onOpenSettings, onLeaveVoice, refreshSnapshot, onError, onCopy }: {
+export default function RoomPanel({ lobby, selectedRoomID, connectingRoomID, snapshot, busy, canManage, accountName, onSelectRoom, onCreateRoom, onInvite, onRenameRoom, onDeleteRoom, onReorderRoom, onOpenSettings, onLeaveVoice, refreshSnapshot, onError, onCopy }: {
   lobby?: LobbyEntry;
-  members: Member[];
-  membersLoading: boolean;
-  getName: (userID: string) => string;
   selectedRoomID: string;
   connectingRoomID: string;
   snapshot: Snapshot;
@@ -51,14 +46,6 @@ export default function RoomPanel({ lobby, members, membersLoading, getName, sel
     );
     setMenu({ x: e.clientX, y: e.clientY, items });
   }
-  function openMemberMenu(e: React.MouseEvent, member: Member) {
-    e.preventDefault();
-    setMenu({ x: e.clientX, y: e.clientY, items: [
-      { label: "复制用户 ID", onSelect: () => onCopy(member.user_id, "用户 ID") },
-      { label: "复制显示名", onSelect: () => onCopy(getName(member.user_id), "显示名") },
-    ] });
-  }
-
   function roomRow(room: Room, icon: string) {
     const live = room.type === "voice" && snapshot.voice?.joined && snapshot.status?.network_id === room.vpn_namespace;
     const connecting = room.id === connectingRoomID;
@@ -97,18 +84,6 @@ export default function RoomPanel({ lobby, members, membersLoading, getName, sel
       <ul className="menu menu-sm w-full p-0">
         {voiceRooms.map((room) => roomRow(room, "◖"))}
         {voiceRooms.length === 0 && <li className="px-3 py-2 text-xs text-base-content/40">暂无房间</li>}
-      </ul>
-      <div className="mt-3 flex h-8 items-center px-2 text-xs font-semibold uppercase tracking-wide text-base-content/45">
-        成员{membersLoading ? "" : ` · ${members.length}`}
-      </div>
-      <ul className="list">
-        {membersLoading && members.length === 0
-          ? [0, 1, 2].map((i) => <li key={i} className="list-row items-center px-2 py-2"><div className="skeleton h-7 w-7 rounded-full" /><div className="skeleton h-3" style={{ width: `${40 + i * 12}%` }} /></li>)
-          : members.map((member) => <li key={member.user_id} className="list-row items-center px-2 py-2" onContextMenu={(e) => openMemberMenu(e, member)}>
-              <InitialAvatar name={getName(member.user_id)} size="sm" />
-              <span className="min-w-0 flex-1 truncate text-sm">{getName(member.user_id)}</span>
-              {member.role !== "member" && <span className="badge badge-ghost badge-xs">{ROLE_LABELS[member.role] ?? member.role}</span>}
-            </li>)}
       </ul>
     </div>
     <VoiceStatusBar snapshot={snapshot} connecting={!!connectingRoomID && !snapshot.voice?.joined}

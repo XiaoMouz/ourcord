@@ -20,6 +20,20 @@ export function RoomPanelSkeleton() {
   </aside>;
 }
 
+export function MemberPanelSkeleton() {
+  return <aside className="flex min-w-0 flex-col border-l border-base-300 bg-base-100">
+    <header className="border-b border-base-300 p-4">
+      <div className="skeleton h-4 w-20" />
+    </header>
+    <ul className="list flex-1 p-2">
+      {[0, 1, 2, 3].map((index) => <li key={index} className="list-row items-center px-2 py-2">
+        <div className="skeleton h-8 w-8 rounded-full" />
+        <div className="skeleton h-3" style={{ width: `${44 + index * 8}%` }} />
+      </li>)}
+    </ul>
+  </aside>;
+}
+
 export function ChatSkeleton() {
   return <div className="flex-1 space-y-6 overflow-hidden p-6">
     {[0, 1, 2, 3].map((i) => <div key={i} className="flex gap-3">

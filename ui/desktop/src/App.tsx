@@ -12,12 +12,13 @@ import { remainingCooldownSeconds } from "./cooldown";
 import Login from "./components/Login";
 import LobbyRail from "./components/LobbyRail";
 import RoomPanel from "./components/RoomPanel";
+import MemberPanel from "./components/MemberPanel";
 import VoiceStage from "./components/VoiceStage";
 import ChatPane from "./components/ChatPane";
 import CallBar from "./components/CallBar";
 import SettingsModal from "./components/SettingsModal";
 import DiagnosticsModal from "./components/DiagnosticsModal";
-import { LobbyRailSkeleton, RoomPanelSkeleton, Spinner } from "./components/Skeleton";
+import { LobbyRailSkeleton, MemberPanelSkeleton, RoomPanelSkeleton, Spinner } from "./components/Skeleton";
 import { EmptyState, ToastHost, cx, type ToastMessage } from "./components/ui";
 
 const PTT_SHORTCUT = "Ctrl+Shift+Space";
@@ -301,10 +302,11 @@ export default function App() {
   </>;
 
   if (!lobbiesLoaded) return <>
-    <main className="grid h-screen min-w-[800px] grid-cols-[4.5rem_17rem_minmax(0,1fr)] bg-base-300 text-base-content">
+    <main className="grid h-screen min-w-[920px] grid-cols-[4.5rem_17rem_minmax(0,1fr)_15rem] bg-base-300 text-base-content">
       <LobbyRailSkeleton />
       <RoomPanelSkeleton />
       <section className="hero bg-base-200"><Spinner label="正在载入大厅" /></section>
+      <MemberPanelSkeleton />
     </main>
     <ToastHost toast={toast} onDismiss={dismissToast} />
   </>;
@@ -315,11 +317,11 @@ export default function App() {
   const stageTitle = selectedRoom ? (showChat ? `#${selectedRoom.name}` : selectedRoom.name) : "选择一个房间";
   const path = connecting ? "waiting" : snapshot.status?.path_summary ?? "inactive";
 
-  return <><main className="grid h-screen min-w-[800px] grid-cols-[4.5rem_17rem_minmax(0,1fr)] bg-base-300 text-base-content">
+  return <><main className="grid h-screen min-w-[920px] grid-cols-[4.5rem_17rem_minmax(0,1fr)_15rem] bg-base-300 text-base-content">
     <LobbyRail lobbies={lobbies} activeID={selectedLobby?.lobby.id ?? ""}
       onSelect={(id) => { setSelectedLobbyID(id); setSelectedRoomID(""); }}
       onCreate={() => void promptAction("createLobby")} onJoin={() => void promptAction("joinLobby")} />
-    <RoomPanel lobby={selectedLobby} members={members} membersLoading={membersLoading} getName={getName}
+    <RoomPanel lobby={selectedLobby}
       selectedRoomID={selectedRoomID} connectingRoomID={connectingRoomID}
       snapshot={snapshot} busy={busy} canManage={canManage} accountName={auth.profile?.user?.display_name}
       onSelectRoom={selectRoom} onCreateRoom={(type) => void createRoom(type)} onInvite={() => void promptAction("invite")}
@@ -345,6 +347,8 @@ export default function App() {
       {(inVoice || connecting || !showChat) && <CallBar snapshot={snapshot} busy={busy} shortcut={PTT_SHORTCUT}
         onLeave={() => void leaveVoice()} refresh={refreshSnapshot} onError={showError} />}
     </section>
+    <MemberPanel members={members} loading={membersLoading} getName={getName}
+      onCopy={(text, label) => void copyText(text, label)} />
     {settings && <SettingsModal snapshot={snapshot} auth={auth} close={() => setSettings(false)}
       refreshSnapshot={refreshSnapshot} refreshAuth={refreshAuth} onError={showError} onNotice={showNotice}
       openDiagnostics={() => { setSettings(false); setDiagnostics(true); }}
