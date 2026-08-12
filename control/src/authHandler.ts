@@ -19,6 +19,14 @@ const DESKTOP_MAGIC_TTL = 10 * 60;
 const DESKTOP_CODE_TTL = 60;
 const PKCE_CHALLENGE_RE = /^[A-Za-z0-9_-]{43}$/;
 
+function desktopMagicResponse(retryAfter: number): Response {
+  return json({
+    message: "If the address can receive mail, a sign-in link has been sent",
+    expires_in: DESKTOP_MAGIC_TTL,
+    retry_after: retryAfter,
+  });
+}
+
 // POST /api/auth/otp/request — send OTP to email
 export async function requestOTP(request: Request, env: Env): Promise<Response> {
   const tooBig = checkBodySize(request, 1024);
@@ -309,8 +317,16 @@ export async function requestDesktopMagic(request: Request, env: Env): Promise<R
   if (!PKCE_CHALLENGE_RE.test(challenge)) return json({ error: "valid S256 code_challenge required" }, 400);
 
   const cooldownKey = `desktop_magic_cooldown:${email}`;
-  if (await env.KV.get(cooldownKey)) {
-    return json({ message: "If the address can receive mail, a sign-in link has been sent", expires_in: DESKTOP_MAGIC_TTL });
+  const now = Math.floor(Date.now() / 1000);
+  const cooldownValue = await env.KV.get(cooldownKey);
+  if (cooldownValue) {
+    const cooldownUntil = Number.parseInt(cooldownValue, 10);
+    // Older deployments stored the sentinel "1". Keep the response useful
+    // during rollout by conservatively returning the full cooldown for it.
+    const retryAfter = cooldownUntil > now
+      ? Math.max(1, cooldownUntil - now)
+      : OTP_REQUEST_COOLDOWN;
+    return desktopMagicResponse(retryAfter);
   }
 
   const rawToken = `${crypto.randomUUID()}${crypto.randomUUID()}`.replace(/-/g, "");
@@ -318,16 +334,20 @@ export async function requestDesktopMagic(request: Request, env: Env): Promise<R
   await env.KV.put(`desktop_magic:${tokenHash}`, JSON.stringify({ email, challenge }), {
     expirationTtl: DESKTOP_MAGIC_TTL,
   });
-  await env.KV.put(cooldownKey, "1", { expirationTtl: OTP_REQUEST_COOLDOWN });
+  await env.KV.put(cooldownKey, String(now + OTP_REQUEST_COOLDOWN), { expirationTtl: OTP_REQUEST_COOLDOWN });
   const origin = new URL(request.url).origin;
   const confirmURL = `${origin}/api/auth/desktop/magic/confirm?token=${encodeURIComponent(rawToken)}`;
   try {
     await sendMagicEmail(env, email, confirmURL);
   } catch (e) {
+    await Promise.all([
+      env.KV.delete(`desktop_magic:${tokenHash}`),
+      env.KV.delete(cooldownKey),
+    ]);
     log({ event: "desktop_magic.send_failed", level: "error", email, error: String(e) });
     return json({ error: "Magic link delivery not configured" }, 503);
   }
-  return json({ message: "If the address can receive mail, a sign-in link has been sent", expires_in: DESKTOP_MAGIC_TTL });
+  return desktopMagicResponse(OTP_REQUEST_COOLDOWN);
 }
 
 // GET intentionally does not consume the token: mail security scanners often

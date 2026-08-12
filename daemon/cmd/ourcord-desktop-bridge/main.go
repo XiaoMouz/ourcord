@@ -158,8 +158,11 @@ func (b *bridge) dispatch(method string, raw json.RawMessage) (any, error) {
 			return nil, errors.New("start login again")
 		}
 		challenge := pkceChallenge(verifier)
-		_, err = b.api(http.MethodPost, b.controlURL, "/api/auth/desktop/magic", "", map[string]string{"email": email, "code_challenge": challenge})
-		return map[string]bool{"sent": err == nil}, err
+		data, err := b.api(http.MethodPost, b.controlURL, "/api/auth/desktop/magic", "", map[string]string{"email": email, "code_challenge": challenge})
+		if err != nil {
+			return nil, err
+		}
+		return decodeMagicResponse(data)
 	case "auth.exchange":
 		code := stringParam(params, "code")
 		verifier, err := keyring.Get(credentialService, pkceCredential)
@@ -766,6 +769,21 @@ func (b *bridge) api(method, base, path, token string, body any) ([]byte, error)
 }
 
 func (b *bridge) token() (string, error) { return keyring.Get(credentialService, jwtCredential) }
+
+func decodeMagicResponse(data []byte) (map[string]any, error) {
+	var sent struct {
+		ExpiresIn  int `json:"expires_in"`
+		RetryAfter int `json:"retry_after"`
+	}
+	if err := json.Unmarshal(data, &sent); err != nil || sent.ExpiresIn <= 0 || sent.RetryAfter <= 0 {
+		return nil, errors.New("invalid login response")
+	}
+	return map[string]any{
+		"sent":        true,
+		"expires_in":  sent.ExpiresIn,
+		"retry_after": sent.RetryAfter,
+	}, nil
+}
 
 func newPKCE() (string, string, error) {
 	raw := make([]byte, 48)

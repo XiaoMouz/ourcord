@@ -106,3 +106,16 @@ func TestProfilesLookupEmptyShortCircuits(t *testing.T) {
 		t.Fatalf("profiles = %#v, want empty slice", out["profiles"])
 	}
 }
+
+func TestDecodeMagicResponse(t *testing.T) {
+	got, err := decodeMagicResponse([]byte(`{"expires_in":600,"retry_after":43}`))
+	if err != nil {
+		t.Fatalf("decodeMagicResponse() error: %v", err)
+	}
+	if got["sent"] != true || got["expires_in"] != 600 || got["retry_after"] != 43 {
+		t.Fatalf("decodeMagicResponse() = %#v", got)
+	}
+	if _, err := decodeMagicResponse([]byte(`{"expires_in":600}`)); err == nil {
+		t.Fatal("missing retry_after should fail")
+	}
+}
