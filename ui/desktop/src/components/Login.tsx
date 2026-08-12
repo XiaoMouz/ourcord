@@ -21,7 +21,7 @@ export default function Login({ busy, cooldownSeconds, loginURLs, onMagic }: {
     return () => cancelAnimationFrame(frame);
   }, [coolingDown]);
 
-  return <main className="hero min-h-screen bg-base-200">
+  return <main className="hero min-h-full bg-base-200">
     <div className="hero-content w-full max-w-md">
       <section className="card card-border w-full bg-base-100 shadow-2xl">
         <div className="card-body gap-5 p-8">

@@ -6,6 +6,9 @@
   "permissions": [
     "core:default", "deep-link:default", "opener:default",
     "global-shortcut:allow-register", "global-shortcut:allow-unregister",
-    "updater:default", "process:allow-restart", "dialog:allow-open"
+    "updater:default", "process:allow-restart", "dialog:allow-open",
+    "core:window:allow-close", "core:window:allow-destroy",
+    "core:window:allow-minimize", "core:window:allow-toggle-maximize",
+    "core:window:allow-start-dragging"
   ]
 }

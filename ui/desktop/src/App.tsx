@@ -1,8 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import { register, unregister } from "@tauri-apps/plugin-global-shortcut";
-import { check } from "@tauri-apps/plugin-updater";
-import { relaunch } from "@tauri-apps/plugin-process";
 import { bridge, type AuthState, type LobbyEntry, type Member, type Profile, type Room, type Snapshot } from "./bridge";
 import { parseOurCordLink, type OurCordLink } from "./deepLink";
 import { loadVoicePrefs } from "./prefs";
@@ -20,6 +18,8 @@ import SettingsModal from "./components/SettingsModal";
 import DiagnosticsModal from "./components/DiagnosticsModal";
 import { LobbyRailSkeleton, MemberPanelSkeleton, RoomPanelSkeleton, Spinner } from "./components/Skeleton";
 import { EmptyState, ToastHost, cx, type ToastMessage } from "./components/ui";
+import TitleBar from "./components/TitleBar";
+import { installDesktopUpdate, retryDesktopUpdate, useDesktopUpdater } from "./updater";
 
 const PTT_SHORTCUT = "Ctrl+Shift+Space";
 type InviteLink = Extract<OurCordLink, { kind: "invite" }>;
@@ -52,6 +52,7 @@ export default function App() {
   const [connectingRoomID, setConnectingRoomID] = useState("");
   const [pendingInvite, setPendingInvite] = useState<InviteLink | null>(null);
   const [, setNameTick] = useState(0);
+  const updater = useDesktopUpdater();
 
   const names = useRef(createNameCache(async (ids) => {
     const data = await bridge<{ profiles: Profile[] }>("profiles.lookup", { user_ids: ids });
@@ -131,24 +132,6 @@ export default function App() {
     setPendingInvite(null);
     void applyInvite(pendingInvite);
   }, [auth.authenticated, pendingInvite, applyInvite]);
-  useEffect(() => {
-    async function checkForUpdate() {
-      try {
-        const update = await check();
-        if (update && await dialog.confirm({
-          title: `OurCord ${update.version} 已可用`,
-          message: "是否现在下载并安装更新？",
-          confirmLabel: "立即更新",
-        })) {
-          await update.downloadAndInstall();
-          await relaunch();
-        }
-      } catch { /* updater is intentionally inactive in unsigned dev builds */ }
-    }
-    void checkForUpdate();
-    const timer = window.setInterval(() => void checkForUpdate(), 6 * 60 * 60 * 1000);
-    return () => clearInterval(timer);
-  }, [dialog.confirm]);
   useEffect(() => {
     void getCurrent().then((urls) => urls?.forEach((url) => void handleDeepLink(url)));
     let dispose: undefined | (() => void);
@@ -292,24 +275,28 @@ export default function App() {
     } catch (e) { showError(String(e)); }
   }
 
-  if (auth.loading) return <div className="hero min-h-screen bg-base-300"><div className="flex flex-col items-center gap-4">
+  const titleBar = <TitleBar update={updater}
+    onInstall={() => void installDesktopUpdate().catch(() => showError("更新安装失败"))}
+    onRetry={() => void retryDesktopUpdate().catch(() => showError("更新下载失败"))} />;
+
+  if (auth.loading) return <div className="flex h-screen min-w-[920px] flex-col bg-base-300 text-base-content">{titleBar}<div className="hero min-h-0 flex-1"><div className="flex flex-col items-center gap-4">
     <div className="avatar avatar-placeholder"><div className="h-16 w-16 rounded-box bg-neutral text-neutral-content"><span className="text-2xl font-semibold">O</span></div></div>
     <Spinner label="正在启动 OurCord" />
-  </div></div>;
-  if (!auth.authenticated) return <>
+  </div></div></div>;
+  if (!auth.authenticated) return <div className="flex h-screen min-w-[920px] flex-col bg-base-200 text-base-content">{titleBar}<div className="min-h-0 flex-1">
     <Login busy={busy} cooldownSeconds={magicCooldownSeconds} loginURLs={loginURLs} onMagic={(email) => void sendMagic(email)} />
     <ToastHost toast={toast} onDismiss={dismissToast} />
-  </>;
+  </div></div>;
 
-  if (!lobbiesLoaded) return <>
-    <main className="grid h-screen min-w-[920px] grid-cols-[4.5rem_17rem_minmax(0,1fr)_15rem] bg-base-300 text-base-content">
+  if (!lobbiesLoaded) return <div className="flex h-screen min-w-[920px] flex-col bg-base-300 text-base-content">{titleBar}<div className="min-h-0 flex-1">
+    <main className="grid h-full grid-cols-[4.5rem_17rem_minmax(0,1fr)_15rem]">
       <LobbyRailSkeleton />
       <RoomPanelSkeleton />
       <section className="hero bg-base-200"><Spinner label="正在载入大厅" /></section>
       <MemberPanelSkeleton />
     </main>
     <ToastHost toast={toast} onDismiss={dismissToast} />
-  </>;
+  </div></div>;
 
   const inVoice = !!snapshot.voice?.joined;
   const showChat = selectedRoom?.type === "text";
@@ -317,7 +304,7 @@ export default function App() {
   const stageTitle = selectedRoom ? (showChat ? `#${selectedRoom.name}` : selectedRoom.name) : "选择一个房间";
   const path = connecting ? "waiting" : snapshot.status?.path_summary ?? "inactive";
 
-  return <><main className="grid h-screen min-w-[920px] grid-cols-[4.5rem_17rem_minmax(0,1fr)_15rem] bg-base-300 text-base-content">
+  return <div className="flex h-screen min-w-[920px] flex-col bg-base-300 text-base-content">{titleBar}<main className="grid min-h-0 flex-1 grid-cols-[4.5rem_17rem_minmax(0,1fr)_15rem]">
     <LobbyRail lobbies={lobbies} activeID={selectedLobby?.lobby.id ?? ""}
       onSelect={(id) => { setSelectedLobbyID(id); setSelectedRoomID(""); }}
       onCreate={() => void promptAction("createLobby")} onJoin={() => void promptAction("joinLobby")} />
@@ -354,5 +341,5 @@ export default function App() {
       openDiagnostics={() => { setSettings(false); setDiagnostics(true); }}
       logout={async () => { await bridge("auth.logout"); location.reload(); }} />}
     {diagnostics && <DiagnosticsModal snapshot={snapshot} close={() => setDiagnostics(false)} onError={showError} />}
-  </main><ToastHost toast={toast} onDismiss={dismissToast} /></>;
+  </main><ToastHost toast={toast} onDismiss={dismissToast} /></div>;
 }
