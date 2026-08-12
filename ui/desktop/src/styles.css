@@ -61,3 +61,11 @@
     font: inherit;
   }
 }
+
+@layer utilities {
+  .countdown-initial > *,
+  .countdown-initial > *::before,
+  .countdown-initial > *::after {
+    transition: none;
+  }
+}

@@ -177,7 +177,7 @@ export default function App() {
       if (seconds === 0) setMagicRetryUntil(0);
     };
     update();
-    const timer = window.setInterval(update, 250);
+    const timer = window.setInterval(update, 1_000);
     return () => window.clearInterval(timer);
   }, [magicRetryUntil]);
   useEffect(() => {

@@ -25,8 +25,9 @@ describe("Login", () => {
       <Login busy={false} cooldownSeconds={43} onMagic={() => undefined} />,
     );
 
-    expect(html).not.toContain("countdown");
-    expect(html).toContain("43</span> 秒后可重新发送");
+    expect(html).toContain("countdown font-mono countdown-initial");
+    expect(html).toContain("--value:43");
+    expect(html).toContain("秒后可重新发送");
     expect(html).toContain("disabled");
   });
 });

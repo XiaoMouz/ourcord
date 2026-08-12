@@ -109,7 +109,7 @@ export default function DiagnosticsModal({ snapshot, close, onError }: {
         <section className="card card-border bg-base-200"><div className="card-body gap-3 p-5">
           <h3 className="card-title text-base">已注册设备</h3>
           {!devices && !devicesError && <Spinner label="载入设备…" />}
-          {devicesError && <div className="alert alert-error alert-soft text-sm"><span>{devicesError}</span></div>}
+          {devicesError && <div role="alert" className="alert alert-error"><span>{devicesError}</span></div>}
           <ul className="list rounded-box bg-base-100">
           {devices?.filter((d) => !d.revoked_at).map((device) => <li key={device.id} className="list-row items-center">
             <div className="min-w-0 flex-1">

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState, type CSSProperties } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { InitialAvatar } from "./ui";
 
@@ -10,6 +10,17 @@ export default function Login({ busy, cooldownSeconds, loginURLs, onMagic }: {
 }) {
   const [email, setEmail] = useState("");
   const coolingDown = cooldownSeconds > 0;
+  const [animateCooldown, setAnimateCooldown] = useState(false);
+
+  useEffect(() => {
+    if (!coolingDown) {
+      setAnimateCooldown(false);
+      return;
+    }
+    const frame = requestAnimationFrame(() => setAnimateCooldown(true));
+    return () => cancelAnimationFrame(frame);
+  }, [coolingDown]);
+
   return <main className="hero min-h-screen bg-base-200">
     <div className="hero-content w-full max-w-md">
       <section className="card card-border w-full bg-base-100 shadow-2xl">
@@ -26,7 +37,11 @@ export default function Login({ busy, cooldownSeconds, loginURLs, onMagic }: {
           </fieldset>
           <button className="btn btn-primary btn-block" disabled={busy || coolingDown || !email.includes("@")} onClick={() => onMagic(email)}>
             {busy && <span className="loading loading-spinner loading-sm" />}
-            {coolingDown ? <span aria-live="polite"><span className="font-mono">{cooldownSeconds}</span> 秒后可重新发送</span> : "发送 Magic Link"}
+            {coolingDown ? <span aria-live="polite">
+              <span className={`countdown font-mono${animateCooldown ? "" : " countdown-initial"}`}>
+                <span style={{ "--value": cooldownSeconds } as CSSProperties} aria-label={String(cooldownSeconds)}>{cooldownSeconds}</span>
+              </span> 秒后可重新发送
+            </span> : "发送 Magic Link"}
           </button>
           <div className="divider text-xs text-base-content/40">或</div>
           <div className="grid grid-cols-2 gap-3">

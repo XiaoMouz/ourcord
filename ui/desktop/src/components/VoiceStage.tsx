@@ -43,7 +43,7 @@ export default function VoiceStage({ snapshot, selfName }: { snapshot: Snapshot;
     })}
     {snapshot.voice?.joined && participants.length === 0 && <div className="col-span-full min-h-[55vh]"><EmptyState icon="◖" title="等待其他成员加入" /></div>}
     {!snapshot.voice?.joined && !snapshot.daemon_available && <div className="col-span-full flex min-h-[55vh] items-center justify-center">
-      <div role="alert" className="alert alert-warning max-w-md shadow-sm">
+      <div role="alert" className="alert alert-warning">
         <span className="status status-warning" />
         <span>后台服务不可用，正在重试。</span>
       </div>

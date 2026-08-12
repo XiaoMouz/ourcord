@@ -98,8 +98,8 @@ export default function SettingsModal({ snapshot, auth, close, refreshSnapshot, 
 
         <section className="card card-border bg-base-200"><div className="card-body gap-4 p-5">
           <h3 className="card-title text-base">音频设备</h3>
-          {devicesError && <div className="alert alert-error alert-soft text-sm"><span>{devicesError}</span></div>}
-          {deviceUnsupported && <div className="alert alert-warning alert-soft text-sm"><span>当前构建不支持设备枚举。</span></div>}
+          {devicesError && <div role="alert" className="alert alert-error"><span>{devicesError}</span></div>}
+          {deviceUnsupported && <div role="alert" className="alert alert-warning"><span>未检测到可用的音频设备。</span></div>}
           {devices && !deviceUnsupported && <>
             <fieldset className="fieldset"><legend className="fieldset-legend">输入设备</legend>
               <select className="select w-full" value={captureID} onChange={(e) => setCaptureID(e.target.value)}>
@@ -125,7 +125,7 @@ export default function SettingsModal({ snapshot, auth, close, refreshSnapshot, 
 
         <section className="card card-border bg-base-200"><div className="card-body gap-4 p-5">
           <h3 className="card-title text-base">网络</h3>
-          {!snapshot.daemon_available && <div role="alert" className="alert alert-warning alert-soft text-sm"><span>后台服务不可用，正在重试。</span></div>}
+          {!snapshot.daemon_available && <div role="alert" className="alert alert-warning"><span>后台服务不可用，正在重试。</span></div>}
           <div className="stats stats-vertical bg-base-100 shadow-sm sm:stats-horizontal">
             <div className="stat px-4 py-3"><div className="stat-title text-xs">后台服务</div><div className="stat-value text-base">{snapshot.daemon_available ? "在线" : "离线"}</div></div>
             <div className="stat px-4 py-3"><div className="stat-title text-xs">VPN</div><div className="stat-value text-base">{snapshot.status?.vpn_active ? "已连接" : "未连接"}</div></div>
