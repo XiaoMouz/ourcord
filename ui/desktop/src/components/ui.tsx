@@ -1,4 +1,4 @@
-import type { ButtonHTMLAttributes, ReactNode } from "react";
+import { useEffect, type ButtonHTMLAttributes, type ReactNode } from "react";
 
 export function cx(...classes: Array<string | false | null | undefined>): string {
   return classes.filter(Boolean).join(" ");
@@ -43,6 +43,34 @@ export function EmptyState({ icon, title, children }: { icon: ReactNode; title: 
         <h2 className="text-lg font-semibold">{title}</h2>
         {children && <div className="mt-2 text-sm text-base-content/55">{children}</div>}
       </div>
+    </div>
+  </div>;
+}
+
+export type ToastMessage = {
+  id: number;
+  message: string;
+  tone: "success" | "error" | "warning" | "info";
+};
+
+export function ToastHost({ toast, onDismiss }: { toast: ToastMessage | null; onDismiss: () => void }) {
+  useEffect(() => {
+    if (!toast) return;
+    const timer = window.setTimeout(onDismiss, toast.tone === "error" ? 6_000 : 4_000);
+    return () => window.clearTimeout(timer);
+  }, [toast, onDismiss]);
+
+  if (!toast) return null;
+  const toneClass = {
+    success: "alert-success",
+    error: "alert-error",
+    warning: "alert-warning",
+    info: "alert-info",
+  }[toast.tone];
+  return <div className="toast toast-end toast-top z-[100]">
+    <div role={toast.tone === "error" ? "alert" : "status"} className={cx("alert shadow-xl", toneClass)}>
+      <span className="max-w-sm break-words">{toast.message}</span>
+      <button type="button" className="btn btn-ghost btn-circle btn-xs" aria-label="关闭提示" onClick={onDismiss}>×</button>
     </div>
   </div>;
 }

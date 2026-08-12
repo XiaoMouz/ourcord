@@ -5,7 +5,7 @@ import { ModalHeader } from "./ui";
 
 type DeviceLists = { capture: AudioDevice[]; playback: AudioDevice[] };
 
-export default function SettingsModal({ snapshot, auth, close, refreshSnapshot, refreshAuth, logout, onError, openDiagnostics }: {
+export default function SettingsModal({ snapshot, auth, close, refreshSnapshot, refreshAuth, logout, onError, onNotice, openDiagnostics }: {
   snapshot: Snapshot;
   auth: AuthState;
   close: () => void;
@@ -13,6 +13,7 @@ export default function SettingsModal({ snapshot, auth, close, refreshSnapshot, 
   refreshAuth: () => Promise<void>;
   logout: () => Promise<void>;
   onError: (message: string) => void;
+  onNotice: (message: string) => void;
   openDiagnostics: () => void;
 }) {
   const [prefs, setPrefs] = useState(() => loadVoicePrefs());
@@ -21,7 +22,6 @@ export default function SettingsModal({ snapshot, auth, close, refreshSnapshot, 
   const [captureID, setCaptureID] = useState("");
   const [playbackID, setPlaybackID] = useState("");
   const [name, setName] = useState(auth.profile?.user?.display_name ?? "");
-  const [notice, setNotice] = useState("");
 
   useEffect(() => {
     let cancelled = false;
@@ -44,14 +44,14 @@ export default function SettingsModal({ snapshot, auth, close, refreshSnapshot, 
       saveVoicePrefs(prefs);
       await bridge("voice.input_mode", { mode: prefs.mode, threshold_dbfs: prefs.threshold_dbfs, hangover_ms: prefs.hangover_ms });
       await refreshSnapshot();
-      setNotice("语音设置已应用");
+      onNotice("语音设置已应用");
     } catch (e) { onError(String(e)); }
   }
 
   async function applyDevices() {
     try {
       await bridge("voice.set_devices", { capture_id: captureID, playback_id: playbackID });
-      setNotice("音频设备已切换");
+      onNotice("音频设备已切换");
     } catch (e) { onError(String(e)); }
   }
 
@@ -61,7 +61,7 @@ export default function SettingsModal({ snapshot, auth, close, refreshSnapshot, 
     try {
       await bridge("profile.update", { display_name: trimmed });
       await refreshAuth();
-      setNotice("显示名已更新");
+      onNotice("显示名已更新");
     } catch (e) { onError(String(e)); }
   }
 
@@ -69,7 +69,7 @@ export default function SettingsModal({ snapshot, auth, close, refreshSnapshot, 
     try {
       await bridge("network.disconnect");
       await refreshSnapshot();
-      setNotice("VPN 已断开");
+      onNotice("VPN 已断开");
     } catch (e) { onError(String(e)); }
   }
 
@@ -125,6 +125,7 @@ export default function SettingsModal({ snapshot, auth, close, refreshSnapshot, 
 
         <section className="card card-border bg-base-200"><div className="card-body gap-4 p-5">
           <h3 className="card-title text-base">网络</h3>
+          {!snapshot.daemon_available && <div role="alert" className="alert alert-warning alert-soft text-sm"><span>后台服务不可用，正在重试。</span></div>}
           <div className="stats stats-vertical bg-base-100 shadow-sm sm:stats-horizontal">
             <div className="stat px-4 py-3"><div className="stat-title text-xs">后台服务</div><div className="stat-value text-base">{snapshot.daemon_available ? "在线" : "离线"}</div></div>
             <div className="stat px-4 py-3"><div className="stat-title text-xs">VPN</div><div className="stat-value text-base">{snapshot.status?.vpn_active ? "已连接" : "未连接"}</div></div>
@@ -137,7 +138,6 @@ export default function SettingsModal({ snapshot, auth, close, refreshSnapshot, 
           </div>
         </div></section>
 
-        {notice && <div className="alert alert-success alert-soft text-sm"><span>{notice}</span></div>}
         <div className="flex justify-end"><button className="btn btn-error btn-soft btn-sm" onClick={() => void logout()}>退出账号</button></div>
       </div>
     </section>

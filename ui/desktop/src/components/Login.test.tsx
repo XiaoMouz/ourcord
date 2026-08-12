@@ -5,7 +5,7 @@ import Login from "./Login";
 describe("Login", () => {
   it("keeps the sign-in controls without marketing or credential copy", () => {
     const html = renderToStaticMarkup(
-      <Login busy={false} notice="" error="" onMagic={() => undefined} />,
+      <Login busy={false} cooldownSeconds={0} onMagic={() => undefined} />,
     );
 
     expect(html).toContain("OurCord");
@@ -18,5 +18,15 @@ describe("Login", () => {
     expect(html).not.toContain("使用邮箱链接或已有账号继续");
     expect(html).not.toContain("系统凭据库");
     expect(html).not.toContain("属于你们的小群体网络");
+  });
+
+  it("shows the server-provided Magic Link cooldown", () => {
+    const html = renderToStaticMarkup(
+      <Login busy={false} cooldownSeconds={43} onMagic={() => undefined} />,
+    );
+
+    expect(html).toContain("countdown");
+    expect(html).toContain("43 秒后可重发");
+    expect(html).toContain("disabled");
   });
 });

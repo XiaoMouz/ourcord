@@ -17,7 +17,7 @@ import CallBar from "./components/CallBar";
 import SettingsModal from "./components/SettingsModal";
 import DiagnosticsModal from "./components/DiagnosticsModal";
 import { LobbyRailSkeleton, RoomPanelSkeleton, Spinner } from "./components/Skeleton";
-import { EmptyState, IconButton, cx } from "./components/ui";
+import { EmptyState, ToastHost, cx, type ToastMessage } from "./components/ui";
 
 const PTT_SHORTCUT = "Ctrl+Shift+Space";
 type InviteLink = Extract<OurCordLink, { kind: "invite" }>;
@@ -26,8 +26,17 @@ export default function App() {
   const dialog = useDialog();
   const [auth, setAuth] = useState<AuthState>({ loading: true, authenticated: false });
   const [loginURLs, setLoginURLs] = useState<{ google_url: string; github_url: string }>();
-  const [notice, setNotice] = useState("");
-  const [error, setError] = useState("");
+  const [toast, setToast] = useState<ToastMessage | null>(null);
+  const toastID = useRef(0);
+  const showToast = useCallback((message: string, tone: ToastMessage["tone"]) => {
+    toastID.current += 1;
+    setToast({ id: toastID.current, message, tone });
+  }, []);
+  const showNotice = useCallback((message: string) => showToast(message, "success"), [showToast]);
+  const showError = useCallback((message: string) => showToast(message, "error"), [showToast]);
+  const dismissToast = useCallback(() => setToast(null), []);
+  const [magicRetryUntil, setMagicRetryUntil] = useState(0);
+  const [magicCooldownSeconds, setMagicCooldownSeconds] = useState(0);
   const [lobbies, setLobbies] = useState<LobbyEntry[]>([]);
   const [members, setMembers] = useState<Member[]>([]);
   const [selectedLobbyID, setSelectedLobbyID] = useState("");
@@ -90,17 +99,17 @@ export default function App() {
       await bridge("lobbies.join", { lobby_id: invite.lobbyID, code: invite.code });
       await refreshLobbies();
       setSelectedLobbyID(invite.lobbyID);
-      setNotice("已加入大厅");
-    } catch (e) { setError(String(e)); }
-  }, [refreshLobbies]);
+      showNotice("已加入大厅");
+    } catch (e) { showError(String(e)); }
+  }, [refreshLobbies, showError, showNotice]);
 
   const handleDeepLink = useCallback(async (raw: string) => {
     const link = parseOurCordLink(raw);
-    if (!link) { setError("链接无效"); return; }
+    if (!link) { showError("链接无效"); return; }
     if (link.kind === "auth") {
       setBusy(true);
       try { await bridge("auth.exchange", { code: link.code }); await refreshAuth(); }
-      catch (e) { setError(String(e)); }
+      catch (e) { showError(String(e)); }
       finally { setBusy(false); }
       return;
     }
@@ -108,11 +117,11 @@ export default function App() {
     // of silently failing against an unauthenticated bridge.
     if (!authRef.current.authenticated) {
       setPendingInvite(link);
-      setNotice("登录后将自动加入邀请的大厅");
+      showNotice("登录后将自动加入邀请的大厅");
       return;
     }
     await applyInvite(link);
-  }, [applyInvite, refreshAuth]);
+  }, [applyInvite, refreshAuth, showError, showNotice]);
 
   useEffect(() => { void refreshAuth(); }, [refreshAuth]);
   useEffect(() => {
@@ -124,7 +133,11 @@ export default function App() {
     async function checkForUpdate() {
       try {
         const update = await check();
-        if (update && confirm(`OurCord ${update.version} 已可用，是否现在更新？`)) {
+        if (update && await dialog.confirm({
+          title: `OurCord ${update.version} 已可用`,
+          message: "是否现在下载并安装更新？",
+          confirmLabel: "立即更新",
+        })) {
           await update.downloadAndInstall();
           await relaunch();
         }
@@ -133,7 +146,7 @@ export default function App() {
     void checkForUpdate();
     const timer = window.setInterval(() => void checkForUpdate(), 6 * 60 * 60 * 1000);
     return () => clearInterval(timer);
-  }, []);
+  }, [dialog.confirm]);
   useEffect(() => {
     void getCurrent().then((urls) => urls?.forEach((url) => void handleDeepLink(url)));
     let dispose: undefined | (() => void);
@@ -156,43 +169,58 @@ export default function App() {
     return () => clearInterval(timer);
   }, [auth.authenticated, selectedLobby?.lobby.id, refreshMembers]);
   useEffect(() => {
+    if (!magicRetryUntil) { setMagicCooldownSeconds(0); return; }
+    const update = () => {
+      const seconds = Math.max(0, Math.ceil((magicRetryUntil - Date.now()) / 1000));
+      setMagicCooldownSeconds(seconds);
+      if (seconds === 0) setMagicRetryUntil(0);
+    };
+    update();
+    const timer = window.setInterval(update, 250);
+    return () => window.clearInterval(timer);
+  }, [magicRetryUntil]);
+  useEffect(() => {
     if (!auth.authenticated) return;
     register(PTT_SHORTCUT, (event) => void bridge("voice.ptt", { pressed: event.state === "Pressed" }).catch(() => {}))
-      .catch(() => setNotice(`PTT 快捷键 ${PTT_SHORTCUT} 注册失败，可能被其他应用占用`));
+      .catch(() => showToast(`PTT 快捷键 ${PTT_SHORTCUT} 注册失败，可能被其他应用占用`, "warning"));
     return () => { void unregister(PTT_SHORTCUT); };
-  }, [auth.authenticated]);
+  }, [auth.authenticated, showToast]);
 
   async function sendMagic(email: string) {
-    setError(""); setBusy(true);
-    try { await bridge("auth.magic", { email }); setNotice("登录链接已发送，请在这台电脑上打开邮件并确认。"); }
-    catch (e) { setError(String(e)); } finally { setBusy(false); }
+    setBusy(true);
+    try {
+      const result = await bridge<{ sent: boolean; expires_in: number; retry_after: number }>("auth.magic", { email });
+      const retryAfter = Math.max(1, result.retry_after || 60);
+      setMagicRetryUntil(Date.now() + retryAfter * 1000);
+      showNotice("登录链接已发送，请在这台电脑上打开邮件并确认。");
+    } catch (e) { showError(String(e)); } finally { setBusy(false); }
   }
 
   const copyText = useCallback(async (text: string, label: string) => {
-    try { await navigator.clipboard.writeText(text); setNotice(`${label}已复制`); }
-    catch { setError("复制失败"); }
-  }, []);
+    try { await navigator.clipboard.writeText(text); showNotice(`${label}已复制`); }
+    catch { showError("复制失败"); }
+  }, [showError, showNotice]);
 
   async function joinVoice(room: Room) {
     if (!room.vpn_namespace) return;
-    setBusy(true); setConnectingRoomID(room.id); setSelectedRoomID(room.id); setError("");
+    setBusy(true); setConnectingRoomID(room.id); setSelectedRoomID(room.id);
     try {
       // The leave/connect/enter/join orchestration lives in the client core
       // (JoinVoiceNetwork); the presenter only supplies the persisted prefs.
       const prefs = loadVoicePrefs();
       await bridge("voice.join_network", { network_id: room.vpn_namespace, mode: prefs.mode, threshold_dbfs: prefs.threshold_dbfs, hangover_ms: prefs.hangover_ms });
       await refreshSnapshot();
-    } catch (e) { setError(String(e)); } finally { setBusy(false); setConnectingRoomID(""); }
+    } catch (e) { showError(String(e)); } finally { setBusy(false); setConnectingRoomID(""); }
   }
 
   async function leaveVoice() {
-    setBusy(true); setError("");
+    setBusy(true);
     try {
       await bridge("voice.leave");
       await bridge("network.leave");
       await refreshSnapshot();
       if (selectedRoom?.type === "voice") setSelectedRoomID("");
-    } catch (e) { setError(String(e)); } finally { setBusy(false); }
+    } catch (e) { showError(String(e)); } finally { setBusy(false); }
   }
 
   function selectRoom(room: Room) {
@@ -216,10 +244,10 @@ export default function App() {
       if (kind === "invite" && selectedLobby) {
         const result = await bridge<{ code: string }>("lobbies.invite", { lobby_id: selectedLobby.lobby.id });
         await navigator.clipboard.writeText(`ourcord://invite?lobby_id=${selectedLobby.lobby.id}&code=${result.code}`);
-        setNotice("邀请链接已复制");
+        showNotice("邀请链接已复制");
       }
       await refreshLobbies();
-    } catch (e) { setError(String(e)); }
+    } catch (e) { showError(String(e)); }
   }
 
   async function createRoom(type: "text" | "voice") {
@@ -227,14 +255,14 @@ export default function App() {
     const name = await dialog.promptText(type === "text" ? "新建文字房间" : "新建语音房间", { label: "房间名称", required: true, maxLength: 80 });
     if (!name) return;
     try { await bridge("rooms.create", { lobby_id: selectedLobby.lobby.id, name, type }); await refreshLobbies(); }
-    catch (e) { setError(String(e)); }
+    catch (e) { showError(String(e)); }
   }
 
   async function renameRoom(room: Room) {
     const name = await dialog.promptText("重命名房间", { label: "房间名称", initial: room.name, required: true, maxLength: 80 });
     if (!name || name === room.name) return;
     try { await bridge("rooms.update", { room_id: room.id, name }); await refreshLobbies(); }
-    catch (e) { setError(String(e)); }
+    catch (e) { showError(String(e)); }
   }
 
   async function deleteRoom(room: Room) {
@@ -244,7 +272,7 @@ export default function App() {
       await bridge("rooms.delete", { room_id: room.id });
       if (selectedRoomID === room.id) setSelectedRoomID("");
       await refreshLobbies();
-    } catch (e) { setError(String(e)); }
+    } catch (e) { showError(String(e)); }
   }
 
   // reorderRoom swaps a room with its same-type neighbor by writing the
@@ -259,20 +287,26 @@ export default function App() {
       await bridge("rooms.update", { room_id: room.id, position: target.position });
       await bridge("rooms.update", { room_id: target.id, position: room.position });
       await refreshLobbies();
-    } catch (e) { setError(String(e)); }
+    } catch (e) { showError(String(e)); }
   }
 
   if (auth.loading) return <div className="hero min-h-screen bg-base-300"><div className="flex flex-col items-center gap-4">
     <div className="avatar avatar-placeholder"><div className="h-16 w-16 rounded-box bg-neutral text-neutral-content"><span className="text-2xl font-semibold">O</span></div></div>
     <Spinner label="正在启动 OurCord" />
   </div></div>;
-  if (!auth.authenticated) return <Login busy={busy} notice={notice} error={error} loginURLs={loginURLs} onMagic={(email) => void sendMagic(email)} />;
+  if (!auth.authenticated) return <>
+    <Login busy={busy} cooldownSeconds={magicCooldownSeconds} loginURLs={loginURLs} onMagic={(email) => void sendMagic(email)} />
+    <ToastHost toast={toast} onDismiss={dismissToast} />
+  </>;
 
-  if (!lobbiesLoaded) return <main className="grid h-screen min-w-[800px] grid-cols-[4.5rem_17rem_minmax(0,1fr)] bg-base-300 text-base-content">
-    <LobbyRailSkeleton />
-    <RoomPanelSkeleton />
-    <section className="hero bg-base-200"><Spinner label="正在载入大厅" /></section>
-  </main>;
+  if (!lobbiesLoaded) return <>
+    <main className="grid h-screen min-w-[800px] grid-cols-[4.5rem_17rem_minmax(0,1fr)] bg-base-300 text-base-content">
+      <LobbyRailSkeleton />
+      <RoomPanelSkeleton />
+      <section className="hero bg-base-200"><Spinner label="正在载入大厅" /></section>
+    </main>
+    <ToastHost toast={toast} onDismiss={dismissToast} />
+  </>;
 
   const inVoice = !!snapshot.voice?.joined;
   const showChat = selectedRoom?.type === "text";
@@ -280,7 +314,7 @@ export default function App() {
   const stageTitle = selectedRoom ? (showChat ? `#${selectedRoom.name}` : selectedRoom.name) : "选择一个房间";
   const path = connecting ? "waiting" : snapshot.status?.path_summary ?? "inactive";
 
-  return <main className="grid h-screen min-w-[800px] grid-cols-[4.5rem_17rem_minmax(0,1fr)] bg-base-300 text-base-content">
+  return <><main className="grid h-screen min-w-[800px] grid-cols-[4.5rem_17rem_minmax(0,1fr)] bg-base-300 text-base-content">
     <LobbyRail lobbies={lobbies} activeID={selectedLobby?.lobby.id ?? ""}
       onSelect={(id) => { setSelectedLobbyID(id); setSelectedRoomID(""); }}
       onCreate={() => void promptAction("createLobby")} onJoin={() => void promptAction("joinLobby")} />
@@ -291,7 +325,7 @@ export default function App() {
       onRenameRoom={(room) => void renameRoom(room)} onDeleteRoom={(room) => void deleteRoom(room)}
       onReorderRoom={(room, dir) => void reorderRoom(room, dir)}
       onOpenSettings={() => setSettings(true)} onLeaveVoice={() => void leaveVoice()}
-      refreshSnapshot={refreshSnapshot} onError={setError} onCopy={(text, label) => void copyText(text, label)} />
+      refreshSnapshot={refreshSnapshot} onError={showError} onCopy={(text, label) => void copyText(text, label)} />
     <section className="relative flex min-w-0 flex-col overflow-hidden bg-base-200">
       <header className="navbar min-h-16 shrink-0 border-b border-base-300 bg-base-100 px-5">
         <div className="min-w-0 flex-1"><h1 className="truncate text-lg font-semibold">{stageTitle}</h1></div>
@@ -300,22 +334,20 @@ export default function App() {
           {connecting ? "连接中" : path}
         </div>
       </header>
-      {error && <div className="alert alert-error alert-soft m-3 mb-0 shrink-0 py-2 text-sm"><span className="min-w-0 flex-1 break-words">{error}</span><IconButton label="关闭错误" className="btn-xs" onClick={() => setError("")}>×</IconButton></div>}
-      {notice && !error && <div className="alert alert-success alert-soft m-3 mb-0 shrink-0 py-2 text-sm"><span className="min-w-0 flex-1 break-words">{notice}</span><IconButton label="关闭通知" className="btn-xs" onClick={() => setNotice("")}>×</IconButton></div>}
       {showChat && selectedRoom
         ? <ChatPane key={selectedRoom.id} room={selectedRoom} myUserID={myUserID} canModerate={canManage}
-            getName={getName} ensureNames={ensureNames} onError={setError} onNotice={setNotice}
+            getName={getName} ensureNames={ensureNames} onError={showError} onNotice={showNotice}
             onCopy={(text, label) => void copyText(text, label)} />
         : connecting
           ? <div className="flex-1"><EmptyState icon={<span className="loading loading-ring loading-lg" />} title="正在连接语音" /></div>
           : <VoiceStage snapshot={snapshot} selfName={auth.profile?.user?.display_name} />}
       {(inVoice || connecting || !showChat) && <CallBar snapshot={snapshot} busy={busy} shortcut={PTT_SHORTCUT}
-        onLeave={() => void leaveVoice()} refresh={refreshSnapshot} onError={setError} />}
+        onLeave={() => void leaveVoice()} refresh={refreshSnapshot} onError={showError} />}
     </section>
     {settings && <SettingsModal snapshot={snapshot} auth={auth} close={() => setSettings(false)}
-      refreshSnapshot={refreshSnapshot} refreshAuth={refreshAuth} onError={setError}
+      refreshSnapshot={refreshSnapshot} refreshAuth={refreshAuth} onError={showError} onNotice={showNotice}
       openDiagnostics={() => { setSettings(false); setDiagnostics(true); }}
       logout={async () => { await bridge("auth.logout"); location.reload(); }} />}
-    {diagnostics && <DiagnosticsModal snapshot={snapshot} close={() => setDiagnostics(false)} onError={setError} />}
-  </main>;
+    {diagnostics && <DiagnosticsModal snapshot={snapshot} close={() => setDiagnostics(false)} onError={showError} />}
+  </main><ToastHost toast={toast} onDismiss={dismissToast} /></>;
 }
