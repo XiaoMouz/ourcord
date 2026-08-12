@@ -1,4 +1,4 @@
-import { useState, type CSSProperties } from "react";
+import { useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { InitialAvatar } from "./ui";
 
@@ -26,9 +26,7 @@ export default function Login({ busy, cooldownSeconds, loginURLs, onMagic }: {
           </fieldset>
           <button className="btn btn-primary btn-block" disabled={busy || coolingDown || !email.includes("@")} onClick={() => onMagic(email)}>
             {busy && <span className="loading loading-spinner loading-sm" />}
-            {coolingDown ? <span aria-live="polite" aria-label={`${cooldownSeconds} 秒后可重发`}>
-              <span className="countdown font-mono"><span style={{ "--value": cooldownSeconds } as CSSProperties}>{cooldownSeconds}</span></span> 秒后可重发
-            </span> : "发送 Magic Link"}
+            {coolingDown ? <span aria-live="polite"><span className="font-mono">{cooldownSeconds}</span> 秒后可重新发送</span> : "发送 Magic Link"}
           </button>
           <div className="divider text-xs text-base-content/40">或</div>
           <div className="grid grid-cols-2 gap-3">

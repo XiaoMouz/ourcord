@@ -8,6 +8,7 @@ import { parseOurCordLink, type OurCordLink } from "./deepLink";
 import { loadVoicePrefs } from "./prefs";
 import { createNameCache, displayName } from "./names";
 import { useDialog } from "./dialog";
+import { remainingCooldownSeconds } from "./cooldown";
 import Login from "./components/Login";
 import LobbyRail from "./components/LobbyRail";
 import RoomPanel from "./components/RoomPanel";
@@ -171,7 +172,7 @@ export default function App() {
   useEffect(() => {
     if (!magicRetryUntil) { setMagicCooldownSeconds(0); return; }
     const update = () => {
-      const seconds = Math.max(0, Math.ceil((magicRetryUntil - Date.now()) / 1000));
+      const seconds = remainingCooldownSeconds(magicRetryUntil);
       setMagicCooldownSeconds(seconds);
       if (seconds === 0) setMagicRetryUntil(0);
     };
