@@ -33,8 +33,15 @@ import (
 const (
 	credentialService = "OurCord Desktop"
 	jwtCredential     = "account-jwt"
+	deviceCredential  = "device-token"
 	pkceCredential    = "desktop-pkce-verifier"
 )
+
+type credentialStore interface {
+	Get(service, user string) (string, error)
+	Set(service, user, password string) error
+	Delete(service, user string) error
+}
 
 type request struct {
 	ID     string          `json:"id"`
@@ -49,14 +56,17 @@ type response struct {
 }
 
 type bridge struct {
-	controlURL string
-	serviceURL string
-	http       *http.Client
-	fileHTTP   *http.Client // no client-level timeout; file transfers are context-bounded
-	socketPath string
+	controlURL  string
+	serviceURL  string
+	http        *http.Client
+	fileHTTP    *http.Client // no client-level timeout; file transfers are context-bounded
+	socketPath  string
+	stateDir    string
+	credentials credentialStore
 
 	daemonMu sync.Mutex
 	daemon   *client.Client
+	authMu   sync.Mutex
 }
 
 func main() {
@@ -68,6 +78,7 @@ func main() {
 		http:       &http.Client{Timeout: 15 * time.Second},
 		fileHTTP:   &http.Client{},
 		socketPath: envOr("OURCORD_DAEMON_SOCKET", ipc.DefaultSocketPath()),
+		stateDir:   wg.DefaultStateDir(),
 	}
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetEscapeHTML(false)
@@ -141,7 +152,7 @@ func (b *bridge) dispatch(method string, raw json.RawMessage) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		if err := keyring.Set(credentialService, pkceCredential, verifier); err != nil {
+		if err := b.credentialStore().Set(credentialService, pkceCredential, verifier); err != nil {
 			return nil, fmt.Errorf("store login state: %w", err)
 		}
 		return map[string]string{
@@ -153,7 +164,7 @@ func (b *bridge) dispatch(method string, raw json.RawMessage) (any, error) {
 		if email == "" {
 			return nil, errors.New("email required")
 		}
-		verifier, err := keyring.Get(credentialService, pkceCredential)
+		verifier, err := b.credentialStore().Get(credentialService, pkceCredential)
 		if err != nil {
 			return nil, errors.New("start login again")
 		}
@@ -165,7 +176,7 @@ func (b *bridge) dispatch(method string, raw json.RawMessage) (any, error) {
 		return decodeMagicResponse(data)
 	case "auth.exchange":
 		code := stringParam(params, "code")
-		verifier, err := keyring.Get(credentialService, pkceCredential)
+		verifier, err := b.credentialStore().Get(credentialService, pkceCredential)
 		if err != nil {
 			return nil, errors.New("login session expired")
 		}
@@ -180,10 +191,10 @@ func (b *bridge) dispatch(method string, raw json.RawMessage) (any, error) {
 		if err := json.Unmarshal(data, &exchanged); err != nil || exchanged.Token == "" {
 			return nil, errors.New("invalid login response")
 		}
-		if err := keyring.Set(credentialService, jwtCredential, exchanged.Token); err != nil {
+		if err := b.credentialStore().Set(credentialService, jwtCredential, exchanged.Token); err != nil {
 			return nil, fmt.Errorf("store account credential: %w", err)
 		}
-		_ = keyring.Delete(credentialService, pkceCredential)
+		_ = b.credentialStore().Delete(credentialService, pkceCredential)
 		host, _ := os.Hostname()
 		// The daemon and bridge share the state directory in the current user-mode
 		// deployment. The Windows installer later redirects this enrollment through
@@ -193,25 +204,22 @@ func (b *bridge) dispatch(method string, raw json.RawMessage) (any, error) {
 			_, enrollErr = daemon.EnrollLocalDevice(exchanged.Token, exchanged.UserID, host)
 			b.dropDaemon(daemon, enrollErr)
 		} else {
-			_, enrollErr = client.EnrollDevice(context.Background(), b.http, b.controlURL, wg.DefaultStateDir(), exchanged.Token, host)
+			var enrolled *client.EnrollResult
+			enrolled, enrollErr = client.EnrollDevice(context.Background(), b.http, b.controlURL, b.clientStateDir(), exchanged.Token, host)
+			if enrollErr == nil {
+				enrollErr = b.credentialStore().Set(credentialService, deviceCredential, enrolled.DeviceToken)
+			}
+		}
+		if enrollErr == nil {
+			_ = b.cacheDeviceCredentialFromDisk()
 		}
 		return map[string]any{"authenticated": true, "user_id": exchanged.UserID, "device_enrolled": enrollErr == nil}, nil
 	case "auth.status":
-		token, err := b.token()
-		if err != nil {
-			return map[string]bool{"authenticated": false}, nil
-		}
-		data, err := b.api(http.MethodGet, b.controlURL, "/api/me", token, nil)
-		if err != nil {
-			return map[string]bool{"authenticated": false}, nil
-		}
-		var result any
-		if err := json.Unmarshal(data, &result); err != nil {
-			return nil, err
-		}
-		return map[string]any{"authenticated": true, "profile": result}, nil
+		return b.authStatus()
 	case "auth.logout":
-		_ = keyring.Delete(credentialService, jwtCredential)
+		_ = b.credentialStore().Delete(credentialService, jwtCredential)
+		_ = b.credentialStore().Delete(credentialService, deviceCredential)
+		_ = os.Remove(filepath.Join(b.clientStateDir(), "device.token"))
 		return map[string]bool{"authenticated": false}, nil
 	case "profile.update":
 		return b.authedJSON(http.MethodPatch, b.controlURL, "/api/me", map[string]string{"display_name": stringParam(params, "display_name")})
@@ -342,17 +350,7 @@ func (b *bridge) forceDERP(publicKey, reason string) (any, error) {
 // listDevices returns the account's enrolled device records (metadata only)
 // from the control plane using the stored account JWT.
 func (b *bridge) listDevices() (any, error) {
-	token, err := b.token()
-	if err != nil {
-		return nil, errors.New("not authenticated")
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	devices, err := client.ListDevices(ctx, b.http, b.controlURL, token)
-	if err != nil {
-		return nil, err
-	}
-	return map[string]any{"devices": devices}, nil
+	return b.authedJSON(http.MethodGet, b.controlURL, "/api/devices", nil)
 }
 
 // revokeDevice revokes one device credential by id without touching the
@@ -361,16 +359,7 @@ func (b *bridge) revokeDevice(id string) (any, error) {
 	if id == "" {
 		return nil, errors.New("device id required")
 	}
-	token, err := b.token()
-	if err != nil {
-		return nil, errors.New("not authenticated")
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	if err := client.RevokeDevice(ctx, b.http, b.controlURL, token, id); err != nil {
-		return nil, err
-	}
-	return map[string]bool{"ok": true}, nil
+	return b.authedJSON(http.MethodDelete, b.controlURL, "/api/devices/"+pathSegment(id), nil)
 }
 
 // daemonClient returns the cached daemon connection, dialing on first use.
@@ -711,11 +700,7 @@ func messagesPath(roomID, before string, limit int) string {
 }
 
 func (b *bridge) authedJSON(method, base, path string, body any) (any, error) {
-	token, err := b.token()
-	if err != nil {
-		return nil, errors.New("not authenticated")
-	}
-	data, err := b.api(method, base, path, token, body)
+	data, _, err := b.apiWithAccount(method, base, path, body)
 	if err != nil {
 		return nil, err
 	}
@@ -726,6 +711,44 @@ func (b *bridge) authedJSON(method, base, path string, body any) (any, error) {
 		}
 	}
 	return result, nil
+}
+
+type httpStatusError struct {
+	status  int
+	message string
+}
+
+func (e *httpStatusError) Error() string { return e.message }
+
+func isHTTPStatus(err error, status int) bool {
+	var responseErr *httpStatusError
+	return errors.As(err, &responseErr) && responseErr.status == status
+}
+
+func (b *bridge) apiWithAccount(method, base, path string, body any) ([]byte, string, error) {
+	token, err := b.token()
+	if err != nil {
+		token, err = b.exchangeStoredDeviceCredential()
+		if err != nil {
+			if errors.Is(err, keyring.ErrNotFound) || isHTTPStatus(err, http.StatusUnauthorized) {
+				return nil, "", errors.New("not authenticated")
+			}
+			return nil, "", err
+		}
+	}
+	data, err := b.api(method, base, path, token, body)
+	if !isHTTPStatus(err, http.StatusUnauthorized) {
+		return data, token, err
+	}
+	token, refreshErr := b.exchangeStoredDeviceCredential()
+	if refreshErr != nil {
+		if errors.Is(refreshErr, keyring.ErrNotFound) || isHTTPStatus(refreshErr, http.StatusUnauthorized) {
+			return nil, "", err
+		}
+		return nil, "", refreshErr
+	}
+	data, err = b.api(method, base, path, token, body)
+	return data, token, err
 }
 
 func (b *bridge) api(method, base, path, token string, body any) ([]byte, error) {
@@ -763,12 +786,113 @@ func (b *bridge) api(method, base, path, token string, body any) ([]byte, error)
 		if failure.Error == "" {
 			failure.Error = http.StatusText(resp.StatusCode)
 		}
-		return nil, errors.New(failure.Error)
+		return nil, &httpStatusError{status: resp.StatusCode, message: failure.Error}
 	}
 	return data, nil
 }
 
-func (b *bridge) token() (string, error) { return keyring.Get(credentialService, jwtCredential) }
+func (b *bridge) credentialStore() credentialStore {
+	if b.credentials == nil {
+		return newCredentialStore(b.clientStateDir())
+	}
+	return b.credentials
+}
+
+func (b *bridge) clientStateDir() string {
+	if b.stateDir == "" {
+		return wg.DefaultStateDir()
+	}
+	return b.stateDir
+}
+
+func (b *bridge) token() (string, error) {
+	return b.credentialStore().Get(credentialService, jwtCredential)
+}
+
+func (b *bridge) authStatus() (any, error) {
+	if token, err := b.token(); err == nil {
+		if profile, err := b.fetchProfile(token); err == nil {
+			return map[string]any{"authenticated": true, "profile": profile}, nil
+		} else if !isHTTPStatus(err, http.StatusUnauthorized) {
+			return nil, err
+		}
+	}
+
+	token, err := b.exchangeStoredDeviceCredential()
+	if err != nil {
+		if errors.Is(err, keyring.ErrNotFound) || isHTTPStatus(err, http.StatusUnauthorized) {
+			return map[string]bool{"authenticated": false}, nil
+		}
+		return nil, err
+	}
+	profile, err := b.fetchProfile(token)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"authenticated": true, "profile": profile}, nil
+}
+
+func (b *bridge) fetchProfile(token string) (any, error) {
+	data, err := b.api(http.MethodGet, b.controlURL, "/api/me", token, nil)
+	if err != nil {
+		return nil, err
+	}
+	var profile any
+	if err := json.Unmarshal(data, &profile); err != nil {
+		return nil, err
+	}
+	return profile, nil
+}
+
+func (b *bridge) exchangeStoredDeviceCredential() (string, error) {
+	b.authMu.Lock()
+	defer b.authMu.Unlock()
+
+	store := b.credentialStore()
+	deviceToken, err := store.Get(credentialService, deviceCredential)
+	if err != nil {
+		data, readErr := os.ReadFile(filepath.Join(b.clientStateDir(), "device.token"))
+		if readErr != nil {
+			if errors.Is(readErr, os.ErrNotExist) {
+				return "", keyring.ErrNotFound
+			}
+			return "", readErr
+		}
+		deviceToken = strings.TrimSpace(string(data))
+	}
+	if !strings.HasPrefix(deviceToken, "dt_") {
+		return "", keyring.ErrNotFound
+	}
+	data, err := b.api(http.MethodPost, b.controlURL, "/api/auth/device", "", map[string]string{"device_token": deviceToken})
+	if err != nil {
+		return "", err
+	}
+	var exchanged struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(data, &exchanged); err != nil || exchanged.Token == "" {
+		return "", errors.New("invalid device login response")
+	}
+	if err := store.Set(credentialService, deviceCredential, deviceToken); err != nil {
+		return "", fmt.Errorf("store device credential: %w", err)
+	}
+	if err := store.Set(credentialService, jwtCredential, exchanged.Token); err != nil {
+		return "", fmt.Errorf("store account credential: %w", err)
+	}
+	return exchanged.Token, nil
+}
+
+func (b *bridge) cacheDeviceCredentialFromDisk() error {
+	data, err := os.ReadFile(filepath.Join(b.clientStateDir(), "device.token"))
+	if err != nil {
+		return err
+	}
+	deviceToken := strings.TrimSpace(string(data))
+	if !strings.HasPrefix(deviceToken, "dt_") {
+		return errors.New("invalid device credential")
+	}
+	return b.credentialStore().Set(credentialService, deviceCredential, deviceToken)
+}
 
 func decodeMagicResponse(data []byte) (map[string]any, error) {
 	var sent struct {
