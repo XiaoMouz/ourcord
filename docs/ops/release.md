@@ -76,11 +76,11 @@ The **Desktop public beta** workflow is also the single publication pipeline:
 The same workflow builds an Apple Silicon DMG on `macos-15`, ad-hoc signs the
 application bundle, and publishes both the DMG and the signed
 `darwin-aarch64` updater archive. It is intentionally not Apple-notarized yet,
-so Gatekeeper displays an unidentified-developer warning. This first macOS beta
-bundles a user-mode `ourcordd` sidecar so daemon status, enrollment and local
-diagnostics are available without a separate install. The privileged launchd
-helper is not implemented yet, so VPN and media networking still require a
-manually installed root daemon.
+so Gatekeeper displays an unidentified-developer warning. The bundle installs
+its `ourcordd` sidecar as a root LaunchDaemon after a native administrator
+prompt; only the installing user's UID plus HMAC-authenticated IPC can control
+it. A changed bundled daemon is upgraded on the first launch after an app
+update.
 
 Stable public artifacts are:
 

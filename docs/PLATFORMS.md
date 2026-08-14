@@ -149,9 +149,13 @@ sudo ./ourcordd \
   --state-dir /usr/local/var/ourcord
 ```
 
-**b. launchd helper（生产推荐，属于 Phase 4 分发/产品化）**
+**b. launchd daemon（桌面客户端默认）**
 
-按设计应通过 `SMJobBless` 或 launchd `LaunchDaemon` 运行 root helper，UI 通过 IPC 与之通信。**当前未实现**——见 §7「已知缺口」。
+Apple Silicon 桌面包首次启动（以及内置 daemon 升级）时会请求一次管理员授权，把
+`ourcordd` 与语音动态库安装到 `/Library/PrivilegedHelperTools/OurCord/` 并注册
+`app.ourcord.daemon` LaunchDaemon。UI/bridge 始终保持普通用户权限；root daemon 的
+Unix socket 只授予安装用户 UID，连接还必须通过该用户 mode-0600 IPC key 的 HMAC
+握手。取消授权时客户端仍可用于账户/聊天，但网络状态会显示 daemon unavailable。
 
 ### 3.2 launchd plist 示例（手动安装版）
 
@@ -197,10 +201,9 @@ pass quick on utun0
 
 无差异——都走同一条 `utun` 路径，`wireguard-go` 已编译两架构。`ifconfig <utunN> inet <addr> <addr>`、`route -n add -inet6 ...`、`route -n add -inet -host ...` 命令完全一致（见 `addr_darwin.go`）。
 
-当前公开测试包只提供 Apple Silicon DMG，覆盖 UI、账户与聊天测试。应用包使用
-ad-hoc 签名、尚未 Apple notarize，首次打开会出现 Gatekeeper 提示。DMG 已捆绑并由
-Tauri 托管启动 user-mode `ourcordd`，用于 enrollment、状态和本地诊断；创建 utun 与
-写路由仍需要 root，因此完整 VPN/语音链路测试仍需按本节手动安装 root daemon。
+当前公开测试包只提供 Apple Silicon DMG。应用包使用 ad-hoc 签名、尚未 Apple
+notarize，首次打开会出现 Gatekeeper 提示。首次运行还会出现 macOS 管理员授权框，
+用于安装/启动上述 launchd daemon；授权完成后可直接创建 utun 并写入路由。
 
 ---
 
@@ -290,7 +293,7 @@ netsh advfirewall firewall add rule name="OurCord daemon" dir=in action=allow pr
 
 ## 7. Known gaps
 
-- **macOS launchd helper 一键安装**：Apple Silicon DMG 已携带 user-mode daemon，避免客户端长期显示 daemon unavailable；完整 VPN/语音仍需手动 `sudo` 启动 daemon 或自行写 plist，`SMJobBless` 集成仍待做。
+- **macOS 正式签名/公证**：Apple Silicon DMG 已能一键安装受 UID+HMAC 限制的 root LaunchDaemon；Developer ID 签名、notarization 及正式 blessed helper 流程仍待 Apple 开发者凭据。
 - **Windows 发布验收**：NSIS 安装器、SCM 服务包装、Azure Artifact Signing 与 Tauri updater 流水线已实现，但仍需在配置 Azure/GitHub secrets 后完成签名产物和真机安装/升级验收。
 - **账户隔离**：当前 Windows daemon enrollment profile 是机器级单账户；同机多 Windows SID 并行使用不同 OurCord 账户尚未实现。
 - **其他平台自动更新**：当前 updater 发布流水线仅覆盖 Windows beta channel。

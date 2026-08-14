@@ -10,11 +10,11 @@ respawned on death). Do not revert to `--once` per-call spawning: the UI polls
 `daemon.snapshot` at 1 Hz, and per-call spawning also leaks request payloads
 (auth codes) into the process command line.
 
-The Apple Silicon bundle also carries `ourcordd` as a managed sidecar. Tauri
-starts it with the app, retries after an unavailable snapshot, and stops the
-owned process when the window exits. It is user-mode only: full utun and route
-setup still requires the separately installed launchd/root helper described in
-`docs/PLATFORMS.md`.
+The Apple Silicon bundle carries `ourcordd` and installs it as the root
+`app.ourcord.daemon` LaunchDaemon after one macOS administrator prompt. The
+daemon owns utun/routes; the desktop bridge remains unprivileged and reaches it
+through a per-user mode-0600 socket guarded by both peer UID and the existing
+HMAC handshake. Updated app bundles replace the helper on the next launch.
 
 Frontend layout: `src/App.tsx` orchestrates state; `src/components/*` are pure
 presenters; `src/{bridge,prefs,messages,names,quality,format,menu}.ts` hold the
