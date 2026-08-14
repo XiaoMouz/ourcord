@@ -82,6 +82,27 @@ func (s *daemonService) EnrollDevice(ctx context.Context, req *ourcordv1.EnrollD
 	return &ourcordv1.EnrollDeviceResponse{Result: result, Profile: ipc.LocalProfileToProto(profile)}, nil
 }
 
+func (s *daemonService) RefreshSession(ctx context.Context, _ *ourcordv1.RefreshSessionRequest) (*ourcordv1.RefreshSessionResponse, error) {
+	response, err := s.d.refreshLocalSession(ctx)
+	if err != nil {
+		return nil, status.Error(codes.Unauthenticated, err.Error())
+	}
+	return &ourcordv1.RefreshSessionResponse{
+		AccessToken: response.Token,
+		UserId:      response.UserID,
+		ExpiresAt:   response.ExpiresAt,
+	}, nil
+}
+
+func (s *daemonService) UnenrollDevice(_ context.Context, _ *ourcordv1.UnenrollDeviceRequest) (*ourcordv1.UnenrollDeviceResponse, error) {
+	err := s.d.unenrollLocalDevice()
+	result := &ourcordv1.OperationResult{Ok: err == nil}
+	if err != nil {
+		result.ErrorMessage = err.Error()
+	}
+	return &ourcordv1.UnenrollDeviceResponse{Result: result}, nil
+}
+
 // op runs a mutating command and folds the outcome into an OperationResult.
 func (s *daemonService) op(ctx context.Context, cmd string, params map[string]string) *ourcordv1.OperationResult {
 	resp := s.d.HandleIPC(ctx, ipc.IPCRequest{Cmd: cmd, Params: params})

@@ -46,6 +46,8 @@ func main() {
 	var (
 		controlURL     = flag.String("control-url", "https://control.ourcord.mou.best", "Control plane URL")
 		socketPath     = flag.String("socket", ipc.DefaultSocketPath(), "Unix socket path for IPC")
+		ipcKeyPath     = flag.String("ipc-key", "", "IPC HMAC key path (default: current user's config directory)")
+		ipcUID         = flag.Int("ipc-uid", -1, "Only accept IPC from this UID and transfer socket ownership (macOS root helper)")
 		stateDir       = flag.String("state-dir", wg.DefaultStateDir(), "Persistent state directory (WireGuard private key, etc.)")
 		logLevel       = flag.String("log-level", "info", "Log level: debug, info, error")
 		logFormat      = flag.String("log-format", "json", "Runtime log format: json or text")
@@ -95,7 +97,11 @@ func main() {
 	// stacks on top of the SO_PEERCRED uid check.
 	var hmacKey []byte
 	if ipc.UsesHMACAuth() {
-		hmacKey, err = ipc.LoadOrCreateHMACKey(ipc.DefaultHMACKeyPath())
+		keyPath := *ipcKeyPath
+		if keyPath == "" {
+			keyPath = ipc.DefaultHMACKeyPath()
+		}
+		hmacKey, err = ipc.LoadOrCreateHMACKey(keyPath)
 		if err != nil {
 			log.Fatalf("Load IPC HMAC key: %v", err)
 		}
@@ -103,7 +109,12 @@ func main() {
 
 	// IPC server: gRPC over the authenticated unix socket (peercred + W3 HMAC
 	// handshake run before HTTP/2 starts; see pkg/ipc/transport.go).
-	lis, err := ipc.ListenAuthenticated(*socketPath, hmacKey)
+	var lis net.Listener
+	if *ipcUID >= 0 {
+		lis, err = ipc.ListenAuthenticatedForUID(*socketPath, hmacKey, *ipcUID)
+	} else {
+		lis, err = ipc.ListenAuthenticated(*socketPath, hmacKey)
+	}
 	if err != nil {
 		log.Fatalf("IPC listen: %v", err)
 	}
@@ -476,6 +487,34 @@ func (d *daemon) enrollLocalDevice(ctx context.Context, accessToken, userID, dev
 		return ipc.LocalProfile{}, fmt.Errorf("store local profile: %w", err)
 	}
 	return profile, nil
+}
+
+func (d *daemon) refreshLocalSession(ctx context.Context) (*control.DeviceTokenResponse, error) {
+	deviceToken := loadDeviceToken(d.stateDir)
+	if deviceToken == "" {
+		return nil, errors.New("device is not enrolled")
+	}
+	cli := d.clientFactory()(d.controlURL, "", d.keyPair.PublicKeyBase64())
+	response, err := cli.ExchangeDeviceToken(ctx, deviceToken)
+	if err != nil {
+		return nil, fmt.Errorf("refresh device session: %w", err)
+	}
+	if response.Token == "" || response.UserID == "" {
+		return nil, errors.New("refresh device session: invalid response")
+	}
+	return response, nil
+}
+
+func (d *daemon) unenrollLocalDevice() error {
+	if d.vpnActive.Load() {
+		d.disconnect()
+	}
+	for _, name := range []string{"device.token", "profile.json", "token"} {
+		if err := os.Remove(filepath.Join(d.stateDir, name)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("remove %s: %w", name, err)
+		}
+	}
+	return nil
 }
 
 // voiceJoin starts the voice engine for the current network. Requires an active

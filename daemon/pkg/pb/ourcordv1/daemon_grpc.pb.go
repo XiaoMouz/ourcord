@@ -27,6 +27,8 @@ const (
 	DaemonService_LeaveNetwork_FullMethodName    = "/ourcord.v1.DaemonService/LeaveNetwork"
 	DaemonService_GetLocalProfile_FullMethodName = "/ourcord.v1.DaemonService/GetLocalProfile"
 	DaemonService_EnrollDevice_FullMethodName    = "/ourcord.v1.DaemonService/EnrollDevice"
+	DaemonService_RefreshSession_FullMethodName  = "/ourcord.v1.DaemonService/RefreshSession"
+	DaemonService_UnenrollDevice_FullMethodName  = "/ourcord.v1.DaemonService/UnenrollDevice"
 )
 
 // DaemonServiceClient is the client API for DaemonService service.
@@ -47,6 +49,8 @@ type DaemonServiceClient interface {
 	LeaveNetwork(ctx context.Context, in *LeaveNetworkRequest, opts ...grpc.CallOption) (*LeaveNetworkResponse, error)
 	GetLocalProfile(ctx context.Context, in *GetLocalProfileRequest, opts ...grpc.CallOption) (*GetLocalProfileResponse, error)
 	EnrollDevice(ctx context.Context, in *EnrollDeviceRequest, opts ...grpc.CallOption) (*EnrollDeviceResponse, error)
+	RefreshSession(ctx context.Context, in *RefreshSessionRequest, opts ...grpc.CallOption) (*RefreshSessionResponse, error)
+	UnenrollDevice(ctx context.Context, in *UnenrollDeviceRequest, opts ...grpc.CallOption) (*UnenrollDeviceResponse, error)
 }
 
 type daemonServiceClient struct {
@@ -137,6 +141,26 @@ func (c *daemonServiceClient) EnrollDevice(ctx context.Context, in *EnrollDevice
 	return out, nil
 }
 
+func (c *daemonServiceClient) RefreshSession(ctx context.Context, in *RefreshSessionRequest, opts ...grpc.CallOption) (*RefreshSessionResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RefreshSessionResponse)
+	err := c.cc.Invoke(ctx, DaemonService_RefreshSession_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) UnenrollDevice(ctx context.Context, in *UnenrollDeviceRequest, opts ...grpc.CallOption) (*UnenrollDeviceResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(UnenrollDeviceResponse)
+	err := c.cc.Invoke(ctx, DaemonService_UnenrollDevice_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // DaemonServiceServer is the server API for DaemonService service.
 // All implementations must embed UnimplementedDaemonServiceServer
 // for forward compatibility.
@@ -155,6 +179,8 @@ type DaemonServiceServer interface {
 	LeaveNetwork(context.Context, *LeaveNetworkRequest) (*LeaveNetworkResponse, error)
 	GetLocalProfile(context.Context, *GetLocalProfileRequest) (*GetLocalProfileResponse, error)
 	EnrollDevice(context.Context, *EnrollDeviceRequest) (*EnrollDeviceResponse, error)
+	RefreshSession(context.Context, *RefreshSessionRequest) (*RefreshSessionResponse, error)
+	UnenrollDevice(context.Context, *UnenrollDeviceRequest) (*UnenrollDeviceResponse, error)
 	mustEmbedUnimplementedDaemonServiceServer()
 }
 
@@ -188,6 +214,12 @@ func (UnimplementedDaemonServiceServer) GetLocalProfile(context.Context, *GetLoc
 }
 func (UnimplementedDaemonServiceServer) EnrollDevice(context.Context, *EnrollDeviceRequest) (*EnrollDeviceResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method EnrollDevice not implemented")
+}
+func (UnimplementedDaemonServiceServer) RefreshSession(context.Context, *RefreshSessionRequest) (*RefreshSessionResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method RefreshSession not implemented")
+}
+func (UnimplementedDaemonServiceServer) UnenrollDevice(context.Context, *UnenrollDeviceRequest) (*UnenrollDeviceResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method UnenrollDevice not implemented")
 }
 func (UnimplementedDaemonServiceServer) mustEmbedUnimplementedDaemonServiceServer() {}
 func (UnimplementedDaemonServiceServer) testEmbeddedByValue()                       {}
@@ -354,6 +386,42 @@ func _DaemonService_EnrollDevice_Handler(srv interface{}, ctx context.Context, d
 	return interceptor(ctx, in, info, handler)
 }
 
+func _DaemonService_RefreshSession_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RefreshSessionRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).RefreshSession(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_RefreshSession_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).RefreshSession(ctx, req.(*RefreshSessionRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_UnenrollDevice_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(UnenrollDeviceRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).UnenrollDevice(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_UnenrollDevice_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).UnenrollDevice(ctx, req.(*UnenrollDeviceRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // DaemonService_ServiceDesc is the grpc.ServiceDesc for DaemonService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -392,6 +460,14 @@ var DaemonService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "EnrollDevice",
 			Handler:    _DaemonService_EnrollDevice_Handler,
+		},
+		{
+			MethodName: "RefreshSession",
+			Handler:    _DaemonService_RefreshSession_Handler,
+		},
+		{
+			MethodName: "UnenrollDevice",
+			Handler:    _DaemonService_UnenrollDevice_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

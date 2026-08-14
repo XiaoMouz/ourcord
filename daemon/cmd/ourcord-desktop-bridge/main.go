@@ -217,6 +217,10 @@ func (b *bridge) dispatch(method string, raw json.RawMessage) (any, error) {
 	case "auth.status":
 		return b.authStatus()
 	case "auth.logout":
+		if daemon, err := b.daemonClient(); err == nil {
+			err = daemon.UnenrollLocalDevice()
+			b.dropDaemon(daemon, err)
+		}
 		_ = b.credentialStore().Delete(credentialService, jwtCredential)
 		_ = b.credentialStore().Delete(credentialService, deviceCredential)
 		_ = os.Remove(filepath.Join(b.clientStateDir(), "device.token"))
@@ -812,6 +816,7 @@ func (b *bridge) token() (string, error) {
 func (b *bridge) authStatus() (any, error) {
 	if token, err := b.token(); err == nil {
 		if profile, err := b.fetchProfile(token); err == nil {
+			b.ensureDaemonEnrollment(token, profile)
 			return map[string]any{"authenticated": true, "profile": profile}, nil
 		} else if !isHTTPStatus(err, http.StatusUnauthorized) {
 			return nil, err
@@ -819,6 +824,9 @@ func (b *bridge) authStatus() (any, error) {
 	}
 
 	token, err := b.exchangeStoredDeviceCredential()
+	if errors.Is(err, keyring.ErrNotFound) || isHTTPStatus(err, http.StatusUnauthorized) {
+		token, err = b.exchangeDaemonSession()
+	}
 	if err != nil {
 		if errors.Is(err, keyring.ErrNotFound) || isHTTPStatus(err, http.StatusUnauthorized) {
 			return map[string]bool{"authenticated": false}, nil
@@ -829,7 +837,49 @@ func (b *bridge) authStatus() (any, error) {
 	if err != nil {
 		return nil, err
 	}
+	b.ensureDaemonEnrollment(token, profile)
 	return map[string]any{"authenticated": true, "profile": profile}, nil
+}
+
+func (b *bridge) exchangeDaemonSession() (string, error) {
+	daemon, err := b.daemonClient()
+	if err != nil {
+		return "", keyring.ErrNotFound
+	}
+	session, err := daemon.RefreshSession()
+	b.dropDaemon(daemon, err)
+	if err != nil {
+		return "", err
+	}
+	if err := b.credentialStore().Set(credentialService, jwtCredential, session.AccessToken); err != nil {
+		return "", fmt.Errorf("store account credential: %w", err)
+	}
+	return session.AccessToken, nil
+}
+
+func (b *bridge) ensureDaemonEnrollment(token string, profile any) {
+	root, ok := profile.(map[string]any)
+	if !ok {
+		return
+	}
+	user, ok := root["user"].(map[string]any)
+	if !ok {
+		return
+	}
+	userID, _ := user["id"].(string)
+	if userID == "" {
+		return
+	}
+	daemon, err := b.daemonClient()
+	if err != nil {
+		return
+	}
+	local, err := daemon.LocalProfile()
+	if err == nil && !local.Enrolled {
+		host, _ := os.Hostname()
+		_, err = daemon.EnrollLocalDevice(token, userID, host)
+	}
+	b.dropDaemon(daemon, err)
 }
 
 func (b *bridge) fetchProfile(token string) (any, error) {

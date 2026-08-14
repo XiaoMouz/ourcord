@@ -7,6 +7,7 @@
     "macOS": {
       "minimumSystemVersion": "12.0",
       "signingIdentity": "-",
+      "entitlements": "Entitlements.plist",
       "frameworks": [
         "binaries/libopus.0.dylib",
         "binaries/libopusfile.0.dylib",

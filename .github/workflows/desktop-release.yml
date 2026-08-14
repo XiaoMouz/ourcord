@@ -316,6 +316,20 @@ jobs:
             echo "::error::bundled macOS audio binaries reference Homebrew paths"
             exit 1
           fi
+          entitlements="$(codesign -d --entitlements :- "$app/Contents/MacOS/ourcordd" 2>&1)"
+          grep -q 'com.apple.security.cs.disable-library-validation' <<<"$entitlements" || {
+            echo "::error::macOS daemon cannot load bundled Opus libraries under hardened runtime"
+            exit 1
+          }
+          helper="$RUNNER_TEMP/OurCord-helper"
+          mkdir -p "$helper/MacOS" "$helper/Frameworks"
+          cp "$app/Contents/MacOS/ourcordd" "$helper/MacOS/ourcordd"
+          cp "$app/Contents/Frameworks"/*.dylib "$helper/Frameworks/"
+          helper_help="$("$helper/MacOS/ourcordd" -h 2>&1 || true)"
+          grep -q -- '-ipc-uid' <<<"$helper_help" || {
+            echo "::error::macOS launchd helper layout is not executable"
+            exit 1
+          }
           hdiutil verify "$dmg"
 
           max_asset_bytes=$((25 * 1024 * 1024))

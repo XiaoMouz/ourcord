@@ -46,6 +46,42 @@ func TestListenAuthenticatedDoesNotReplaceLiveSocket(t *testing.T) {
 	conn.Close()
 }
 
+func TestListenAuthenticatedForCurrentUID(t *testing.T) {
+	sock, secret := tempSocket(t)
+	lis, err := ListenAuthenticatedForUID(sock, secret, os.Getuid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = lis.Close() })
+
+	info, err := os.Stat(sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("socket mode = %o, want 600", info.Mode().Perm())
+	}
+
+	accepted := make(chan error, 1)
+	go func() {
+		conn, err := lis.Accept()
+		if err == nil {
+			_ = conn.Close()
+		}
+		accepted <- err
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	conn, err := DialAuthenticated(ctx, sock, secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = conn.Close()
+	if err := <-accepted; err != nil {
+		t.Fatal(err)
+	}
+}
+
 // TestAuthenticatedTransportPreservesPipelinedBytes proves the prebuf replay:
 // bytes the client pipelines immediately after its handshake response (as gRPC
 // does with the HTTP/2 preface) must reach the server-side reader intact.

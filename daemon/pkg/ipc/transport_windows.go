@@ -36,6 +36,12 @@ func ListenAuthenticated(pipePath string, secret []byte) (net.Listener, error) {
 	return &authListener{Listener: ln, secret: secret}, nil
 }
 
+// ListenAuthenticatedForUID is a Unix privilege-separation concern. Windows
+// named pipes are protected by their DACL and keep the existing listener.
+func ListenAuthenticatedForUID(pipePath string, secret []byte, _ int) (net.Listener, error) {
+	return ListenAuthenticated(pipePath, secret)
+}
+
 type authListener struct {
 	net.Listener
 	secret []byte

@@ -36,6 +36,22 @@ func DefaultSocketPath() string {
 // and authenticates every connection in Accept. A nil secret skips the HMAC
 // handshake (tests); peercred is always enforced.
 func ListenAuthenticated(socketPath string, secret []byte) (net.Listener, error) {
+	return listenAuthenticated(socketPath, secret, os.Getuid(), -1)
+}
+
+// ListenAuthenticatedForUID creates an authenticated listener controlled by a
+// single non-daemon UID. It is used by the macOS launchd service: ourcordd runs
+// as root to manage utun/routes, while only the user who installed the helper
+// may reach its socket. The HMAC handshake remains mandatory when secret is
+// non-nil, so peer credentials are not the only authorization boundary.
+func ListenAuthenticatedForUID(socketPath string, secret []byte, allowedUID int) (net.Listener, error) {
+	if allowedUID < 0 {
+		return nil, fmt.Errorf("ipc: invalid allowed uid %d", allowedUID)
+	}
+	return listenAuthenticated(socketPath, secret, allowedUID, allowedUID)
+}
+
+func listenAuthenticated(socketPath string, secret []byte, allowedUID, socketOwnerUID int) (net.Listener, error) {
 	// Do not unlink a live daemon's socket. This matters for desktop-managed
 	// sidecars after an app crash: a replacement process must reuse the live
 	// daemon instead of orphaning it behind a newly bound socket path.
@@ -56,12 +72,19 @@ func ListenAuthenticated(socketPath string, secret []byte) (net.Listener, error)
 		ln.Close()
 		return nil, fmt.Errorf("chmod unix %s: %w", socketPath, err)
 	}
-	return &authListener{Listener: ln, secret: secret}, nil
+	if socketOwnerUID >= 0 {
+		if err := os.Chown(socketPath, socketOwnerUID, -1); err != nil {
+			ln.Close()
+			return nil, fmt.Errorf("chown unix %s to uid %d: %w", socketPath, socketOwnerUID, err)
+		}
+	}
+	return &authListener{Listener: ln, secret: secret, allowedUID: allowedUID}, nil
 }
 
 type authListener struct {
 	net.Listener
-	secret []byte
+	secret     []byte
+	allowedUID int
 }
 
 // Accept authenticates serially (the handshake is deadline-bounded and local,
@@ -75,7 +98,7 @@ func (l *authListener) Accept() (net.Conn, error) {
 		if err != nil {
 			return nil, err
 		}
-		if err := checkPeerCred(conn); err != nil {
+		if err := checkPeerCred(conn, l.allowedUID); err != nil {
 			conn.Close()
 			continue
 		}

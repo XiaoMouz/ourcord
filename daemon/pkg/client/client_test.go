@@ -87,6 +87,14 @@ func (stubServer) LeaveNetwork(context.Context, *ourcordv1.LeaveNetworkRequest) 
 	return &ourcordv1.LeaveNetworkResponse{Result: &ourcordv1.OperationResult{Ok: true}}, nil
 }
 
+func (stubServer) RefreshSession(context.Context, *ourcordv1.RefreshSessionRequest) (*ourcordv1.RefreshSessionResponse, error) {
+	return &ourcordv1.RefreshSessionResponse{AccessToken: "jwt", UserId: "user-1", ExpiresAt: 1234}, nil
+}
+
+func (stubServer) UnenrollDevice(context.Context, *ourcordv1.UnenrollDeviceRequest) (*ourcordv1.UnenrollDeviceResponse, error) {
+	return &ourcordv1.UnenrollDeviceResponse{Result: &ourcordv1.OperationResult{Ok: true}}, nil
+}
+
 func (stubServer) Ping(context.Context, *ourcordv1.PingRequest) (*ourcordv1.PingResponse, error) {
 	return &ourcordv1.PingResponse{}, nil
 }
@@ -151,12 +159,23 @@ func TestMutatingSucceeds(t *testing.T) {
 		func() error { return c.EnterNetwork("lobby-x-voice") },
 		c.Ping,
 		func() error { return c.ForceDERP("pk", "") },
+		c.UnenrollLocalDevice,
 		c.LeaveNetwork,
 		c.Disconnect,
 	} {
 		if err := op(); err != nil {
 			t.Fatalf("mutating op: %v", err)
 		}
+	}
+}
+
+func TestRefreshSession(t *testing.T) {
+	session, err := dialStub(t).RefreshSession()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if session.AccessToken != "jwt" || session.UserID != "user-1" || session.ExpiresAt != 1234 {
+		t.Fatalf("unexpected session: %+v", session)
 	}
 }
 

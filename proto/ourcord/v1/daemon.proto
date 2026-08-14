@@ -21,6 +21,8 @@ service DaemonService {
   rpc LeaveNetwork(LeaveNetworkRequest) returns (LeaveNetworkResponse);
   rpc GetLocalProfile(GetLocalProfileRequest) returns (GetLocalProfileResponse);
   rpc EnrollDevice(EnrollDeviceRequest) returns (EnrollDeviceResponse);
+  rpc RefreshSession(RefreshSessionRequest) returns (RefreshSessionResponse);
+  rpc UnenrollDevice(UnenrollDeviceRequest) returns (UnenrollDeviceResponse);
 }
 
 message GetStatusRequest {}
@@ -74,6 +76,22 @@ message EnrollDeviceRequest {
 message EnrollDeviceResponse {
   OperationResult result = 1;
   LocalProfile profile = 2;
+}
+
+message RefreshSessionRequest {}
+
+message RefreshSessionResponse {
+  // Short-lived JWT returned only over the UID + HMAC authenticated local IPC
+  // channel. The long-lived device credential never leaves the root daemon.
+  string access_token = 1;
+  string user_id = 2;
+  int64 expires_at = 3;
+}
+
+message UnenrollDeviceRequest {}
+
+message UnenrollDeviceResponse {
+  OperationResult result = 1;
 }
 
 // OperationResult is used for state-changing requests. Transport-level errors

@@ -6,15 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"os"
 
 	"golang.org/x/sys/unix"
 )
 
-// checkPeerCred enforces that the peer connecting to the IPC socket is the
-// same UID as this process. macOS exposes peer credentials via
+// checkPeerCred enforces that the peer connecting to the IPC socket has the
+// configured UID. macOS exposes peer credentials via
 // SOL_LOCAL / LOCAL_PEERCRED returning an Xucred (uid + gid list).
-func checkPeerCred(conn net.Conn) error {
+func checkPeerCred(conn net.Conn, allowedUID int) error {
 	uc, ok := conn.(*net.UnixConn)
 	if !ok {
 		return errors.New("ipc: non-unix conn cannot be authorized")
@@ -36,8 +35,8 @@ func checkPeerCred(conn net.Conn) error {
 	if sockErr != nil {
 		return sockErr
 	}
-	if int(cred.Uid) != os.Getuid() {
-		return fmt.Errorf("ipc: peer uid %d != daemon uid %d", cred.Uid, os.Getuid())
+	if int(cred.Uid) != allowedUID {
+		return fmt.Errorf("ipc: peer uid %d != allowed uid %d", cred.Uid, allowedUID)
 	}
 	return nil
 }

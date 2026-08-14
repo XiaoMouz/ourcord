@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- The voice-tag daemon loads the bundled Opus dylibs. They are copied to
+       a root-owned helper directory before launch, so users cannot substitute
+       a library even though ad-hoc beta builds cannot satisfy Team-ID based
+       hardened-runtime library validation. -->
+  <key>com.apple.security.cs.disable-library-validation</key>
+  <true/>
+</dict>
+</plist>

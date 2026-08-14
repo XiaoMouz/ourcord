@@ -33,6 +33,12 @@ type Client struct {
 	voice ourcordv1.DaemonVoiceServiceClient
 }
 
+type Session struct {
+	AccessToken string
+	UserID      string
+	ExpiresAt   int64
+}
+
 // Dial connects to the daemon at socketPath using the shared IPC HMAC key
 // (loaded from the default path; nil when unavailable, matching the daemon's
 // graceful-rollout behavior). It fails fast when the daemon is not listening.
@@ -191,6 +197,27 @@ func (c *Client) EnrollLocalDevice(accessToken, userID, deviceName string) (ipc.
 		return ipc.LocalProfile{}, err
 	}
 	return ipc.LocalProfileFromProto(resp.GetProfile()), nil
+}
+
+// RefreshSession asks the enrolled daemon to exchange its device credential
+// for a short-lived account JWT. The long-lived credential remains root-owned.
+func (c *Client) RefreshSession() (*Session, error) {
+	resp, err := c.svc.RefreshSession(context.Background(), &ourcordv1.RefreshSessionRequest{})
+	if err != nil {
+		return nil, rpcErr("refresh-session", err)
+	}
+	if resp.GetAccessToken() == "" || resp.GetUserId() == "" {
+		return nil, &DaemonError{Cmd: "refresh-session", Msg: "daemon returned an invalid session"}
+	}
+	return &Session{AccessToken: resp.GetAccessToken(), UserID: resp.GetUserId(), ExpiresAt: resp.GetExpiresAt()}, nil
+}
+
+func (c *Client) UnenrollLocalDevice() error {
+	resp, err := c.svc.UnenrollDevice(context.Background(), &ourcordv1.UnenrollDeviceRequest{})
+	if err != nil {
+		return rpcErr("unenroll-device", err)
+	}
+	return opErr("unenroll-device", resp.GetResult(), nil)
 }
 
 // EnterRoom is the legacy room-id alias for EnterNetwork. The daemon resolves
