@@ -107,7 +107,7 @@ async function leaveRealtimeSession() {
   // participant behind. Bound shutdown latency if the daemon/control plane is
   // unavailable; abrupt failures are still covered by the server-side TTL.
   await Promise.race([
-    bridge("network.leave").catch(() => undefined),
+    Promise.allSettled([bridge("network.leave"), bridge("presence.leave")]),
     new Promise<void>((resolve) => window.setTimeout(resolve, 3_000)),
   ]);
 }

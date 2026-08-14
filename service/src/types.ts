@@ -34,6 +34,8 @@ export interface LobbyMember {
   role: "owner" | "admin" | "member" | "guest";
   joined_at: number;
   display_name?: string;
+  online?: boolean;
+  voice_room_id?: string | null;
 }
 
 export interface Message {

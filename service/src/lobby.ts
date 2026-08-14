@@ -1,5 +1,6 @@
 import { Env, Lobby, Room, LobbyMember } from "./types";
 import { requireAuth, generateId, json, err, checkBodySize } from "./auth";
+import { MEMBER_PRESENCE_TTL_SECONDS } from "./presence";
 
 // GET /api/lobbies — list the authenticated user's lobby navigation model.
 // A desktop client needs this aggregate to render its initial lobby/room rail
@@ -269,12 +270,26 @@ export async function listMembers(request: Request, env: Env, lobbyId: string): 
     .first();
   if (!member) return err("Not a member", 403);
 
+  const activeSince = Math.floor(Date.now() / 1000) - MEMBER_PRESENCE_TTL_SECONDS;
   const members = await env.DB
-    .prepare("SELECT * FROM lobby_members WHERE lobby_id = ? ORDER BY joined_at")
-    .bind(lobbyId)
-    .all<LobbyMember>();
+    .prepare(
+      `SELECT lm.*,
+              CASE WHEN lp.last_seen >= ? THEN 1 ELSE 0 END AS online,
+              CASE WHEN lp.last_seen >= ? THEN lp.voice_room_id ELSE NULL END AS voice_room_id
+         FROM lobby_members lm
+         LEFT JOIN lobby_presence lp
+           ON lp.lobby_id = lm.lobby_id AND lp.user_id = lm.user_id
+        WHERE lm.lobby_id = ?
+        ORDER BY online DESC, lm.joined_at`,
+    )
+    .bind(activeSince, activeSince, lobbyId)
+    .all<Omit<LobbyMember, "online"> & { online: number }>();
 
-  return json({ members: members.results });
+  return json({ members: (members.results ?? []).map((row) => ({
+    ...row,
+    online: Boolean(row.online),
+    voice_room_id: row.online ? row.voice_room_id ?? null : null,
+  })) });
 }
 
 // Room name policy: 1..80 chars, no ASCII control characters. Same length

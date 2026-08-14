@@ -30,6 +30,16 @@ CREATE TABLE IF NOT EXISTS lobby_members (
   PRIMARY KEY (lobby_id, user_id)
 );
 
+CREATE TABLE IF NOT EXISTS lobby_presence (
+  lobby_id TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  last_seen INTEGER NOT NULL,
+  voice_room_id TEXT REFERENCES rooms(id) ON DELETE SET NULL,
+  PRIMARY KEY (lobby_id, user_id),
+  FOREIGN KEY (lobby_id, user_id)
+    REFERENCES lobby_members(lobby_id, user_id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS messages (
   id TEXT PRIMARY KEY,
   room_id TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,

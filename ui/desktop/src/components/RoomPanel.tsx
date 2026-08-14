@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { LobbyEntry, Room, Snapshot } from "../bridge";
+import type { LobbyEntry, Member, Room, Snapshot } from "../bridge";
 import { Spinner } from "./Skeleton";
 import VoiceStatusBar from "./VoiceStatusBar";
 import ContextMenu, { type MenuItem } from "./ContextMenu";
@@ -7,11 +7,13 @@ import { IconButton, InitialAvatar, Tooltip, cx } from "./ui";
 
 type MenuState = { x: number; y: number; items: MenuItem[] };
 
-export default function RoomPanel({ lobby, selectedRoomID, connectingRoomID, snapshot, busy, canManage, accountName, onSelectRoom, onCreateRoom, onInvite, onRenameRoom, onDeleteRoom, onReorderRoom, onOpenSettings, onLeaveVoice, refreshSnapshot, onError, onCopy }: {
+export default function RoomPanel({ lobby, selectedRoomID, connectingRoomID, snapshot, members, getName, busy, canManage, accountName, onSelectRoom, onCreateRoom, onInvite, onRenameRoom, onDeleteRoom, onReorderRoom, onOpenSettings, onLeaveVoice, refreshSnapshot, onError, onCopy }: {
   lobby?: LobbyEntry;
   selectedRoomID: string;
   connectingRoomID: string;
   snapshot: Snapshot;
+  members: Member[];
+  getName: (userID: string) => string;
   busy: boolean;
   canManage: boolean;
   accountName?: string;
@@ -32,6 +34,8 @@ export default function RoomPanel({ lobby, selectedRoomID, connectingRoomID, sna
   const byPosition = (a: Room, b: Room) => a.position - b.position;
   const textRooms = rooms.filter((room) => room.type === "text").sort(byPosition);
   const voiceRooms = rooms.filter((room) => room.type === "voice").sort(byPosition);
+  const speakingKeys = new Set((snapshot.voice?.participants ?? []).filter((participant) => participant.speaking).map((participant) => participant.public_key));
+  const speakingUsers = new Set((snapshot.peers ?? []).filter((peer) => speakingKeys.has(peer.public_key) && peer.user_id).map((peer) => peer.user_id));
 
   function openRoomMenu(e: React.MouseEvent, room: Room) {
     e.preventDefault();
@@ -49,19 +53,38 @@ export default function RoomPanel({ lobby, selectedRoomID, connectingRoomID, sna
   function roomRow(room: Room, icon: string) {
     const live = room.type === "voice" && snapshot.voice?.joined && snapshot.status?.network_id === room.vpn_namespace;
     const connecting = room.id === connectingRoomID;
-    return <li key={room.id}>
-      <div className={cx("group flex min-w-0 items-center gap-2", selectedRoomID === room.id && "menu-active", busy && "pointer-events-none opacity-50")}
+    const selected = selectedRoomID === room.id;
+    const voiceMembers = room.type === "voice"
+      ? members.filter((member) => member.online && member.voice_room_id === room.id)
+      : [];
+    return <li key={room.id} className="mb-0.5">
+      <div className={cx(
+          "group/room relative flex min-h-9 min-w-0 items-center gap-2 rounded-selector px-2.5 text-sm text-base-content/65 transition-colors duration-150 hover:bg-base-200/70 hover:text-base-content",
+          selected && "bg-base-300 font-medium text-base-content shadow-sm",
+          busy && "pointer-events-none opacity-50",
+        )}
         role="button" tabIndex={0} onClick={() => !busy && onSelectRoom(room)} onContextMenu={(e) => openRoomMenu(e, room)}
         onKeyDown={(e) => e.key === "Enter" && !busy && onSelectRoom(room)}>
-        <span className="w-4 shrink-0 text-center text-base-content/45">{icon}</span>
+        {selected && <span className="absolute inset-y-2 left-0 w-0.5 rounded-full bg-base-content/70" />}
+        <span className="w-4 shrink-0 text-center text-base-content/40 transition-colors group-hover/room:text-base-content/70">{icon}</span>
         <span className="min-w-0 flex-1 truncate">{room.name}</span>
         {connecting && <Spinner />}
-        {live && !connecting && <Tooltip label="已加入"><span className="status status-success status-sm" /></Tooltip>}
-        {canManage && <span className="hidden shrink-0 items-center group-hover:flex">
-          <IconButton label="重命名房间" className="btn-xs" onClick={(e) => { e.stopPropagation(); onRenameRoom(room); }}>✎</IconButton>
-          <IconButton label="删除房间" className="btn-xs text-error" onClick={(e) => { e.stopPropagation(); onDeleteRoom(room); }}>×</IconButton>
-        </span>}
+        <span className="grid h-6 w-6 shrink-0 place-items-center">
+          {live && !connecting && <Tooltip label="已加入" className={cx(canManage && "group-hover/room:hidden")}><span className="status status-success status-sm" /></Tooltip>}
+          {canManage && <IconButton label="房间操作" className={cx("btn-xs opacity-0 transition-opacity group-hover/room:opacity-100 focus:opacity-100", live && "hidden group-hover/room:inline-flex")}
+            onClick={(e) => { e.stopPropagation(); openRoomMenu(e, room); }}>⋯</IconButton>}
+        </span>
       </div>
+      {voiceMembers.length > 0 && <div className="ml-6 border-l border-base-300 py-1 pl-2"><ul className="list">
+          {voiceMembers.map((member) => {
+            const speaking = speakingUsers.has(member.user_id);
+            return <li key={member.user_id} className="list-row min-h-8 items-center gap-2 px-2 py-1 text-xs text-base-content/60">
+              <InitialAvatar name={getName(member.user_id)} size="sm" online />
+              <span className={cx("min-w-0 flex-1 truncate", speaking && "font-medium text-base-content")}>{getName(member.user_id)}</span>
+              {speaking && <Tooltip label="正在说话"><span className="status status-success status-xs" /></Tooltip>}
+            </li>;
+          })}
+        </ul></div>}
     </li>;
   }
 
@@ -71,14 +94,14 @@ export default function RoomPanel({ lobby, selectedRoomID, connectingRoomID, sna
       {lobby && canManage && <button className="btn btn-ghost btn-sm" onClick={onInvite}>邀请</button>}
     </header>
     <div className="min-h-0 flex-1 overflow-y-auto px-2 py-3">
-      <div className="flex h-8 items-center justify-between px-2 text-xs font-semibold uppercase tracking-wide text-base-content/45">
+      <div className="menu-title flex h-8 flex-row items-center justify-between px-2 text-xs font-medium text-base-content/45">
         <span>文字房间</span>{lobby && canManage && <IconButton label="新建文字房间" className="btn-xs" onClick={() => onCreateRoom("text")}>＋</IconButton>}
       </div>
       <ul className="menu menu-sm w-full p-0">
         {textRooms.map((room) => roomRow(room, "#"))}
         {textRooms.length === 0 && <li className="px-3 py-2 text-xs text-base-content/40">暂无房间</li>}
       </ul>
-      <div className="mt-3 flex h-8 items-center justify-between px-2 text-xs font-semibold uppercase tracking-wide text-base-content/45">
+      <div className="menu-title mt-3 flex h-8 flex-row items-center justify-between px-2 text-xs font-medium text-base-content/45">
         <span>语音房间</span>{lobby && canManage && <IconButton label="新建语音房间" className="btn-xs" onClick={() => onCreateRoom("voice")}>＋</IconButton>}
       </div>
       <ul className="menu menu-sm w-full p-0">

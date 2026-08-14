@@ -239,6 +239,11 @@ func (b *bridge) dispatch(method string, raw json.RawMessage) (any, error) {
 				return nil, err
 			}
 		}
+		// Presence is account-scoped and independent from the daemon's network
+		// lease. Retire it before deleting the JWT; TTL remains the crash fallback.
+		if b.http != nil && b.serviceURL != "" {
+			_, _ = b.authedJSON(http.MethodDelete, b.serviceURL, "/api/presence", nil)
+		}
 		_ = b.credentialStore().Delete(credentialService, jwtCredential)
 		_ = b.credentialStore().Delete(credentialService, deviceCredential)
 		_ = os.Remove(filepath.Join(b.clientStateDir(), "device.token"))
@@ -258,6 +263,10 @@ func (b *bridge) dispatch(method string, raw json.RawMessage) (any, error) {
 	case "lobbies.members":
 		path := "/api/lobbies/" + pathSegment(stringParam(params, "lobby_id")) + "/members"
 		return b.authedJSON(http.MethodGet, b.serviceURL, path, nil)
+	case "presence.update":
+		return b.authedJSON(http.MethodPost, b.serviceURL, "/api/presence", map[string]string{"voice_room_id": stringParam(params, "voice_room_id")})
+	case "presence.leave":
+		return b.authedJSON(http.MethodDelete, b.serviceURL, "/api/presence", nil)
 	case "rooms.create":
 		roomType := stringParam(params, "type")
 		if roomType == "" {

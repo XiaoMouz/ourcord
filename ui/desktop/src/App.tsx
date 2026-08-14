@@ -70,6 +70,9 @@ export default function App() {
   const selectedRoom = selectedLobby?.rooms.find((room) => room.id === selectedRoomID);
   const canManage = !!selectedLobby && ["owner", "admin"].includes(selectedLobby.member.role);
   const myUserID = auth.profile?.user?.id ?? "";
+  const activeVoiceRoomID = snapshot.voice?.joined
+    ? lobbies.flatMap((entry) => entry.rooms).find((room) => room.vpn_namespace === snapshot.status?.network_id)?.id ?? ""
+    : "";
 
   const refreshAuth = useCallback(async () => {
     const state = await bridge<AuthState>("auth.status");
@@ -96,6 +99,9 @@ export default function App() {
     } catch { setMembers([]); }
     finally { setMembersLoading(false); }
   }, [ensureNames]);
+  const syncPresence = useCallback(async () => {
+    await bridge("presence.update", { voice_room_id: activeVoiceRoomID });
+  }, [activeVoiceRoomID]);
 
   const applyInvite = useCallback(async (invite: InviteLink) => {
     try {
@@ -149,10 +155,14 @@ export default function App() {
     if (!auth.authenticated) return;
     const lobbyID = selectedLobby?.lobby.id ?? "";
     setMembers([]); // clear stale rows so the switch shows a loader, not the old lobby
-    void refreshMembers(lobbyID, true);
-    const timer = window.setInterval(() => void refreshMembers(lobbyID), 60_000);
+    const refreshPresence = async (showLoading = false) => {
+      try { await syncPresence(); } catch { /* TTL handles transient service failures */ }
+      await refreshMembers(lobbyID, showLoading);
+    };
+    void refreshPresence(true);
+    const timer = window.setInterval(() => void refreshPresence(), 30_000);
     return () => clearInterval(timer);
-  }, [auth.authenticated, selectedLobby?.lobby.id, refreshMembers]);
+  }, [auth.authenticated, selectedLobby?.lobby.id, refreshMembers, syncPresence]);
   useEffect(() => {
     if (!magicRetryUntil) { setMagicCooldownSeconds(0); return; }
     const update = () => {
@@ -195,6 +205,8 @@ export default function App() {
       const prefs = loadVoicePrefs();
       await bridge("voice.join_network", { network_id: room.vpn_namespace, mode: prefs.mode, threshold_dbfs: prefs.threshold_dbfs, hangover_ms: prefs.hangover_ms });
       await refreshSnapshot();
+      await bridge("presence.update", { voice_room_id: room.id }).catch(() => undefined);
+      if (selectedLobby) await refreshMembers(selectedLobby.lobby.id);
     } catch (e) { showError(String(e)); } finally { setBusy(false); setConnectingRoomID(""); }
   }
 
@@ -203,7 +215,9 @@ export default function App() {
     try {
       await bridge("voice.leave");
       await bridge("network.leave");
+      await bridge("presence.update", { voice_room_id: "" }).catch(() => undefined);
       await refreshSnapshot();
+      if (selectedLobby) await refreshMembers(selectedLobby.lobby.id);
       if (selectedRoom?.type === "voice") setSelectedRoomID("");
     } catch (e) { showError(String(e)); } finally { setBusy(false); }
   }
@@ -310,7 +324,7 @@ export default function App() {
       onCreate={() => void promptAction("createLobby")} onJoin={() => void promptAction("joinLobby")} />
     <RoomPanel lobby={selectedLobby}
       selectedRoomID={selectedRoomID} connectingRoomID={connectingRoomID}
-      snapshot={snapshot} busy={busy} canManage={canManage} accountName={auth.profile?.user?.display_name}
+      snapshot={snapshot} members={members} getName={getName} busy={busy} canManage={canManage} accountName={auth.profile?.user?.display_name}
       onSelectRoom={selectRoom} onCreateRoom={(type) => void createRoom(type)} onInvite={() => void promptAction("invite")}
       onRenameRoom={(room) => void renameRoom(room)} onDeleteRoom={(room) => void deleteRoom(room)}
       onReorderRoom={(room, dir) => void reorderRoom(room, dir)}

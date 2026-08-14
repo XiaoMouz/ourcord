@@ -31,6 +31,8 @@ const ALLOWED_METHODS: &[&str] = &[
     "lobbies.join",
     "lobbies.invite",
     "lobbies.members",
+    "presence.update",
+    "presence.leave",
     "rooms.create",
     "rooms.update",
     "rooms.delete",

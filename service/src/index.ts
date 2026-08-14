@@ -9,6 +9,7 @@ import { json, constantTimeEqual } from "./auth";
 import { verifyInternalRequest } from "./internalAuth";
 import { checkRateLimit } from "./ratelimit";
 import { log, newRequestId } from "./log";
+import { leavePresence, updatePresence } from "./presence";
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -34,6 +35,13 @@ export default {
     log({ event: "request.start", request_id: requestId, method, path });
 
     try {
+      if (method === "POST" && path === "/api/presence") {
+        return updatePresence(request, env);
+      }
+      if (method === "DELETE" && path === "/api/presence") {
+        return leavePresence(request, env);
+      }
+
       // ── Lobbies ────────────────────────────────────────────────────────────
       if (method === "POST" && path === "/api/lobbies") {
         const rl = await checkRateLimit(request, env, "lobby-create", 5, 60);
