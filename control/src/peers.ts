@@ -324,6 +324,11 @@ export async function getPeerConfig(request: Request, env: Env): Promise<Respons
     await annotateNextHops(env, roomId, pubKey, peerRows);
   }
 
+  // Device names are private device-management metadata. Mesh peers only need
+  // stable account display names, keys and route fields; never disclose another
+  // member's hostname/device label in the config response.
+  const publicPeerRows = peerRows.map(({ name: _deviceName, ...peer }) => peer);
+
   // J2: relay map is per-caller now (personal relays scoped to owner).
   // Query live; relay_servers is small. Region filter is N/A here — return
   // all visible relays so the daemon can pick by latency on its own.
@@ -332,7 +337,7 @@ export async function getPeerConfig(request: Request, env: Env): Promise<Respons
 
   const headers: HeadersInit = { "Content-Type": "application/json" };
   if (scopeWarning) headers["X-Scope-Warning"] = scopeWarning;
-  return new Response(JSON.stringify({ peers: peerRows, relays }), { headers });
+  return new Response(JSON.stringify({ peers: publicPeerRows, relays }), { headers });
 }
 
 // POST /api/peers/connectivity — daemon reports per-peer link capabilities in

@@ -226,6 +226,7 @@ describe("registerPeer / getPeerConfig endpoint hints", () => {
     const body = await resp.json<{ peers: Array<{ endpoint: string; derp_node_key: string }> }>();
     expect(body.peers[0].endpoint).toBe("192.168.139.110:51820");
     expect(body.peers[0].derp_node_key).toBe("nodekey:peer-b");
+    expect(body.peers[0]).not.toHaveProperty("name");
   });
 
   it("excludes the requesting public key from peer config", async () => {

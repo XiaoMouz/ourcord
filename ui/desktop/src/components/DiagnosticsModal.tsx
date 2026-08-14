@@ -76,7 +76,7 @@ export default function DiagnosticsModal({ snapshot, close, onError }: {
           {peers.map((peer) => <li key={peer.public_key} className="list-row items-center gap-3">
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2">
-                <strong className="truncate">{peer.display_name || peer.name || shortKey(peer.public_key)}</strong>
+                <strong className="truncate">{peer.display_name || shortKey(peer.public_key)}</strong>
                 <span className={cx("badge badge-sm", peer.path === "direct" ? "badge-success badge-soft" : peer.path === "derp" || peer.path === "next-hop" ? "badge-warning badge-soft" : "badge-ghost")}>{peer.path}</span>
                 {peer.flapping && <Tooltip label="路径抖动"><span className="badge badge-warning badge-soft badge-sm">⚠</span></Tooltip>}
               </div>

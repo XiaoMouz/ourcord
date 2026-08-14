@@ -26,7 +26,7 @@ export default function VoiceStage({ snapshot, selfName }: { snapshot: Snapshot;
         participant.loss_percent > 0 ? `丢包 ${participant.loss_percent.toFixed(1)}%` : null,
         `抖动 ${Math.round(participant.jitter_ms)}ms`,
       ].filter(Boolean).join(" · ");
-      const peerName = peer?.display_name || peer?.name || "未知成员";
+      const peerName = peer?.display_name || "未知成员";
       return <article key={participant.public_key} className={cx("card card-border bg-base-100", participant.speaking && "border-success ring-2 ring-success/20")}>
         <div className="card-body flex-row items-center gap-3 p-4">
         <InitialAvatar name={peerName} size="lg" online={participant.speaking} />
