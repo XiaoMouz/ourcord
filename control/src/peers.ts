@@ -12,6 +12,10 @@ import {
   isUniqueViolation,
 } from "./ipam";
 
+// meshLoop refreshes room config every 30s. Three missed refreshes retire an
+// abrupt disconnect while leaving enough slack for an isolated slow request.
+export const NETWORK_PRESENCE_TTL_SECONDS = 90;
+
 // POST /api/peers/register — register a new device/peer
 // Body: { public_key: string, name: string, platform: string }
 export async function registerPeer(request: Request, env: Env): Promise<Response> {
@@ -166,17 +170,27 @@ export async function getPeerConfig(request: Request, env: Env): Promise<Respons
   if (authResult instanceof Response) return authResult;
   const { sub: userId } = authResult;
 
-  // Update last_seen for the requesting peer (identified by public key header)
+  const now = Math.floor(Date.now() / 1000);
+
+  // Update last_seen for the requesting peer (identified by public key header).
+  // A room presence lease must never be created for a key owned by somebody
+  // else, so retain the affected-row result for the scoped request below.
   const pubKey = request.headers.get("X-Peer-Public-Key");
+  let ownsPeer = false;
   if (pubKey) {
-    await env.DB
+    const touched = await env.DB
       .prepare("UPDATE peers SET last_seen = ? WHERE user_id = ? AND public_key = ?")
-      .bind(Math.floor(Date.now() / 1000), userId, pubKey)
+      .bind(now, userId, pubKey)
       .run();
+    ownsPeer = (touched.meta?.changes ?? 0) > 0;
   }
 
   const url = new URL(request.url);
   const roomId = url.searchParams.get("room_id");
+
+  if (pubKey && !ownsPeer) {
+    return json({ error: "requesting peer is not owned by user" }, 403);
+  }
 
   let memberIds: string[] = [userId];
   let scopeWarning: string | null = null;
@@ -241,6 +255,24 @@ export async function getPeerConfig(request: Request, env: Env): Promise<Respons
     }
   }
 
+  // Presence is device/public-key scoped, not user scoped. Merely belonging to
+  // the lobby does not put every historical device into a voice call. The
+  // primary key also makes switching rooms an atomic overwrite. Pair networks
+  // remain explicitly key-scoped and do not participate in lobby presence.
+  if (pubKey && roomId && !roomId.startsWith("pair:")) {
+    await env.DB
+      .prepare(
+        `INSERT INTO peer_presence (public_key, network_id, last_seen) VALUES (?,?,?)
+         ON CONFLICT(public_key) DO UPDATE SET network_id = excluded.network_id, last_seen = excluded.last_seen`,
+      )
+      .bind(pubKey, roomId, now)
+      .run();
+  } else if (pubKey && !roomId) {
+    // LeaveNetwork fetches the user-scoped config, so an ordinary leave removes
+    // presence immediately instead of waiting for the TTL.
+    await env.DB.prepare("DELETE FROM peer_presence WHERE public_key = ?").bind(pubKey).run();
+  }
+
   // H8: explicit column list — never `SELECT *`. derp_node_key is included
   // because daemon-side DERP fallback needs each peer's DERP identity to route
   // WireGuard packets through a relay. Ban feeds still use /api/relay/banned-keys.
@@ -249,13 +281,13 @@ export async function getPeerConfig(request: Request, env: Env): Promise<Respons
               p.ip4, p.ip6, p.derp_node_key, p.wg_endpoint AS endpoint,
               u.display_name AS display_name
        FROM peers p JOIN users u ON u.id = p.user_id WHERE `;
-  const selfFilter = pubKey ? " AND public_key <> ?" : "";
+  const selfFilter = pubKey ? " AND p.public_key <> ?" : "";
   let peerRows: Peer[];
   if (pairKeys) {
-    const params: string[] = [...pairKeys];
+    const params: Array<string | number> = [...pairKeys, now - NETWORK_PRESENCE_TTL_SECONDS];
     if (pubKey) params.push(pubKey);
     const peers = await env.DB
-      .prepare(`${SELECT_PEERS}p.public_key IN (?,?)${selfFilter.replaceAll("public_key", "p.public_key")} ORDER BY p.last_seen DESC`)
+      .prepare(`${SELECT_PEERS}p.public_key IN (?,?) AND p.last_seen >= ?${selfFilter} ORDER BY p.last_seen DESC`)
       .bind(...params)
       .all<Peer>();
     peerRows = peers.results ?? [];
@@ -267,11 +299,19 @@ export async function getPeerConfig(request: Request, env: Env): Promise<Respons
     peerRows = [];
     for (let i = 0; i < memberIds.length; i += CHUNK) {
       const chunk = memberIds.slice(i, i + CHUNK);
-      const params: string[] = [...chunk];
+      const params: Array<string | number> = [...chunk];
+      if (roomId) params.push(roomId, now - NETWORK_PRESENCE_TTL_SECONDS);
+      else params.push(now - NETWORK_PRESENCE_TTL_SECONDS);
       if (pubKey) params.push(pubKey);
       const placeholders = chunk.map(() => "?").join(",");
+      const activeScope = roomId
+        ? ` AND EXISTS (
+              SELECT 1 FROM peer_presence pp
+               WHERE pp.public_key = p.public_key AND pp.network_id = ? AND pp.last_seen >= ?
+            )`
+        : " AND p.last_seen >= ?";
       const peers = await env.DB
-        .prepare(`${SELECT_PEERS}p.user_id IN (${placeholders})${selfFilter.replaceAll("public_key", "p.public_key")} ORDER BY p.last_seen DESC`)
+        .prepare(`${SELECT_PEERS}p.user_id IN (${placeholders})${activeScope}${selfFilter} ORDER BY p.last_seen DESC`)
         .bind(...params)
         .all<Peer>();
       peerRows.push(...(peers.results ?? []));

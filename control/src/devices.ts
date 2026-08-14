@@ -156,13 +156,27 @@ export async function revokeDevice(request: Request, env: Env, deviceId: string)
   const { sub: userId } = authResult;
 
   const now = Math.floor(Date.now() / 1000);
-  const res = await env.DB
-    .prepare("UPDATE device_tokens SET revoked_at = ? WHERE id = ? AND user_id = ? AND revoked_at IS NULL")
-    .bind(now, deviceId, userId)
-    .run();
-  if (!res.meta || res.meta.changes === 0) {
+  const device = await env.DB
+    .prepare("SELECT public_key FROM device_tokens WHERE id = ? AND user_id = ? AND revoked_at IS NULL")
+    .bind(deviceId, userId)
+    .first<{ public_key: string }>();
+  if (!device) {
     return json({ error: "device not found" }, 404);
   }
+  // Revocation retires the network identity as well as its refresh secret.
+  // Otherwise a revoked/offline device remains forever in room configs. Clear
+  // topology rows explicitly because peer_connectivity predates peer FKs.
+  await env.DB.batch([
+    env.DB
+      .prepare("UPDATE device_tokens SET revoked_at = ? WHERE id = ? AND user_id = ? AND revoked_at IS NULL")
+      .bind(now, deviceId, userId),
+    env.DB
+      .prepare("DELETE FROM peer_connectivity WHERE src_public_key = ? OR dst_public_key = ?")
+      .bind(device.public_key, device.public_key),
+    env.DB
+      .prepare("DELETE FROM peers WHERE user_id = ? AND public_key = ?")
+      .bind(userId, device.public_key),
+  ]);
   log({ event: "devices.revoked", user_id: userId, device_id: deviceId });
   return json({ ok: true });
 }

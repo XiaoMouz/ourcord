@@ -209,7 +209,10 @@ describe("revokeDevice", () => {
     const token = await makeUserToken();
     const cap = makeCapturingDB([
       { first: null }, // ban check
-      { run: { meta: { changes: 1 } } },
+      { first: { public_key: VALID_WG_KEY } },
+      {}, // revoke token
+      {}, // remove connectivity
+      {}, // remove peer
     ]);
     const resp = await revokeDevice(
       new Request("https://control.example/api/devices/dev-1", {
@@ -220,15 +223,18 @@ describe("revokeDevice", () => {
       "dev-1",
     );
     expect(resp.status).toBe(200);
-    expect(cap.sqls[1]).toMatch(/UPDATE device_tokens SET revoked_at/);
-    expect(cap.binds[1].slice(1)).toEqual(["dev-1", "u1"]);
+    expect(cap.sqls[2]).toMatch(/UPDATE device_tokens SET revoked_at/);
+    expect(cap.binds[2].slice(1)).toEqual(["dev-1", "u1"]);
+    expect(cap.sqls[3]).toMatch(/DELETE FROM peer_connectivity/);
+    expect(cap.sqls[4]).toMatch(/DELETE FROM peers/);
+    expect(cap.binds[4]).toEqual(["u1", VALID_WG_KEY]);
   });
 
   it("404s for a device the caller does not own", async () => {
     const token = await makeUserToken();
     const cap = makeCapturingDB([
       { first: null }, // ban check
-      { run: { meta: { changes: 0 } } },
+      { first: null }, // device not found or not owned
     ]);
     const resp = await revokeDevice(
       new Request("https://control.example/api/devices/dev-9", {

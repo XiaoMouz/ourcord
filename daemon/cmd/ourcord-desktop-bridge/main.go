@@ -218,8 +218,26 @@ func (b *bridge) dispatch(method string, raw json.RawMessage) (any, error) {
 		return b.authStatus()
 	case "auth.logout":
 		if daemon, err := b.daemonClient(); err == nil {
+			// Retire the server-side device/peer before erasing the only local
+			// identity that tells us which record belongs to this installation.
+			// A failed remote revoke leaves the session intact so logout can be
+			// retried instead of silently creating a ghost peer.
+			if profile, profileErr := daemon.LocalProfile(); profileErr == nil && profile.DeviceID != "" {
+				// Root-owned macOS state is not readable by the bridge, so refresh
+				// through the daemon itself before revoking the current device.
+				if session, refreshErr := daemon.RefreshSession(); refreshErr == nil && session.AccessToken != "" {
+					_ = b.credentialStore().Set(credentialService, jwtCredential, session.AccessToken)
+				}
+				if _, revokeErr := b.revokeDevice(profile.DeviceID); revokeErr != nil && !isHTTPStatus(revokeErr, http.StatusNotFound) {
+					b.dropDaemon(daemon, nil)
+					return nil, fmt.Errorf("retire device: %w", revokeErr)
+				}
+			}
 			err = daemon.UnenrollLocalDevice()
 			b.dropDaemon(daemon, err)
+			if err != nil {
+				return nil, err
+			}
 		}
 		_ = b.credentialStore().Delete(credentialService, jwtCredential)
 		_ = b.credentialStore().Delete(credentialService, deviceCredential)

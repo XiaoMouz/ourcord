@@ -197,6 +197,7 @@ describe("registerPeer / getPeerConfig endpoint hints", () => {
     const cap = makeCapturingDB([
       { first: null }, // ban check
       {}, // last_seen update
+      {}, // clear any prior room presence
       {
         all: {
           results: [
@@ -220,8 +221,8 @@ describe("registerPeer / getPeerConfig endpoint hints", () => {
     const resp = await getPeerConfig(await getConfig(token, VALID_WG_KEY), makeEnv(cap.db));
 
     expect(resp.status).toBe(200);
-    expect(cap.sqls[2]).toMatch(/wg_endpoint AS endpoint/);
-    expect(cap.sqls[2]).toMatch(/derp_node_key/);
+    expect(cap.sqls[3]).toMatch(/wg_endpoint AS endpoint/);
+    expect(cap.sqls[3]).toMatch(/derp_node_key/);
     const body = await resp.json<{ peers: Array<{ endpoint: string; derp_node_key: string }> }>();
     expect(body.peers[0].endpoint).toBe("192.168.139.110:51820");
     expect(body.peers[0].derp_node_key).toBe("nodekey:peer-b");
@@ -232,14 +233,29 @@ describe("registerPeer / getPeerConfig endpoint hints", () => {
     const cap = makeCapturingDB([
       { first: null }, // ban check
       {}, // last_seen update
+      {}, // clear any prior room presence
       { all: { results: [] } },
       { all: { results: [] } }, // relay map
     ]);
     const resp = await getPeerConfig(await getConfig(token, VALID_WG_KEY), makeEnv(cap.db));
 
     expect(resp.status).toBe(200);
-    expect(cap.sqls[2]).toMatch(/public_key <> \?/);
-    expect(cap.binds[2]).toEqual(["u1", VALID_WG_KEY]);
+    expect(cap.sqls[3]).toMatch(/public_key <> \?/);
+    expect(cap.sqls[3]).toMatch(/last_seen >= \?/);
+    expect(cap.binds[3][0]).toBe("u1");
+    expect(cap.binds[3].at(-1)).toBe(VALID_WG_KEY);
+  });
+
+  it("rejects a config request for a peer key the account does not own", async () => {
+    const token = await makeToken();
+    const resp = await getPeerConfig(
+      await getConfig(token, VALID_WG_KEY),
+      makeEnv(makeDB([
+        { first: null }, // ban check
+        { run: { meta: { changes: 0 } } }, // peer ownership touch
+      ])),
+    );
+    expect(resp.status).toBe(403);
   });
 
   it("returns caller-visible personal relays alongside peer config for mixed user-relay + P2P", async () => {
@@ -247,6 +263,7 @@ describe("registerPeer / getPeerConfig endpoint hints", () => {
     const cap = makeCapturingDB([
       { first: null }, // ban check
       {}, // last_seen update
+      {}, // clear any prior room presence
       {
         all: {
           results: [
@@ -286,8 +303,8 @@ describe("registerPeer / getPeerConfig endpoint hints", () => {
     const resp = await getPeerConfig(await getConfig(token, VALID_WG_KEY), makeEnv(cap.db));
 
     expect(resp.status).toBe(200);
-    expect(cap.sqls[3]).toMatch(/mode <> 'personal' OR r\.owner_id = \?/);
-    expect(cap.binds[3][1]).toBe("u1");
+    expect(cap.sqls[4]).toMatch(/mode <> 'personal' OR r\.owner_id = \?/);
+    expect(cap.binds[4][1]).toBe("u1");
     const body = await resp.json<{
       peers: Array<{ public_key: string }>;
       relays: Array<{ id: string; mode: string; hostname: string }>;
@@ -335,7 +352,10 @@ describe("registerPeer / getPeerConfig endpoint hints", () => {
 
     expect(resp.status).toBe(200);
     expect(cap.sqls[2]).toMatch(/public_key IN/);
-    expect(cap.binds[2]).toEqual([VALID_WG_KEY, OTHER_WG_KEY, VALID_WG_KEY]);
+    expect(cap.binds[2][0]).toBe(VALID_WG_KEY);
+    expect(cap.binds[2][1]).toBe(OTHER_WG_KEY);
+    expect(cap.binds[2][2]).toEqual(expect.any(Number));
+    expect(cap.binds[2][3]).toBe(VALID_WG_KEY);
     const body = await resp.json<{ peers: Array<{ public_key: string; user_id: string }> }>();
     expect(body.peers).toHaveLength(1);
     expect(body.peers[0]).toMatchObject({ public_key: OTHER_WG_KEY, user_id: "u2" });
@@ -361,6 +381,7 @@ describe("registerPeer / getPeerConfig endpoint hints", () => {
     const cap = makeCapturingDB([
       { first: null }, // ban check
       {}, // last_seen update
+      {}, // refresh room presence
       {
         all: {
           results: [
@@ -426,8 +447,9 @@ describe("registerPeer / getPeerConfig endpoint hints", () => {
     expect(fetchHeaders["X-Internal-Nonce"]).toMatch(/^[0-9a-f]{32}$/);
     expect(fetchHeaders["X-Internal-Sig"]).toMatch(/^[A-Za-z0-9_-]+$/);
     expect(fetchHeaders["X-Internal-Token"]).toBeUndefined();
-    expect(cap.sqls[3]).toMatch(/peer_connectivity/);
-    expect(cap.sqls[3]).toMatch(/wg_reachable = 1/);
+    expect(cap.sqls[3]).toMatch(/peer_presence/);
+    expect(cap.sqls[4]).toMatch(/peer_connectivity/);
+    expect(cap.sqls[4]).toMatch(/wg_reachable = 1/);
     const body = await resp.json<{ peers: Array<{ public_key: string; next_hop_public_key?: string }> }>();
     const hop = body.peers.find((p) => p.public_key === OTHER_WG_KEY);
     const behind = body.peers.find((p) => p.public_key === THIRD_WG_KEY);
@@ -442,6 +464,7 @@ describe("registerPeer / getPeerConfig endpoint hints", () => {
     const cap = makeCapturingDB([
       { first: null }, // ban check
       {}, // last_seen update
+      {}, // refresh room presence
       {
         all: {
           results: [
@@ -514,6 +537,7 @@ describe("registerPeer / getPeerConfig endpoint hints", () => {
     const cap = makeCapturingDB([
       { first: null }, // ban check
       {}, // last_seen update
+      {}, // refresh room presence
       {
         all: {
           results: [
@@ -594,6 +618,7 @@ describe("registerPeer / getPeerConfig endpoint hints", () => {
     const mkCap = (acFlapping: number) => makeCapturingDB([
       { first: null }, // ban check
       {}, // last_seen update
+      {}, // refresh room presence
       { all: { results: peerRows() } },
       { all: { results: [
         { src_public_key: VALID_WG_KEY, dst_public_key: THIRD_WG_KEY, ice_direct: 1, wg_reachable: 1, transport: "ice", reason: "", flapping: acFlapping },
@@ -629,6 +654,7 @@ describe("registerPeer / getPeerConfig endpoint hints", () => {
     const cap = makeCapturingDB([
       { first: null }, // ban check
       {}, // last_seen update
+      {}, // refresh room presence
       {
         all: {
           results: [
@@ -719,6 +745,7 @@ describe("registerPeer / getPeerConfig endpoint hints", () => {
     const cap = makeCapturingDB([
       { first: null }, // ban check
       {}, // last_seen update
+      {}, // refresh room presence
       { all: { results: chunk1Rows } }, // member chunk 1 (90 ids)
       { all: { results: [] } }, // member chunk 2 (30 ids)
       { all: { results: [] } }, // relay map (annotation skipped)
@@ -734,10 +761,10 @@ describe("registerPeer / getPeerConfig endpoint hints", () => {
 
     expect(resp.status).toBe(200);
     // Each chunk stays within the D1 parameter budget (chunk + self filter).
-    expect(cap.sqls[2]).toMatch(/user_id IN \((\?,){89}\?\)/);
-    expect(cap.sqls[3]).toMatch(/user_id IN \((\?,){29}\?\)/);
-    expect(cap.binds[2]).toHaveLength(91);
-    expect(cap.binds[3]).toHaveLength(31);
+    expect(cap.sqls[3]).toMatch(/user_id IN \((\?,){89}\?\)/);
+    expect(cap.sqls[4]).toMatch(/user_id IN \((\?,){29}\?\)/);
+    expect(cap.binds[3]).toHaveLength(93);
+    expect(cap.binds[4]).toHaveLength(33);
     // The double-bound peer_connectivity query must not run at this size.
     expect(cap.sqls.some((s) => /peer_connectivity/.test(s))).toBe(false);
     const body = await resp.json<{ peers: Array<{ user_id: string }> }>();

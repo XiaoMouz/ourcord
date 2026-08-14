@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { check, type DownloadEvent, type Update } from "@tauri-apps/plugin-updater";
+import { bridge } from "./bridge";
 
 export type UpdaterState =
   | { status: "idle" }
@@ -17,6 +18,7 @@ let checkPromise: Promise<void> | null = null;
 let downloadPromise: Promise<void> | null = null;
 let installPromise: Promise<void> | null = null;
 let started = false;
+let closing = false;
 
 function publish(next: UpdaterState) {
   state = next;
@@ -99,23 +101,39 @@ function hasPendingUpdate() {
   return update !== null || installPromise !== null;
 }
 
+async function leaveRealtimeSession() {
+  // launchd keeps the privileged daemon alive after the WebView exits. End the
+  // room lease explicitly so closing the desktop app cannot leave a ghost
+  // participant behind. Bound shutdown latency if the daemon/control plane is
+  // unavailable; abrupt failures are still covered by the server-side TTL.
+  await Promise.race([
+    bridge("network.leave").catch(() => undefined),
+    new Promise<void>((resolve) => window.setTimeout(resolve, 3_000)),
+  ]);
+}
+
 function startUpdater() {
-  if (started || import.meta.env.DEV) return;
+  if (started) return;
   started = true;
-  void checkForDesktopUpdate();
-  window.setInterval(() => void checkForDesktopUpdate(), 6 * 60 * 60 * 1000);
 
   const appWindow = getCurrentWindow();
   void appWindow.onCloseRequested(async (event) => {
-    if (!hasPendingUpdate()) return;
+    if (closing) return;
     event.preventDefault();
+    closing = true;
+    await leaveRealtimeSession();
     try {
-      await installDesktopUpdate();
+      if (hasPendingUpdate()) await installDesktopUpdate();
+      else await appWindow.destroy();
     } catch {
       // A failed update must not make the application impossible to close.
       await appWindow.destroy();
     }
   });
+
+  if (import.meta.env.DEV) return;
+  void checkForDesktopUpdate();
+  window.setInterval(() => void checkForDesktopUpdate(), 6 * 60 * 60 * 1000);
 }
 
 export function useDesktopUpdater() {
