@@ -332,6 +332,13 @@ func (d *daemon) HandleIPC(ctx context.Context, req ipc.IPCRequest) ipc.IPCRespo
 		if d.table != nil {
 			routes = d.table.All()
 		}
+		if d.iceMgr != nil {
+			for _, route := range routes {
+				if route != nil {
+					route.LatencyMs = d.iceMgr.PeerRTTMs(route.PublicKey.String())
+				}
+			}
+		}
 		telem, _ := d.pathTelemetrySnapshotLocked(time.Now())
 		d.connMu.Unlock()
 		peers := connectedPeers(routes)
@@ -741,7 +748,7 @@ func connectedPeers(routes []*routing.PeerRoute) []ipc.ConnectedPeer {
 			Direct:       path == "direct",
 			Path:         path,
 			RelayURL:     r.DERPURL,
-			LatencyMs:    0,
+			LatencyMs:    r.LatencyMs,
 			LastSeenSecs: r.LastSeen,
 			LastError:    routeLastError(r, path),
 		}

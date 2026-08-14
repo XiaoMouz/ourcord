@@ -56,6 +56,18 @@ func TestConnectedPeersWaiting(t *testing.T) {
 	}
 }
 
+func TestConnectedPeersCarriesMeasuredLatency(t *testing.T) {
+	peers := connectedPeers([]*routing.PeerRoute{{
+		PublicKey: testKey(t, 0x19),
+		VPN4:      netip.MustParseAddr("198.18.0.9"),
+		ICEReady:  true,
+		LatencyMs: 23.5,
+	}})
+	if len(peers) != 1 || peers[0].LatencyMs != 23.5 {
+		t.Fatalf("latency = %v, want 23.5", peers)
+	}
+}
+
 func TestConnectedPeersDirectCandidateWaiting(t *testing.T) {
 	peers := connectedPeers([]*routing.PeerRoute{{
 		PublicKey:  testKey(t, 0x15),

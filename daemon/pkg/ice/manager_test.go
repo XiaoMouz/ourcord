@@ -70,3 +70,14 @@ func waitOfferCount(t *testing.T, ctx context.Context, signal *retrySignalClient
 		}
 	}
 }
+
+func TestPeerRTTMsDistinguishesUnknownFromMeasured(t *testing.T) {
+	m := NewManager("local", nil, &retrySignalClient{}, nil, nil, t.Logf)
+	m.sessions["peer"] = &session{peerKey: "peer", rttMs: 18.75}
+	if got := m.PeerRTTMs("peer"); got != 18.75 {
+		t.Fatalf("PeerRTTMs = %v, want 18.75", got)
+	}
+	if got := m.PeerRTTMs("missing"); got != 0 {
+		t.Fatalf("missing PeerRTTMs = %v, want unknown zero", got)
+	}
+}

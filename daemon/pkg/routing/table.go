@@ -31,6 +31,7 @@ type PeerRoute struct {
 	DERPNodeKey string          // peer DERP node key (nodekey:...)
 	LastSeen    int64
 	LastError   string
+	LatencyMs   float64 // live ICE health-probe RTT; zero means not measured
 }
 
 // Table holds the routing table for all VPN peers.

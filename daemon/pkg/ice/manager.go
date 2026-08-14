@@ -87,6 +87,7 @@ type session struct {
 	localCandidates []string
 	probeAckCh      chan [iceProbeNonceLen]byte
 	validated       bool
+	rttMs           float64
 }
 
 func NewManager(localKey string, stunServers []string, signal SignalClient, onReady func(peerPublicKey string), onDegrade func(peerPublicKey string, reason string), logf func(format string, args ...any)) *Manager {
@@ -137,6 +138,18 @@ func (m *Manager) Stats() Stats {
 		ProbeInvalid:     m.probeInvalid.Load(),
 		MaxPacketBytes:   m.maxPacketBytes.Load(),
 	}
+}
+
+// PeerRTTMs returns the smoothed round-trip time measured by the ICE health
+// probe. Zero means no acknowledged sample is available; it must be presented
+// as unknown rather than as a real 0ms path.
+func (m *Manager) PeerRTTMs(peerKey string) float64 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if s := m.sessions[peerKey]; s != nil {
+		return s.rttMs
+	}
+	return 0
 }
 
 func (m *Manager) StartPeer(ctx context.Context, peerKey string) {
@@ -598,11 +611,24 @@ func (m *Manager) probeLoop(peerKey string, c *pionice.Conn) {
 			}
 			sendProbe()
 		case nonce := <-s.probeAckCh:
-			if _, ok := pending[nonce]; !ok {
+			sentAt, ok := pending[nonce]
+			if !ok {
 				m.probeInvalid.Add(1)
 				continue
 			}
 			delete(pending, nonce)
+			sampleMs := float64(time.Since(sentAt)) / float64(time.Millisecond)
+			m.mu.Lock()
+			if current := m.sessions[peerKey]; current == s {
+				if current.rttMs == 0 {
+					current.rttMs = sampleMs
+				} else {
+					// An EWMA keeps the UI useful without making it flicker on every
+					// 250ms health probe.
+					current.rttMs = current.rttMs*0.8 + sampleMs*0.2
+				}
+			}
+			m.mu.Unlock()
 			acks++
 			lastAck = time.Now()
 			if !confirmed && probeConfirmed(acks, sent, lastAck.Sub(start)) {
