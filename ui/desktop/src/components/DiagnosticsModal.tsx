@@ -36,7 +36,10 @@ export default function DiagnosticsModal({ snapshot, close, onError }: {
 
   async function runPing() {
     setPinging(true);
-    try { const data = await bridge<{ rtt_ms: number }>("diagnostics.ping"); setPing(`${data.rtt_ms}ms`); }
+    try {
+      const data = await bridge<{ rtt_ms: number }>("diagnostics.ping");
+      setPing(data.rtt_ms < 1 ? "<1ms" : `${data.rtt_ms}ms`);
+    }
     catch (e) { setPing(""); onError(String(e)); } finally { setPinging(false); }
   }
 
@@ -67,7 +70,9 @@ export default function DiagnosticsModal({ snapshot, close, onError }: {
           <div className="stat px-4 py-3"><div className="stat-title text-xs">路径切换</div><div className="stat-value text-base">{snapshot.status?.path_flaps_total ?? 0}</div></div>
           <div className="stat px-4 py-3"><div className="stat-title text-xs">本机设备</div><div className="stat-value text-base">{profile ? (profile.enrolled ? "已注册" : "未注册") : "…"}</div><div className="stat-desc font-mono">{profile ? shortKey(profile.public_key) : "—"}</div></div>
         </div>
-        <div className="flex justify-end"><button className="btn btn-sm" disabled={pinging} onClick={() => void runPing()}>{pinging && <Spinner />}Ping{ping && ` · ${ping}`}</button></div>
+        <div className="flex justify-end"><Tooltip label="检测桌面应用与本机后台服务的连接，不代表 Peer 网络延迟">
+          <button className="btn btn-sm" disabled={pinging} onClick={() => void runPing()}>{pinging && <Spinner />}后台响应{ping && ` · ${ping}`}</button>
+        </Tooltip></div>
 
         <section className="card card-border bg-base-200"><div className="card-body gap-3 p-5">
           <h3 className="card-title text-base">Peer <span className="badge badge-ghost badge-sm">{peers.length}</span></h3>
