@@ -117,7 +117,7 @@ export default {
       if (method === "PUT" && parts[1] === "rooms" && parts[3] === "files" && parts[5] === "upload") {
         const rl = await checkRateLimit(request, env, "file-upload", 30, 60);
         if (rl) return rl;
-        return uploadToR2(request, env, parts[2], parts[4]);
+        return await uploadToR2(request, env, parts[2], parts[4]);
       }
       if (method === "POST" && parts[1] === "rooms" && parts[3] === "files" && parts[5] === "complete") {
         const rl = await checkRateLimit(request, env, "file-complete", 30, 60);
@@ -260,10 +260,19 @@ export default {
 } satisfies ExportedHandler<Env>;
 
 function applySchema(db: D1Database, sql: string): Promise<unknown[]> {
-  const statements = stripSQLLineComments(sql)
-    .split(";")
-    .map((s) => s.trim())
-    .filter(Boolean);
+  // A trigger contains semicolons inside BEGIN ... END; keep its body in
+  // one D1 statement rather than splitting it into invalid fragments.
+  const statements: string[] = [];
+  let pending = "";
+  for (const part of stripSQLLineComments(sql).split(";")) {
+    pending += part;
+    if (/^\s*CREATE TRIGGER\b/i.test(pending) && !/\bEND\s*$/i.test(pending)) {
+      pending += ";";
+      continue;
+    }
+    if (pending.trim()) statements.push(pending.trim());
+    pending = "";
+  }
   return db.batch(statements.map((s) => db.prepare(s)));
 }
 

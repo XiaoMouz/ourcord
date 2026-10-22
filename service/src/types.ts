@@ -10,6 +10,9 @@ export interface Env extends RateLimitBindings {
   ADMIN_TOKEN?: string;       // shared secret for admin endpoints in production
   // Shared secret accepted on /api/internal/* requests from control layer.
   SERVICE_INTERNAL_TOKEN?: string;
+  R2_MAX_BYTES?: string;
+  R2_MAX_FILES?: string;
+  R2_MAX_FILE_BYTES?: string;
 }
 
 export interface Lobby {
@@ -68,6 +71,7 @@ export interface FileRecord {
   uploaded_at?: number | null;
   actual_size_bytes?: number | null;
   last_upload_error?: string | null;
+  upload_started_at?: number | null;
 }
 
 // A user-run HTTP file server in the autonomous storage chain (AGENTS 3.5).
