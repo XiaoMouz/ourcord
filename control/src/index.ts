@@ -125,6 +125,9 @@ export default {
 
       // ── Hole-punching signal (WebSocket via Durable Object) ─────────────────
       if (path.startsWith("/api/signal/")) {
+        if (method !== "GET" || request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
+          return json({ error: "Expected WebSocket upgrade" }, 426);
+        }
         const rl = await checkRateLimit(request, env, "signal", 60, 60);
         if (rl) return rl;
         const rawRoomId = path.split("/")[3];
@@ -142,7 +145,7 @@ export default {
         const pk = url.searchParams.get("pk");
         if (!token || !pk) return json({ error: "token and pk required" }, 401);
 
-        const { verifyToken, getJwtSecret } = await import("./auth");
+        const { verifyToken, getJwtSecret, isUserBanned } = await import("./auth");
         let claims;
         try {
           claims = await verifyToken(token, getJwtSecret(env));
@@ -157,6 +160,7 @@ export default {
           .bind(pk, claims.sub)
           .first();
         if (!owned) return json({ error: "peer not owned by user" }, 403);
+        if (await isUserBanned(claims.sub, env.DB)) return json({ error: "Unauthorized" }, 401);
 
         // H1: gate the SignalDO on room membership. Two roomId conventions:
         //   1. "pair:<keyA>.<keyB>" (base64url/no-padding WG keys, sorted) — 1:1 hole-punch
@@ -171,6 +175,11 @@ export default {
           if (!parsed) return json({ error: "malformed pair roomId" }, 400);
           const [a, b] = parsed;
           if (pk !== a && pk !== b) return json({ error: "pk not part of this pair" }, 403);
+          // An owned key plus random other keys must not allocate unlimited
+          // persistent DOs. Both endpoints of a pair must be registered peers.
+          const other = await env.DB.prepare("SELECT 1 FROM peers WHERE public_key = ?")
+            .bind(pk === a ? b : a).first();
+          if (!other) return json({ error: "pair peer not found" }, 404);
         } else {
           if (!env.SERVICE_URL || !env.SERVICE_INTERNAL_TOKEN) {
             return json({ error: "service layer not configured; room signaling unavailable" }, 503);
