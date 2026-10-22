@@ -58,7 +58,7 @@ func daemonCommand() (*exec.Cmd, error) {
 		programData = `C:\ProgramData`
 	}
 	stateDir := filepath.Join(programData, "OurCord")
-	if err := os.MkdirAll(stateDir, 0o700); err != nil {
+	if err := secureStateDirectory(stateDir); err != nil {
 		return nil, err
 	}
 	daemonPath := filepath.Join(filepath.Dir(exe), "ourcordd.exe")
