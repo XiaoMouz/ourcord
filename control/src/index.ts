@@ -5,6 +5,7 @@ import { getStunServers, addStunServer } from "./stun";
 import { registerRelay, getRelayMap, getBannedKeys, denyPeerOnRelay, allowPeerOnRelay } from "./relay";
 import { createBan, removeBan, checkBan } from "./ban";
 import { getFleetStatus } from "./ops";
+import { getPublicStatus } from "./status";
 import { requestOTP, verifyOTP, oauthRedirect, oauthCallback, requestDesktopMagic, confirmDesktopMagicPage, confirmDesktopMagic, exchangeDesktopCode, cleanupExpiredDesktopCodes } from "./authHandler";
 import { getMe, updateMe, lookupProfiles } from "./profile";
 import { enrollDevice, exchangeDeviceToken, listDevices, revokeDevice } from "./devices";
@@ -251,24 +252,7 @@ export default {
       if (method === "GET" && path === "/api/control/status") {
         const rl = await checkRateLimit(request, env, "control-status", 60, 60);
         if (rl) return rl;
-        const now = Math.floor(Date.now() / 1000);
-        const [users, peers, relays, bans] = await Promise.all([
-          env.DB.prepare("SELECT COUNT(*) AS c FROM users").first<{ c: number }>(),
-          env.DB.prepare("SELECT COUNT(*) AS c FROM peers WHERE last_seen > ?").bind(now - 300).first<{ c: number }>(),
-          env.DB.prepare("SELECT COUNT(*) AS c FROM relay_servers WHERE active = 1 AND last_heartbeat > ?").bind(now - 120).first<{ c: number }>(),
-          env.DB.prepare("SELECT COUNT(*) AS c FROM bans WHERE expires_at IS NULL OR expires_at > ?").bind(now).first<{ c: number }>(),
-        ]);
-        return json({
-          status: "ok",
-          environment: env.ENVIRONMENT ?? "unknown",
-          counts: {
-            users: users?.c ?? 0,
-            active_peers_5m: peers?.c ?? 0,
-            active_relays: relays?.c ?? 0,
-            active_bans: bans?.c ?? 0,
-          },
-          ts: Date.now(),
-        });
+        return await getPublicStatus(request, env, ctx);
       }
 
       // Admin-gated operator fleet view (relay detail + backend health rollup).
