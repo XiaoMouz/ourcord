@@ -97,6 +97,7 @@ try {
     const response = await call(`/api/rooms/R2/messages?limit=50${cursor ? `&before=${cursor}` : ""}`);
     assert.equal(response.status, 200);
     const page = (await response.json()).messages;
+    assert(page.length <= 50, "message pages must honor the requested limit");
     if (page.length === 0) break;
     history = [...page.map((message) => message.id), ...history];
     cursor = page[0].id;
