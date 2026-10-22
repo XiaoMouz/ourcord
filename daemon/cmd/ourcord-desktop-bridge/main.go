@@ -74,6 +74,7 @@ type bridge struct {
 	authRefresh     singleflight.Group
 	refreshCooldown *deviceRefreshCooldown // guarded by authMu
 	sessionMu       sync.RWMutex
+	pendingLoginMu  sync.Mutex
 }
 
 func main() {
@@ -169,14 +170,17 @@ func (b *bridge) dispatch(method string, raw json.RawMessage) (any, error) {
 		}
 	}
 	switch method {
+	case "auth.begin", "auth.magic", "auth.exchange":
+		b.pendingLoginMu.Lock()
+		defer b.pendingLoginMu.Unlock()
+	}
+	switch method {
 	case "auth.begin":
-		verifier, challenge, err := newPKCE()
+		pending, err := b.beginPendingLogin(boolParam(params, "restart"), boolParam(params, "activate"), b.now())
 		if err != nil {
 			return nil, err
 		}
-		if err := b.credentialStore().Set(credentialService, pkceCredential, verifier); err != nil {
-			return nil, fmt.Errorf("store login state: %w", err)
-		}
+		challenge := pkceChallenge(pending.Verifier)
 		return map[string]string{
 			"google_url": b.controlURL + "/api/auth/desktop/oauth/google?code_challenge=" + challenge,
 			"github_url": b.controlURL + "/api/auth/desktop/oauth/github?code_challenge=" + challenge,
@@ -186,11 +190,11 @@ func (b *bridge) dispatch(method string, raw json.RawMessage) (any, error) {
 		if email == "" {
 			return nil, errors.New("email required")
 		}
-		verifier, err := b.credentialStore().Get(credentialService, pkceCredential)
+		pending, err := b.beginPendingLogin(false, true, b.now())
 		if err != nil {
-			return nil, errors.New("start login again")
+			return nil, err
 		}
-		challenge := pkceChallenge(verifier)
+		challenge := pkceChallenge(pending.Verifier)
 		data, err := b.api(http.MethodPost, b.controlURL, "/api/auth/desktop/magic", "", map[string]string{"email": email, "code_challenge": challenge})
 		if err != nil {
 			return nil, err
@@ -198,11 +202,11 @@ func (b *bridge) dispatch(method string, raw json.RawMessage) (any, error) {
 		return decodeMagicResponse(data)
 	case "auth.exchange":
 		code := stringParam(params, "code")
-		verifier, err := b.credentialStore().Get(credentialService, pkceCredential)
-		if err != nil {
+		pending, err := b.readPendingLogin(b.now())
+		if err != nil || pending.ControlURL != b.controlURL || pending.ExpiresAt <= b.now().Unix() {
 			return nil, errors.New("login session expired")
 		}
-		data, err := b.api(http.MethodPost, b.controlURL, "/api/auth/desktop/exchange", "", map[string]string{"code": code, "code_verifier": verifier})
+		data, err := b.api(http.MethodPost, b.controlURL, "/api/auth/desktop/exchange", "", map[string]string{"code": code, "code_verifier": pending.Verifier})
 		if err != nil {
 			return nil, err
 		}

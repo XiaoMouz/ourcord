@@ -10,6 +10,20 @@ respawned on death). Do not revert to `--once` per-call spawning: the UI polls
 `daemon.snapshot` at 1 Hz, and per-call spawning also leaks request payloads
 (auth codes) into the process command line.
 
+Desktop login keeps one pending PKCE attempt in the credential store, scoped to
+the configured control URL. `auth.begin` resumes that attempt across restarts
+instead of replacing its verifier. `restart: true` explicitly starts a fresh
+attempt; successful exchange and logout clear it. The local attempt expires
+after 12 minutes of inactivity (the server's 10-minute email/OAuth flow plus
+60-second desktop code and one minute for delivery), without extending any
+server-issued token lifetime.
+Sending an email or clicking OAuth activates the attempt for that full window;
+OAuth URLs are refreshed on click rather than reusing an idle login page's URL.
+The single-instance desktop's bridge serializes begin, send and exchange to
+avoid verifier replacement during in-flight authentication. This is not a
+cross-process credential lock. Legacy raw verifiers migrate on first access,
+including a cold-start exchange before the login screen initializes.
+
 The Apple Silicon bundle carries `ourcordd` and installs it as the root
 `app.ourcord.daemon` LaunchDaemon after one macOS administrator prompt. The
 daemon owns utun/routes; the desktop bridge remains unprivileged and reaches it

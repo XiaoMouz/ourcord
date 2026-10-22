@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { register, unregister } from "@tauri-apps/plugin-global-shortcut";
 import { bridge, type AuthState, type LobbyEntry, type Member, type Profile, type Room, type Snapshot } from "./bridge";
 import { parseOurCordLink, type OurCordLink } from "./deepLink";
@@ -28,7 +29,11 @@ export default function App() {
   const dialog = useDialog();
   const [auth, setAuth] = useState<AuthState>({ loading: true, authenticated: false });
   const [authError, setAuthError] = useState("");
+  const [startupCallbackFailed, setStartupCallbackFailed] = useState(false);
   const authRequestRef = useRef(0);
+  const startupRequestRef = useRef(0);
+  const authCallbacks = useRef(new Map<string, Promise<Error | undefined>>());
+  const startupAuthFailure = useRef<{ url: string; error: Error } | null>(null);
   const [loginURLs, setLoginURLs] = useState<{ google_url: string; github_url: string }>();
   const [toast, setToast] = useState<ToastMessage | null>(null);
   const toastID = useRef(0);
@@ -85,7 +90,7 @@ export default function App() {
     ? lobbies.flatMap((entry) => entry.rooms).find((room) => room.vpn_namespace === snapshot.status?.network_id)?.id ?? ""
     : "";
 
-  const refreshAuth = useCallback(async () => {
+  const refreshAuth = useCallback(async (restart = false) => {
     const requestID = ++authRequestRef.current;
     setAuthError("");
     try {
@@ -93,7 +98,7 @@ export default function App() {
       if (requestID !== authRequestRef.current) return;
       // Login actions need the persisted PKCE verifier, so publish the login
       // screen only after setup succeeds. Newer auth checks supersede this one.
-      const urls = state.authenticated ? undefined : await bridge<{ google_url: string; github_url: string }>("auth.begin");
+      const urls = state.authenticated ? undefined : await bridge<{ google_url: string; github_url: string }>("auth.begin", { restart });
       if (requestID !== authRequestRef.current) return;
       setLoginURLs(urls);
       setAuth({ ...state, loading: false });
@@ -103,11 +108,6 @@ export default function App() {
       throw error;
     }
   }, []);
-  const retryStartup = useCallback(() => {
-    // The startup screen renders the error; event handlers elsewhere surface
-    // refreshAuth failures through their existing notifications.
-    void refreshAuth().catch(() => {});
-  }, [refreshAuth]);
   const lobbyRequestRef = useRef(0);
   const refreshLobbies = useCallback(async () => {
     const requestID = ++lobbyRequestRef.current;
@@ -180,11 +180,35 @@ export default function App() {
     const link = parseOurCordLink(raw);
     if (!link) { showError("链接无效"); return; }
     if (link.kind === "auth") {
-      setBusy(true);
-      try { await bridge("auth.exchange", { code: link.code }); await refreshAuth(); }
-      catch (e) { showError(String(e)); }
-      finally { setBusy(false); }
-      return;
+      const existing = authCallbacks.current.get(link.code);
+      if (existing) return existing;
+      authRequestRef.current += 1;
+      const pending = (async () => {
+        setBusy(true);
+        let exchanged = false;
+        try {
+          await bridge("auth.exchange", { code: link.code });
+          exchanged = true;
+          startupAuthFailure.current = null;
+          setStartupCallbackFailed(false);
+          await refreshAuth();
+        } catch (e) {
+          if (!exchanged) authCallbacks.current.delete(link.code);
+          showError(String(e));
+          if (!exchanged) {
+            const error = new Error(String(e));
+            if (authRef.current.loading) {
+              startupAuthFailure.current = { url: raw, error };
+              setStartupCallbackFailed(true);
+              setAuthError(error.message);
+            }
+            return error;
+          }
+        }
+        finally { setBusy(false); }
+      })();
+      authCallbacks.current.set(link.code, pending);
+      return pending;
     }
     // Invites arriving before login are queued and applied after auth instead
     // of silently failing against an unauthenticated bridge.
@@ -196,21 +220,55 @@ export default function App() {
     await applyInvite(link);
   }, [applyInvite, refreshAuth, showError, showNotice]);
 
-  useEffect(() => {
-    retryStartup();
-    return () => { authRequestRef.current += 1; };
-  }, [retryStartup]);
+  const retryStartup = useCallback(() => {
+    const requestID = ++startupRequestRef.current;
+    const retryURL = startupAuthFailure.current?.url;
+    setAuthError("");
+    setStartupCallbackFailed(false);
+    void (async () => {
+      const urls = await getCurrent();
+      if (requestID !== startupRequestRef.current) return;
+      if (!retryURL && startupAuthFailure.current) throw startupAuthFailure.current.error;
+      const initialURLs = new Set(urls ?? []);
+      if (retryURL) initialURLs.add(retryURL);
+      const initialResults = await Promise.all([...initialURLs].map(handleDeepLink));
+      const pendingResults = await Promise.all(authCallbacks.current.values());
+      if (requestID !== startupRequestRef.current) return;
+      const failure = startupAuthFailure.current?.error ?? [...initialResults, ...pendingResults].find((result) => result instanceof Error);
+      if (failure) {
+        setStartupCallbackFailed(true);
+        throw failure;
+      }
+      if (requestID === startupRequestRef.current) await refreshAuth();
+    })().catch((error) => {
+      if (requestID === startupRequestRef.current) setAuthError(String(error));
+    });
+  }, [handleDeepLink, refreshAuth]);
+
   useEffect(() => {
     if (!auth.authenticated || !pendingInvite) return;
     setPendingInvite(null);
     void applyInvite(pendingInvite);
   }, [auth.authenticated, pendingInvite, applyInvite]);
   useEffect(() => {
-    void getCurrent().then((urls) => urls?.forEach((url) => void handleDeepLink(url)));
+    let cancelled = false;
+    const handleURLs = (urls: string[] | null) => {
+      if (!cancelled) urls?.forEach((url) => void handleDeepLink(url));
+    };
+    const handleFailure = (error: unknown) => { if (!cancelled) showError(String(error)); };
     let dispose: undefined | (() => void);
-    void onOpenUrl((urls) => urls.forEach((url) => void handleDeepLink(url))).then((fn) => { dispose = fn; });
-    return () => dispose?.();
-  }, [handleDeepLink]);
+    void onOpenUrl(handleURLs).then((fn) => {
+      if (cancelled) fn();
+      else dispose = fn;
+    }).catch(handleFailure);
+    retryStartup();
+    return () => {
+      cancelled = true;
+      startupRequestRef.current += 1;
+      authRequestRef.current += 1;
+      dispose?.();
+    };
+  }, [handleDeepLink, retryStartup, showError]);
   useEffect(() => {
     if (!auth.authenticated) return;
     let snapshotPolling = false;
@@ -277,6 +335,17 @@ export default function App() {
       setMagicRetryUntil(Date.now() + retryAfter * 1000);
       showNotice("登录链接已发送，请在这台电脑上打开邮件并确认。");
     } catch (e) { showError(String(e)); } finally { setBusy(false); }
+  }
+
+  async function beginOAuth(provider: "google" | "github") {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const urls = await bridge<{ google_url: string; github_url: string }>("auth.begin", { activate: true });
+      setLoginURLs(urls);
+      await openUrl(provider === "google" ? urls.google_url : urls.github_url);
+    } catch (error) { showError(String(error)); }
+    finally { setBusy(false); }
   }
 
   const copyText = useCallback(async (text: string, label: string) => {
@@ -391,10 +460,16 @@ export default function App() {
         </div>
       </div>
       <button className="btn" onClick={retryStartup}>重试</button>
+      {startupCallbackFailed && <button className="btn btn-ghost" onClick={() => {
+        startupRequestRef.current += 1;
+        startupAuthFailure.current = null;
+        setStartupCallbackFailed(false);
+        void refreshAuth(true).catch(() => {});
+      }}>重新开始登录</button>}
     </> : <Spinner label="正在启动 OurCord" />}
   </div></div></div>;
   if (!auth.authenticated) return <div className="flex h-screen min-w-[920px] flex-col bg-base-200 text-base-content">{titleBar}<div className="min-h-0 flex-1">
-    <Login busy={busy} cooldownSeconds={magicCooldownSeconds} loginURLs={loginURLs} onMagic={(email) => void sendMagic(email)} />
+    <Login busy={busy} cooldownSeconds={magicCooldownSeconds} loginURLs={loginURLs} onMagic={(email) => void sendMagic(email)} onOAuth={(provider) => void beginOAuth(provider)} />
     <ToastHost toast={toast} onDismiss={dismissToast} />
   </div></div>;
 
