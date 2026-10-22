@@ -40,6 +40,9 @@ CREATE TABLE IF NOT EXISTS lobby_presence (
     REFERENCES lobby_members(lobby_id, user_id) ON DELETE CASCADE
 );
 
+CREATE INDEX IF NOT EXISTS idx_lobby_presence_voice
+  ON lobby_presence(voice_room_id) WHERE voice_room_id IS NOT NULL;
+
 CREATE TABLE IF NOT EXISTS messages (
   id TEXT PRIMARY KEY,
   room_id TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
