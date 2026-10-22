@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { formatBps, formatRelative, loadPercent, healthBadge, summarizeRelays } from "./format.mjs";
 
 // Operator fleet console. Talks directly to the control Worker's admin-gated
@@ -55,6 +55,13 @@ export function FleetConsole() {
   const [fleet, setFleet] = useState<Fleet | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const pendingFleet = useRef<AbortController | null>(null);
+
+  const cancelFleet = useCallback(() => {
+    const pending = pendingFleet.current;
+    pendingFleet.current = null;
+    pending?.abort();
+  }, []);
 
   // Restore persisted control URL + session token on mount. We deliberately
   // hydrate in an effect (empty on both server and client first render, then
@@ -70,14 +77,21 @@ export function FleetConsole() {
   }, []);
 
   const fetchFleet = useCallback(async () => {
-    if (!controlUrl || !token) return;
+    if (!controlUrl || !token || pendingFleet.current) return;
+    const controller = new AbortController();
+    pendingFleet.current = controller;
+    const timeout = window.setTimeout(() => controller.abort(), REFRESH_MS);
+    const isCurrent = () => pendingFleet.current === controller && !controller.signal.aborted;
     setError("");
     try {
       const r = await fetch(`${trimUrl(controlUrl)}/api/control/fleet`, {
         headers: { Authorization: `Bearer ${token}` },
+        signal: controller.signal,
       });
+      if (!isCurrent()) return;
       if (r.status === 401) {
         setError("会话已过期，请重新登录。");
+        setFleet(null);
         setToken("");
         try { sessionStorage.removeItem(TOKEN_KEY); } catch { /* ignore */ }
         return;
@@ -90,22 +104,25 @@ export function FleetConsole() {
         setError(`control 返回 ${r.status}`);
         return;
       }
-      setFleet(await r.json());
+      const nextFleet = await r.json();
+      // The session can change while the response body is still arriving.
+      if (isCurrent()) setFleet(nextFleet);
     } catch (e) {
-      setError(`无法连接 control：${String(e)}`);
+      if (pendingFleet.current === controller) setError(`无法连接 control：${String(e)}`);
+    } finally {
+      window.clearTimeout(timeout);
+      if (pendingFleet.current === controller) pendingFleet.current = null;
     }
   }, [controlUrl, token]);
 
-  // Poll while authenticated. fetchFleet is async — its setState calls run after
-  // an await, not synchronously during this effect, so the initial kickoff is a
-  // network fetch, not a same-tick state cascade.
+  // Timer and manual refresh share one pending request for the current session.
   useEffect(() => {
     if (!token) return;
     // eslint-disable-next-line react-hooks/set-state-in-effect
     void fetchFleet();
     const id = setInterval(fetchFleet, REFRESH_MS);
-    return () => clearInterval(id);
-  }, [token, fetchFleet]);
+    return () => { clearInterval(id); cancelFleet(); };
+  }, [token, fetchFleet, cancelFleet]);
 
   async function requestOtp() {
     setBusy(true);
@@ -156,6 +173,7 @@ export function FleetConsole() {
   }
 
   function signOut() {
+    cancelFleet();
     setToken("");
     setFleet(null);
     try { sessionStorage.removeItem(TOKEN_KEY); } catch { /* ignore */ }
