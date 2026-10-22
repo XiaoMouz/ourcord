@@ -54,6 +54,14 @@ Manual equivalent (service first):
 
 ## Desktop beta signing
 
+The Windows SCM wrapper protects `%ProgramData%\OurCord` with an explicit,
+inheritable DACL for SYSTEM, Administrators, and the wrapper's process user
+before launching the daemon. Normal SCM launches run as SYSTEM. This replaces
+inherited broad directory permissions and propagates to existing children with
+inherited ACLs; Go's POSIX mode bits alone do not protect Windows state files.
+Startup rejects a state directory that is a reparse point, a regular file, or
+owned by an account other than the process user, SYSTEM, or Administrators.
+
 The desktop beta workflow always signs Windows and macOS updater artifacts with
 the Tauri updater key. Windows Authenticode signing is optional: leave the repository variable
 `ENABLE_AZURE_SIGNING` unset (or set it to anything other than `true`) for an
