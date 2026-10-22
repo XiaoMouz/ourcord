@@ -50,11 +50,11 @@ describe("ChatPane composer", () => {
     container.remove();
   });
 
-  function input() { return container.querySelector("input")!; }
+  function input() { return container.querySelector("textarea")!; }
 
   async function edit(value: string) {
     await act(async () => {
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input(), value);
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(input(), value);
       input().dispatchEvent(new Event("input", { bubbles: true }));
     });
   }
@@ -62,6 +62,30 @@ describe("ChatPane composer", () => {
   function submit() {
     container.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
   }
+
+  it("sends multiline content with plain Enter", async () => {
+    await edit("First line\nSecond line");
+    const event = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true });
+    await act(async () => { input().dispatchEvent(event); });
+    expect(event.defaultPrevented).toBe(true);
+    expect(bridge).toHaveBeenCalledWith("messages.send", { room_id: "room", content: "First line\nSecond line" });
+  });
+
+  it("leaves Shift+Enter available for a newline", async () => {
+    await edit("First line");
+    const event = new KeyboardEvent("keydown", { key: "Enter", shiftKey: true, bubbles: true, cancelable: true });
+    await act(async () => { input().dispatchEvent(event); });
+    expect(event.defaultPrevented).toBe(false);
+    expect(vi.mocked(bridge).mock.calls.filter(([method]) => method === "messages.send")).toHaveLength(0);
+  });
+
+  it.each([{ isComposing: true }, { keyCode: 229 }])("keeps IME confirmation out of message submission: %o", async (composition) => {
+    await edit("中文候选");
+    const event = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true, ...composition });
+    await act(async () => { input().dispatchEvent(event); });
+    expect(event.defaultPrevented).toBe(false);
+    expect(vi.mocked(bridge).mock.calls.filter(([method]) => method === "messages.send")).toHaveLength(0);
+  });
 
   it("preserves text typed while an earlier message is in flight", async () => {
     await edit("First message");
