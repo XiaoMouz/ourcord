@@ -794,7 +794,7 @@ func isHTTPStatus(err error, status int) bool {
 func (b *bridge) apiWithAccount(method, base, path string, body any) ([]byte, string, error) {
 	token, err := b.token()
 	if err != nil {
-		token, err = b.exchangeStoredDeviceCredential()
+		token, err = b.exchangeStoredDeviceCredential(token)
 		if err != nil {
 			if errors.Is(err, keyring.ErrNotFound) || isHTTPStatus(err, http.StatusUnauthorized) {
 				return nil, "", errors.New("not authenticated")
@@ -806,7 +806,7 @@ func (b *bridge) apiWithAccount(method, base, path string, body any) ([]byte, st
 	if !isHTTPStatus(err, http.StatusUnauthorized) {
 		return data, token, err
 	}
-	token, refreshErr := b.exchangeStoredDeviceCredential()
+	token, refreshErr := b.exchangeStoredDeviceCredential(token)
 	if refreshErr != nil {
 		if errors.Is(refreshErr, keyring.ErrNotFound) || isHTTPStatus(refreshErr, http.StatusUnauthorized) {
 			return nil, "", err
@@ -876,7 +876,8 @@ func (b *bridge) token() (string, error) {
 }
 
 func (b *bridge) authStatus() (any, error) {
-	if token, err := b.token(); err == nil {
+	token, err := b.token()
+	if err == nil {
 		if profile, err := b.fetchProfile(token); err == nil {
 			b.ensureDaemonEnrollment(token, profile)
 			return map[string]any{"authenticated": true, "profile": profile}, nil
@@ -885,7 +886,7 @@ func (b *bridge) authStatus() (any, error) {
 		}
 	}
 
-	token, err := b.exchangeStoredDeviceCredential()
+	token, err = b.exchangeStoredDeviceCredential(token)
 	if errors.Is(err, keyring.ErrNotFound) || isHTTPStatus(err, http.StatusUnauthorized) {
 		token, err = b.exchangeDaemonSession()
 	}
@@ -956,11 +957,17 @@ func (b *bridge) fetchProfile(token string) (any, error) {
 	return profile, nil
 }
 
-func (b *bridge) exchangeStoredDeviceCredential() (string, error) {
+func (b *bridge) exchangeStoredDeviceCredential(staleToken string) (string, error) {
 	b.authMu.Lock()
 	defer b.authMu.Unlock()
 
 	store := b.credentialStore()
+	// A concurrent request may have refreshed this same rejected JWT while
+	// we waited. Reuse its replacement instead of spending another device
+	// exchange (and another D1 read/write) for the same expiration.
+	if current, err := store.Get(credentialService, jwtCredential); err == nil && current != "" && current != staleToken {
+		return current, nil
+	}
 	deviceToken, err := store.Get(credentialService, deviceCredential)
 	if err != nil {
 		data, readErr := os.ReadFile(filepath.Join(b.clientStateDir(), "device.token"))
