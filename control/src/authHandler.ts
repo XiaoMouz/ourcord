@@ -580,10 +580,9 @@ async function sendOTPEmail(env: Env, email: string, otp: string): Promise<void>
 // jsonWithCookie returns a JSON response with a Set-Cookie header attached.
 // Used by oauthCallback to clear the OAuth CSRF cookie on every exit path.
 function jsonWithCookie(data: unknown, status: number, setCookie: string): Response {
-  return new Response(JSON.stringify(data), {
-    status,
-    headers: { "Content-Type": "application/json", "Set-Cookie": setCookie },
-  });
+  const response = json(data, status);
+  response.headers.set("Set-Cookie", setCookie);
+  return response;
 }
 
 // parseCookie extracts a single cookie value from a Cookie header. Returns

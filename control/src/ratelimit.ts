@@ -1,4 +1,5 @@
 import type { Env } from "./types";
+import { json } from "./auth";
 
 export type RateLimitBindings = Partial<Record<`RATE_LIMIT_${5 | 10 | 20 | 30 | 60 | 120}`, RateLimit>>;
 
@@ -14,13 +15,12 @@ export async function checkRateLimit(
   const limiter = env[`RATE_LIMIT_${limit}`];
   if (!limiter) {
     if (env.ENVIRONMENT === "development") return null;
-    return Response.json({ error: "rate limiter unavailable" }, { status: 503 });
+    return json({ error: "rate limiter unavailable" }, 503);
   }
   const ip = request.headers.get("cf-connecting-ip") ?? "anon";
   const { success } = await limiter.limit({ key: `${bucket}:${ip}` });
   if (success) return null;
-  return Response.json(
-    { error: "rate limit exceeded", retry_after: windowSec },
-    { status: 429, headers: { "Retry-After": String(windowSec), "Access-Control-Allow-Origin": "*" } },
-  );
+  const response = json({ error: "rate limit exceeded", retry_after: windowSec }, 429);
+  response.headers.set("Retry-After", String(windowSec));
+  return response;
 }

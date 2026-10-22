@@ -10,7 +10,7 @@ import { getMe, updateMe, lookupProfiles } from "./profile";
 import { enrollDevice, exchangeDeviceToken, listDevices, revokeDevice } from "./devices";
 import { checkRateLimit } from "./ratelimit";
 import { log, newRequestId } from "./log";
-import { json as jsonBase } from "./auth";
+import { json } from "./auth";
 
 export { SignalDO } from "./signal";
 
@@ -335,14 +335,6 @@ export default {
     }
   },
 } satisfies ExportedHandler<Env>;
-
-// Wraps auth.ts's json() to add the CORS header required by browser clients
-// hitting the control plane directly. Behavior otherwise identical.
-function json(data: unknown, status = 200): Response {
-  const res = jsonBase(data, status);
-  res.headers.set("Access-Control-Allow-Origin", "*");
-  return res;
-}
 
 function parsePairRoom(roomId: string): [string, string] | null {
   const body = roomId.slice("pair:".length);
