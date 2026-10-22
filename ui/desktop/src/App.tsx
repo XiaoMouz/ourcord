@@ -63,7 +63,13 @@ export default function App() {
   const ensureNames = useCallback(async (ids: string[]) => {
     if (await names.ensure(ids)) setNameTick((tick) => tick + 1);
   }, [names]);
-  const getName = useCallback((id: string) => displayName(names, id), [names]);
+  const ownProfile = auth.profile?.user;
+  const getName = useCallback((id: string) => {
+    // Saving a name refreshes the account profile; cached/late lookups may
+    // still carry its previous value.
+    if (ownProfile?.id === id && ownProfile.display_name) return ownProfile.display_name;
+    return displayName(names, id);
+  }, [names, ownProfile]);
 
   const authRef = useRef(auth);
   authRef.current = auth;
