@@ -489,7 +489,7 @@ export async function listFiles(request: Request, env: Env, roomId: string): Pro
   const files = await env.DB
     .prepare(
       `SELECT * FROM files
-       WHERE room_id = ? AND COALESCE(upload_status, 'uploaded') = 'uploaded'
+       WHERE room_id = ? AND upload_status = 'uploaded'
        ORDER BY created_at DESC LIMIT 100`,
     )
     .bind(roomId)
