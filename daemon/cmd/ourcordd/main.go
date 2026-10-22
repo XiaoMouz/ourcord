@@ -539,7 +539,7 @@ func (d *daemon) voiceJoin() error {
 	if err != nil {
 		return fmt.Errorf("no VPN IPv4 assigned: %w", err)
 	}
-	eng, err := d.startVoiceLocked(vpn4)
+	eng, err := d.startVoiceLocked(vpn4, false, false)
 	if err != nil {
 		return err
 	}
@@ -551,7 +551,7 @@ func (d *daemon) voiceJoin() error {
 
 // startVoiceLocked builds an engine bound to vpn4 with the current device
 // selection. Caller holds connMu.
-func (d *daemon) startVoiceLocked(vpn4 netip.Addr) (*media.Engine, error) {
+func (d *daemon) startVoiceLocked(vpn4 netip.Addr, muted, deafened bool) (*media.Engine, error) {
 	mode := d.voiceInputMode
 	if mode == "" {
 		mode = media.InputModeVoiceActivity
@@ -577,6 +577,8 @@ func (d *daemon) startVoiceLocked(vpn4 netip.Addr) (*media.Engine, error) {
 		InputMode:    mode,
 		VADThreshold: threshold,
 		VADHangover:  hangover,
+		Muted:        muted,
+		Deafened:     deafened,
 	})
 }
 
@@ -595,9 +597,12 @@ func (d *daemon) voiceSetDevices(captureID, playbackID string) error {
 		return fmt.Errorf("no VPN IPv4 assigned: %w", err)
 	}
 	old := d.voice
+	privacy := old.Status()
 	d.voice = nil
 	old.Stop()
-	eng, err := d.startVoiceLocked(vpn4)
+	// Restore controls during construction, before the new engine can send or
+	// render any audio. Setting them after Start would leave an unmuted window.
+	eng, err := d.startVoiceLocked(vpn4, privacy.Muted, privacy.Deafened)
 	if err != nil {
 		return fmt.Errorf("restart voice with new devices: %w", err)
 	}
