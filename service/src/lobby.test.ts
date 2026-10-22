@@ -67,7 +67,11 @@ function makeDB(plan: { first?: unknown; run?: unknown }[]): D1Database {
     };
     return s as D1PreparedStatement;
   };
-  return { prepare: vi.fn(() => stmt()), batch: vi.fn(), exec: vi.fn() } as unknown as D1Database;
+  return {
+    prepare: vi.fn(() => stmt()),
+    batch: vi.fn(async (statements: D1PreparedStatement[]) => Promise.all(statements.map((s) => s.run()))),
+    exec: vi.fn(),
+  } as unknown as D1Database;
 }
 
 async function joinReq(token: string, code: string | null): Promise<Request> {
@@ -121,7 +125,7 @@ describe("joinLobby", () => {
     expect(body.message).toMatch(/Already a member/);
   });
 
-  it("rejects when invite update changes 0 rows (invalid/exhausted)", async () => {
+  it("rejects when the conditional membership insert changes 0 rows (invalid/exhausted)", async () => {
     const token = await makeToken();
     const env = {
       ENVIRONMENT: "production",
@@ -129,7 +133,9 @@ describe("joinLobby", () => {
       DB: makeDB([
         { first: { id: "L1" } },
         { first: null }, // not yet a member
-        { run: { meta: { changes: 0 } } }, // UPDATE invites → 0
+        { run: { meta: { changes: 0 } } }, // conditional INSERT
+        { run: { meta: { changes: 0 } } }, // no consumption
+        { first: null }, // no concurrent membership
       ]),
     } as Env;
     const resp = await joinLobby(await joinReq(token, "ABC"), env, "L1");
@@ -146,8 +152,8 @@ describe("joinLobby", () => {
       DB: makeDB([
         { first: { id: "L1" } },
         { first: null },
-        { run: { meta: { changes: 1 } } }, // UPDATE
-        { run: { meta: { changes: 1 } } }, // INSERT OR IGNORE
+        { run: { meta: { changes: 1 } } }, // conditional INSERT
+        { run: { meta: { changes: 1 } } }, // consume one use
       ]),
     } as Env;
     const resp = await joinLobby(await joinReq(token, "ABC"), env, "L1");
