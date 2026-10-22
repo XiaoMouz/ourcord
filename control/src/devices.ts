@@ -171,8 +171,12 @@ export async function revokeDevice(request: Request, env: Env, deviceId: string)
       .prepare("UPDATE device_tokens SET revoked_at = ? WHERE id = ? AND user_id = ? AND revoked_at IS NULL")
       .bind(now, deviceId, userId),
     env.DB
-      .prepare("DELETE FROM peer_connectivity WHERE src_public_key = ? OR dst_public_key = ?")
-      .bind(device.public_key, device.public_key),
+      // Enrollment may precede peer registration and is not proof of key
+      // ownership. Only retire topology for a peer owned by this account.
+      .prepare(`DELETE FROM peer_connectivity
+        WHERE (src_public_key = ? OR dst_public_key = ?)
+          AND EXISTS (SELECT 1 FROM peers WHERE public_key = ? AND user_id = ?)`)
+      .bind(device.public_key, device.public_key, device.public_key, userId),
     env.DB
       .prepare("DELETE FROM peers WHERE user_id = ? AND public_key = ?")
       .bind(userId, device.public_key),
