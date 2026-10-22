@@ -9,6 +9,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash, createHmac } from "node:crypto";
 import { verifyExternalUploadFinalization } from "./cloudflare-external-uploads.mjs";
+import { verifyPresenceRetirement } from "./cloudflare-presence-cost.mjs";
 import { verifyInternalReplay } from "./cloudflare-internal-replay.mjs";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -63,6 +64,8 @@ try {
   }
   writeFileSync(join(output, "service/room-append-race.mjs"),
     readFileSync(join(root, "tests/cloudflare-room-append-worker.mjs"), "utf8"));
+  writeFileSync(join(output, "service/presence-cost.mjs"),
+    readFileSync(join(root, "tests/cloudflare-presence-cost-worker.mjs"), "utf8"));
   writeFileSync(join(output, "service/service-under-test.mjs"),
     readFileSync(join(output, "service/index.js"), "utf8"));
   mf = new Miniflare({
@@ -76,6 +79,12 @@ try {
         ? { durableObjects: { SIGNAL: { className: "SignalDO", useSQLite: true } } }
         : { r2Buckets: ["FILES"] }),
     })), {
+      name: "service-presence-cost", modules: true, modulesRoot: join(output, "service"),
+      scriptPath: join(output, "service/presence-cost.mjs"),
+      compatibilityDate: "2024-01-01", compatibilityFlags: ["nodejs_compat"],
+      bindings: { ENVIRONMENT: "production", JWT_SECRET: secret },
+      d1Databases: { DB: "local-service" },
+    }, {
       name: "service-room-append-race", modules: true, modulesRoot: join(output, "service"),
       scriptPath: join(output, "service/room-append-race.mjs"),
       compatibilityDate: "2024-01-01", compatibilityFlags: ["nodejs_compat"],
@@ -93,6 +102,7 @@ try {
   ]);
   const service = await mf.getWorker("service");
   await verifyInternalReplay({ service, db, secret });
+  await verifyPresenceRetirement({ db, service: await mf.getWorker("service-presence-cost"), jwt });
   const call = (path, method = "GET", body) => service.fetch(`https://service.test${path}`, {
     method, headers: { Authorization: `Bearer ${jwt()}`, "Content-Type": "application/json" }, body,
   });
