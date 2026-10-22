@@ -444,15 +444,17 @@ export async function deleteRoom(request: Request, env: Env, roomId: string): Pr
     return err("Insufficient permissions", 403);
   }
 
-  const count = await env.DB
-    .prepare("SELECT COUNT(*) AS c FROM rooms WHERE lobby_id = ?")
-    .bind(room.lobby_id)
-    .first<{ c: number }>();
-  if ((count?.c ?? 0) <= 1) {
+  // Evaluate the invariant in the write itself: two owner clients may delete
+  // different rooms concurrently after both have read the same room count.
+  const deleted = await env.DB.prepare(
+    `DELETE FROM rooms
+      WHERE id = ? AND lobby_id = ?
+        AND (SELECT COUNT(*) FROM rooms WHERE lobby_id = ?) > 1`,
+  ).bind(roomId, room.lobby_id, room.lobby_id).run();
+  if ((deleted.meta?.changes ?? 0) === 0) {
     return err("lobby must have at least one room");
   }
 
-  await env.DB.prepare("DELETE FROM rooms WHERE id = ?").bind(roomId).run();
   return json({ deleted: true });
 }
 

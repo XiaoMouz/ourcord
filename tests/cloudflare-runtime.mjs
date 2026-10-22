@@ -83,6 +83,15 @@ try {
   const call = (path, method = "GET", body) => service.fetch(`https://service.test${path}`, {
     method, headers: { Authorization: `Bearer ${jwt()}`, "Content-Type": "application/json" }, body,
   });
+  await db.batch([
+    db.prepare("INSERT INTO lobbies VALUES ('Ldelete','deletion race','u1',NULL,1)"),
+    db.prepare("INSERT INTO lobby_members(lobby_id,user_id,role,joined_at) VALUES ('Ldelete','u1','owner',1)"),
+    db.prepare("INSERT INTO rooms(id,lobby_id,name) VALUES ('Rdelete1','Ldelete','one'), ('Rdelete2','Ldelete','two')"),
+  ]);
+  const deletions = await Promise.all(["Rdelete1", "Rdelete2"].map((id) => call(`/api/rooms/${id}`, "DELETE")));
+  assert.deepEqual(deletions.map((response) => response.status).sort(), [200, 400]);
+  assert.equal((await db.prepare("SELECT COUNT(*) AS n FROM rooms WHERE lobby_id = 'Ldelete'").first()).n, 1);
+  console.log("PASS workerd: concurrent owner room deletion preserves the last room");
   await db.prepare("INSERT INTO rooms(id,lobby_id,name) VALUES ('Rlimits','L1','limits')").run();
   await db.batch(Array.from({ length: 105 }, (_, index) => db.prepare(
     "INSERT INTO messages(id,room_id,user_id,content,created_at) VALUES (?, 'Rlimits', 'u1', 'page bound', 100)"

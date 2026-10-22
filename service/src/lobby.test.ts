@@ -300,7 +300,6 @@ describe("deleteRoom", () => {
       DB: makeDB([
         { first: { lobby_id: "L1" } },
         { first: { role: "owner" } },
-        { first: { c: 2 } },
         { run: { meta: { changes: 1 } } },
       ]),
     } as Env;
@@ -332,7 +331,7 @@ describe("deleteRoom", () => {
       DB: makeDB([
         { first: { lobby_id: "L1" } },
         { first: { role: "owner" } },
-        { first: { c: 1 } },
+        { run: { meta: { changes: 0 } } },
       ]),
     } as Env;
     const resp = await deleteRoom(delReq("https://x/api/rooms/R1", token), env, "R1");
