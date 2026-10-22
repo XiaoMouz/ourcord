@@ -132,6 +132,21 @@ try {
     assert.deepEqual((await response.json()).messages, []);
   }
   console.log("PASS workerd: same-second message pagination, chronological ordering and room-scoped cursors");
+  const cursorPage = await (await call("/api/rooms/R2/messages?limit=50")).json();
+  const boundaryMessage = cursorPage.messages[0];
+  assert.equal(boundaryMessage.id, historyIDs[55]);
+  assert.equal((await call(`/api/rooms/R2/messages/${boundaryMessage.id}`, "DELETE")).status, 200);
+  const afterDeletion = await call(`/api/rooms/R2/messages?limit=50&before=${boundaryMessage.id}&before_created_at=${boundaryMessage.created_at}`);
+  assert.equal(afterDeletion.status, 200);
+  const olderAfterDeletion = (await afterDeletion.json()).messages;
+  assert.deepEqual(olderAfterDeletion.map((message) => message.id), historyIDs.slice(5, 55));
+  const tailBoundary = olderAfterDeletion[0];
+  const historyTail = await call(`/api/rooms/R2/messages?limit=50&before=${tailBoundary.id}&before_created_at=${tailBoundary.created_at}`);
+  assert.deepEqual((await historyTail.json()).messages.map((message) => message.id), ["older", ...historyIDs.slice(0, 5)]);
+  for (const timestamp of ["-1", "1.5", "9007199254740992"]) {
+    assert.equal((await call(`/api/rooms/R2/messages?before=${boundaryMessage.id}&before_created_at=${timestamp}`)).status, 400);
+  }
+  console.log("PASS workerd: deleted message cursor retains older history, including same-second boundaries and page limits");
   const initiated = await call("/api/rooms/R1/files", "POST", JSON.stringify({
     filename: "smoke.bin", size_bytes: 1024 * 1024, mime_type: "application/octet-stream",
   }));
