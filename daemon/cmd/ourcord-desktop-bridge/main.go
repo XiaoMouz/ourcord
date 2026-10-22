@@ -62,6 +62,7 @@ type bridge struct {
 	fileHTTP    *http.Client // no client-level timeout; file transfers are context-bounded
 	socketPath  string
 	stateDir    string
+	downloadDir string // optional destination override; defaults to the OS downloads directory
 	credentials credentialStore
 
 	daemonMu sync.Mutex
@@ -602,14 +603,21 @@ func (b *bridge) downloadFile(roomID, fileID, filename string) (any, error) {
 		return nil, errors.New("not authenticated")
 	}
 	url := strings.TrimRight(b.serviceURL, "/") + "/api/rooms/" + pathSegment(roomID) + "/files/" + pathSegment(fileID) + "/download"
-	body, contentType, err := b.fetchStream(http.MethodGet, url, token)
+	body, headers, err := b.fetchStream(http.MethodGet, url, token)
 	if err != nil {
 		return nil, err
 	}
 	defer body.Close()
-	// Backend-hosted files answer with a JSON redirect; follow it unauthenticated.
-	if strings.HasPrefix(contentType, "application/json") {
-		data, _ := io.ReadAll(io.LimitReader(body, 1<<20))
+	// R2 objects retain their original MIME type, including application/json.
+	// The service marks raw file bytes as an attachment; only its unmarked
+	// JSON response is a backend download descriptor.
+	contentType, _, _ := mime.ParseMediaType(headers.Get("Content-Type"))
+	disposition, _, _ := mime.ParseMediaType(headers.Get("Content-Disposition"))
+	if contentType == "application/json" && disposition != "attachment" {
+		data, err := io.ReadAll(io.LimitReader(body, 1<<20))
+		if err != nil {
+			return nil, errors.New("download unavailable")
+		}
 		var redirect struct {
 			URL string `json:"url"`
 		}
@@ -628,12 +636,12 @@ func (b *bridge) downloadFile(roomID, fileID, filename string) (any, error) {
 
 // fetchStream issues a GET and returns the still-open body for streaming. The
 // caller must Close it.
-func (b *bridge) fetchStream(method, url, token string) (io.ReadCloser, string, error) {
+func (b *bridge) fetchStream(method, url, token string) (io.ReadCloser, http.Header, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	req, err := http.NewRequestWithContext(ctx, method, url, nil)
 	if err != nil {
 		cancel()
-		return nil, "", err
+		return nil, nil, err
 	}
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
@@ -641,14 +649,14 @@ func (b *bridge) fetchStream(method, url, token string) (io.ReadCloser, string, 
 	resp, err := b.fileHTTP.Do(req)
 	if err != nil {
 		cancel()
-		return nil, "", errors.New("download failed")
+		return nil, nil, errors.New("download failed")
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		resp.Body.Close()
 		cancel()
-		return nil, "", fmt.Errorf("download failed (%d)", resp.StatusCode)
+		return nil, nil, fmt.Errorf("download failed (%d)", resp.StatusCode)
 	}
-	return &cancelReadCloser{ReadCloser: resp.Body, cancel: cancel}, resp.Header.Get("Content-Type"), nil
+	return &cancelReadCloser{ReadCloser: resp.Body, cancel: cancel}, resp.Header, nil
 }
 
 type cancelReadCloser struct {
@@ -669,7 +677,10 @@ func (b *bridge) saveDownload(filename, fileID string, src io.Reader) (any, erro
 	if name == "" {
 		name = "ourcord-" + pathSegment(fileID)
 	}
-	dir := downloadsDir()
+	dir := b.downloadDir
+	if dir == "" {
+		dir = downloadsDir()
+	}
 	target := filepath.Join(dir, name)
 	if _, err := os.Stat(target); err == nil {
 		ext := filepath.Ext(name)
