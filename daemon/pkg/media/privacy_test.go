@@ -28,8 +28,9 @@ func TestClosedPrivacyGateDoesNotReplayCapturedAudio(t *testing.T) {
 			fab := newFabric()
 			senderAddr, receiverAddr := netip.MustParseAddr("198.19.0.10"), netip.MustParseAddr("198.19.0.11")
 			receiver := fab.endpoint(receiverAddr)
+			key := mustKey(t)
 			e, err := Start(Config{
-				SelfKey: mustKey(t), VPN4: senderAddr, Conn: fab.endpoint(senderAddr),
+				SelfKey: key, Counters: testCounters(key), VPN4: senderAddr, Conn: fab.endpoint(senderAddr),
 				CaptureSource: idleCapture(), InputMode: tc.mode,
 			})
 			if err != nil {

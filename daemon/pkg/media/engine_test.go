@@ -157,8 +157,9 @@ func TestTwoEnginesEndToEndVoice(t *testing.T) {
 func TestEngineStartsWithPrivacyControls(t *testing.T) {
 	fab := newFabric()
 	addr := netip.MustParseAddr("198.19.0.10")
+	key := mustKey(t)
 	e, err := Start(Config{
-		SelfKey: mustKey(t), VPN4: addr, Conn: fab.endpoint(addr),
+		SelfKey: key, Counters: testCounters(key), VPN4: addr, Conn: fab.endpoint(addr),
 		CaptureSource: make(chan []int16), InputMode: InputModeOpenMic,
 		Muted: true, Deafened: true,
 	})
