@@ -12,6 +12,7 @@ import { createHash, createHmac } from "node:crypto";
 import { verifyExternalUploadFinalization } from "./cloudflare-external-uploads.mjs";
 import { verifyRoomReorder } from "./cloudflare-room-reorder.mjs";
 import { verifyInternalReplay } from "./cloudflare-internal-replay.mjs";
+import { verifyBackendHealthScan } from "./cloudflare-backend-health.mjs";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const require = createRequire(join(root, "control/package.json"));
@@ -69,6 +70,8 @@ try {
     readFileSync(join(root, "tests/cloudflare-presence-cost-worker.mjs"), "utf8"));
   writeFileSync(join(output, "service/service-under-test.mjs"),
     readFileSync(join(output, "service/index.js"), "utf8"));
+  writeFileSync(join(output, "service/backend-health.mjs"),
+    readFileSync(join(root, "tests/cloudflare-backend-health-worker.mjs"), "utf8"));
   mf = new Miniflare({
     cf: false,
     workers: [...["control", "service"].map((name) => ({
@@ -80,6 +83,12 @@ try {
         ? { durableObjects: { SIGNAL: { className: "SignalDO", useSQLite: true } } }
         : { r2Buckets: ["FILES"] }),
     })), {
+      name: "service-backend-health", modules: true, modulesRoot: join(output, "service"),
+      scriptPath: join(output, "service/backend-health.mjs"),
+      compatibilityDate: "2024-01-01", compatibilityFlags: ["nodejs_compat"],
+      d1Databases: { DB: "local-service" }, r2Buckets: ["FILES"],
+      outboundService: () => new Response(null, { status: 200 }),
+    }, {
       name: "service-presence-cost", modules: true, modulesRoot: join(output, "service"),
       scriptPath: join(output, "service/presence-cost.mjs"),
       compatibilityDate: "2024-01-01", compatibilityFlags: ["nodejs_compat"],
@@ -95,6 +104,7 @@ try {
   });
   const db = await mf.getD1Database("DB", "service");
   await migrate(db, "service");
+  await verifyBackendHealthScan({ db, worker: await mf.getWorker("service-backend-health") });
   await db.batch([
     db.prepare("INSERT INTO lobbies VALUES ('L1','test','u1',NULL,1)"),
     db.prepare("INSERT INTO rooms(id,lobby_id,name) VALUES ('R1','L1','files'), ('R2','L1','general')"),
