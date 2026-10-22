@@ -1,5 +1,6 @@
 // Local-only workerd integration: no Cloudflare account or production resources.
 // Uses the Miniflare version already installed with control's pinned Wrangler.
+import { verifyPresenceRetirement } from "./cloudflare-presence-cost.mjs";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { execFileSync } from "node:child_process";
@@ -64,6 +65,8 @@ try {
   }
   writeFileSync(join(output, "service/room-append-race.mjs"),
     readFileSync(join(root, "tests/cloudflare-room-append-worker.mjs"), "utf8"));
+  writeFileSync(join(output, "service/presence-cost.mjs"),
+    readFileSync(join(root, "tests/cloudflare-presence-cost-worker.mjs"), "utf8"));
   writeFileSync(join(output, "service/service-under-test.mjs"),
     readFileSync(join(output, "service/index.js"), "utf8"));
   mf = new Miniflare({
@@ -77,6 +80,12 @@ try {
         ? { durableObjects: { SIGNAL: { className: "SignalDO", useSQLite: true } } }
         : { r2Buckets: ["FILES"] }),
     })), {
+      name: "service-presence-cost", modules: true, modulesRoot: join(output, "service"),
+      scriptPath: join(output, "service/presence-cost.mjs"),
+      compatibilityDate: "2024-01-01", compatibilityFlags: ["nodejs_compat"],
+      bindings: { ENVIRONMENT: "production", JWT_SECRET: secret },
+      d1Databases: { DB: "local-service" },
+    }, {
       name: "service-room-append-race", modules: true, modulesRoot: join(output, "service"),
       scriptPath: join(output, "service/room-append-race.mjs"),
       compatibilityDate: "2024-01-01", compatibilityFlags: ["nodejs_compat"],
@@ -453,6 +462,7 @@ try {
   assert.equal(await jsonDownloaded.text(), jsonContent);
   console.log("PASS workerd: R2 JSON attachments retain their bytes and attachment disposition");
   await verifyExternalUploadFinalization(db, call, service);
+  await verifyPresenceRetirement({ db, service: await mf.getWorker("service-presence-cost"), jwt });
 } finally {
   for (const ws of sockets) { try { ws.close(1000, "test complete"); } catch {} }
   await mf?.dispose();

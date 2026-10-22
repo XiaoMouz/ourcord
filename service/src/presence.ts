@@ -55,7 +55,14 @@ export async function updatePresence(request: Request, env: Env): Promise<Respon
 export async function leavePresence(request: Request, env: Env): Promise<Response> {
   const auth = await requireAuth(request, env);
   if (auth instanceof Response) return auth;
-  await env.DB.prepare("DELETE FROM lobby_presence WHERE user_id = ?").bind(auth.sub).run();
+  // Membership is indexed by user; presence is keyed by (lobby, user). Its
+  // membership FK guarantees this also finds expired rows, without scanning
+  // every other account's retained presence or adding a heartbeat-write index.
+  await env.DB.prepare(
+    `DELETE FROM lobby_presence WHERE (lobby_id, user_id) IN (
+       SELECT lobby_id, user_id FROM lobby_members WHERE user_id = ?
+     )`,
+  ).bind(auth.sub).run();
   return json({ online: false });
 }
 
