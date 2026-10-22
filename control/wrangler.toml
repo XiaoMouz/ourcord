@@ -34,10 +34,6 @@ SERVICE_URL = "https://service.ourcord.mou.best"
 EMAIL_FROM = "OurCord <ourcord@mou.best>"
 EMAIL_RATE_LIMIT_PER_DAY = "10"
 
-# Bound HTTP CPU; rate limits reduce downstream work, not billed ingress.
-[limits]
-cpu_ms = 50
-
 [[ratelimits]]
 name = "RATE_LIMIT_5"
 namespace_id = "11005"

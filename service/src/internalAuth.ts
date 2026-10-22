@@ -11,7 +11,8 @@
 // consistent `internal_nonces` D1 table (recorded via INSERT OR IGNORE), which
 // closes the cross-isolate replay gap; the per-isolate Map is kept only as a
 // fast negative cache in front of it. If D1 is momentarily unavailable we fall
-// back to the per-isolate guarantee rather than failing a correctly-signed call.
+// back to the bounded per-isolate cache rather than failing a correctly-signed
+// call. Live entries may be evicted under a flood; this is not a spending cap.
 //
 // TODO(proto): shared contract duplicated from control/src/internalAuth.ts;
 // move to proto/ when that becomes the source of truth.
@@ -67,7 +68,13 @@ export async function verifyInternalRequest(
   const cached = seenNonces.get(nonce);
   if (cached !== undefined && cached > nowSec) return false;
 
-  const expiry = nowSec + 2 * INTERNAL_SIG_WINDOW_SEC;
+  // Freshness includes both endpoints: a timestamp now + window remains valid
+  // at now + 2 * window. Retain the nonce through that entire second.
+  const expiry = nowSec + 2 * INTERNAL_SIG_WINDOW_SEC + 1;
+  // Reserve after authentication but before yielding to D1, so concurrent
+  // copies cannot both enter the availability fallback on a failed write.
+  seenNonces.set(nonce, expiry);
+  sweepNonces(nowSec);
   if (db) {
     // Authoritative cross-isolate check: the nonce inserts once; a second insert
     // (a replay from any isolate) is ignored ⇒ reject.
@@ -84,14 +91,12 @@ export async function verifyInternalRequest(
         await db.prepare("DELETE FROM internal_nonces WHERE expires_at <= ?").bind(nowSec).run();
       }
     } catch {
-      // D1 blip: degrade to the per-isolate guarantee rather than reject a
+      // D1 blip: degrade to the bounded per-isolate cache rather than reject a
       // correctly-signed internal call.
       firstUse = true;
     }
     if (!firstUse) return false;
   }
 
-  seenNonces.set(nonce, expiry);
-  sweepNonces(nowSec);
   return true;
 }

@@ -146,9 +146,20 @@ export default function App() {
     } catch { if (isCurrent()) setMembers([]); }
     finally { if (isCurrent()) setMembersLoading(false); }
   }, [ensureNames]);
-  const syncPresence = useCallback(async () => {
-    await bridge("presence.update", { voice_room_id: activeVoiceRoomID });
-  }, [activeVoiceRoomID]);
+  const presenceQueueRef = useRef(Promise.resolve());
+  const presenceRequestRef = useRef(0);
+  const updatePresence = useCallback((voiceRoomID: string) => {
+    const requestID = ++presenceRequestRef.current;
+    // A heartbeat already in flight must finish before a newer voice state
+    // is written. Superseded queued states need no additional service write.
+    const pending = presenceQueueRef.current.catch(() => {}).then(async () => {
+      if (requestID !== presenceRequestRef.current) return;
+      await bridge("presence.update", { voice_room_id: voiceRoomID });
+    });
+    presenceQueueRef.current = pending;
+    return pending;
+  }, []);
+  const syncPresence = useCallback(() => updatePresence(activeVoiceRoomID), [activeVoiceRoomID, updatePresence]);
 
   const applyInvite = useCallback(async (invite: InviteLink) => {
     try {
@@ -211,6 +222,7 @@ export default function App() {
     return () => {
       lobbyRequestRef.current += 1;
       snapshotAppliedRef.current = ++snapshotRequestRef.current;
+      presenceRequestRef.current += 1;
       clearInterval(lobbyTimer); clearInterval(daemonTimer);
     };
   }, [auth.authenticated, refreshLobbies, refreshSnapshot, showError]);
@@ -275,7 +287,7 @@ export default function App() {
       const prefs = loadVoicePrefs();
       await bridge("voice.join_network", { network_id: room.vpn_namespace, mode: prefs.mode, threshold_dbfs: prefs.threshold_dbfs, hangover_ms: prefs.hangover_ms });
       await refreshSnapshot();
-      await bridge("presence.update", { voice_room_id: room.id }).catch(() => undefined);
+      await updatePresence(room.id).catch(() => undefined);
       if (selectedLobby) await refreshMembers(selectedLobby.lobby.id);
     } catch (e) { showError(String(e)); } finally { setBusy(false); setConnectingRoomID(""); }
   }
@@ -285,7 +297,7 @@ export default function App() {
     try {
       await bridge("voice.leave");
       await bridge("network.leave");
-      await bridge("presence.update", { voice_room_id: "" }).catch(() => undefined);
+      await updatePresence("").catch(() => undefined);
       await refreshSnapshot();
       if (selectedLobby) await refreshMembers(selectedLobby.lobby.id);
       if (selectedRoom?.type === "voice") setSelectedRoomID("");

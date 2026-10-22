@@ -43,9 +43,15 @@ cooldown test. Its exact 60-second assertion otherwise intermittently observed
    R2 records, 200 expired reservations, 200 failed uploads, and 200 queued
    object deletions. Failed object deletions are deferred to the next hour so
    one bad key cannot indefinitely occupy the front of the queue.
-5. `limits.cpu_ms=50` bounds CPU per invocation. It does not limit aggregate
-   requests, subrequest/storage operations, or total account spend. Validate
-   CPU headroom against production traffic before increasing this value.
+5. The checked-in configurations target Workers Free and omit `limits.cpu_ms`:
+   Cloudflare rejects custom CPU limits on Free (deployment error 100328).
+   Free enforces its platform CPU allowance, currently 10 ms per HTTP request.
+   Before an intentional move to Workers Paid, explicitly configure and validate
+   a CPU cap (for example `[limits]` with `cpu_ms = 50`) rather than silently
+   accepting Paid's higher default. CPU caps do not limit aggregate requests,
+   subrequest/storage operations, or total account spend. Native rate limits,
+   email quotas and R2 quotas remain necessary on either plan.
+   See [Cloudflare CPU limits](https://developers.cloudflare.com/workers/platform/limits/#cpu-time).
 
 Useful read-only D1 checks after deployment:
 
