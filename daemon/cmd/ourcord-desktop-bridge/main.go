@@ -890,6 +890,16 @@ func (b *bridge) exchangeDaemonSession() (string, error) {
 	if err != nil {
 		return "", keyring.ErrNotFound
 	}
+	profile, err := daemon.LocalProfile()
+	b.dropDaemon(daemon, err)
+	if err != nil {
+		return "", err
+	}
+	// A running daemon without a device token is normal on first launch and
+	// after logout. Do not turn that state into a failed auth.status request.
+	if !profile.Enrolled {
+		return "", keyring.ErrNotFound
+	}
 	session, err := daemon.RefreshSession()
 	b.dropDaemon(daemon, err)
 	if err != nil {
