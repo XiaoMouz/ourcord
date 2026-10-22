@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -60,9 +60,13 @@ try {
       cwd: join(root, module), stdio: "pipe", env: { ...process.env, WRANGLER_SEND_METRICS: "false" },
     });
   }
+  writeFileSync(join(output, "service/room-append-race.mjs"),
+    readFileSync(join(root, "tests/cloudflare-room-append-worker.mjs"), "utf8"));
+  writeFileSync(join(output, "service/service-under-test.mjs"),
+    readFileSync(join(output, "service/index.js"), "utf8"));
   mf = new Miniflare({
     cf: false,
-    workers: ["control", "service"].map((name) => ({
+    workers: [...["control", "service"].map((name) => ({
       name, modules: true, modulesRoot: join(output, name), scriptPath: join(output, name, "index.js"),
       compatibilityDate: "2024-01-01", compatibilityFlags: ["nodejs_compat"],
       bindings: { ENVIRONMENT: "production", JWT_SECRET: secret, SERVICE_INTERNAL_TOKEN: secret, R2_MAX_BYTES: "10485760", R2_MAX_FILES: "2" },
@@ -70,7 +74,13 @@ try {
       ...(name === "control"
         ? { durableObjects: { SIGNAL: { className: "SignalDO", useSQLite: true } } }
         : { r2Buckets: ["FILES"] }),
-    })),
+    })), {
+      name: "service-room-append-race", modules: true, modulesRoot: join(output, "service"),
+      scriptPath: join(output, "service/room-append-race.mjs"),
+      compatibilityDate: "2024-01-01", compatibilityFlags: ["nodejs_compat"],
+      bindings: { ENVIRONMENT: "production", JWT_SECRET: secret },
+      d1Databases: { DB: "local-service" }, ratelimits: limits,
+    }],
   });
   const db = await mf.getD1Database("DB", "service");
   await migrate(db, "service");
@@ -118,6 +128,35 @@ try {
   assert.equal((await unchanged.json()).name, "final");
   assert.equal((await call("/api/rooms/Rpatch", "DELETE")).status, 200);
   console.log("PASS workerd: partial room PATCH preserves intervening edits and returns stored values");
+  await db.batch([
+    db.prepare("INSERT INTO lobbies VALUES ('Lappend','append race','u1',NULL,1)"),
+    db.prepare("INSERT INTO lobby_members(lobby_id,user_id,role,joined_at) VALUES ('Lappend','u1','owner',1), ('Lappend','u2','admin',1)"),
+    db.prepare("INSERT INTO rooms(id,lobby_id,name,position) VALUES ('Rappend','Lappend','general',0)"),
+  ]);
+  let lastAppendPosition = 0;
+  const roomAppendService = await mf.getWorker("service-room-append-race");
+  for (const type of ["text", "voice"]) {
+    const responses = await Promise.all(["u1", "u2"].map((user) => roomAppendService.fetch("https://service.test/api/lobbies/Lappend/rooms", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${jwt(user)}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ name: `${type}-${user}`, type }),
+    })));
+    assert.deepEqual(responses.map((response) => response.status), [201, 201]);
+    const rooms = await Promise.all(responses.map((response) => response.json()));
+    assert.deepEqual(rooms.map((room) => room.position).sort((a, b) => a - b),
+      [lastAppendPosition + 1, lastAppendPosition + 2]);
+    for (const room of rooms) {
+      assert.equal((await db.prepare("SELECT position FROM rooms WHERE id = ?").bind(room.id).first()).position, room.position);
+      if (type === "voice") assert.equal(room.vpn_namespace, `lobby-Lappend-${room.id}-voice`);
+      else assert.equal(room.vpn_namespace, undefined);
+    }
+    lastAppendPosition += 2;
+  }
+  const explicitRoom = await call("/api/lobbies/Lappend/rooms", "POST",
+    JSON.stringify({ name: "explicit", type: "text", position: 0 }));
+  assert.equal(explicitRoom.status, 201);
+  assert.equal((await explicitRoom.json()).position, 0);
+  console.log("PASS workerd: concurrent room appends return distinct stored positions; explicit zero remains supported");
   await db.prepare("INSERT INTO rooms(id,lobby_id,name) VALUES ('Rlimits','L1','limits')").run();
   await db.batch(Array.from({ length: 105 }, (_, index) => db.prepare(
     "INSERT INTO messages(id,room_id,user_id,content,created_at) VALUES (?, 'Rlimits', 'u1', 'page bound', 100)"

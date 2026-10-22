@@ -336,33 +336,35 @@ export async function createRoom(request: Request, env: Env, lobbyId: string): P
     return err("type must be one of text, voice, video, file");
   }
 
-  let position: number;
-  if (body.position === undefined || body.position === null) {
-    const row = await env.DB
-      .prepare("SELECT COALESCE(MAX(position), -1) AS m FROM rooms WHERE lobby_id = ?")
-      .bind(lobbyId)
-      .first<{ m: number }>();
-    position = (row?.m ?? -1) + 1;
-  } else if (Number.isInteger(body.position) && body.position >= 0 && body.position <= 100000) {
+  let position: number | null = null;
+  if (body.position !== undefined && body.position !== null) {
+    if (!Number.isInteger(body.position) || body.position < 0 || body.position > 100000) {
+      return err("position must be a non-negative integer");
+    }
     position = body.position;
-  } else {
-    return err("position must be a non-negative integer");
   }
 
   const id = generateId();
   const vpnNamespace = type === "text" ? null : `lobby-${lobbyId}-${id}-${type}`;
 
-  await env.DB
-    .prepare("INSERT INTO rooms (id, lobby_id, name, type, position, vpn_namespace) VALUES (?,?,?,?,?,?)")
-    .bind(id, lobbyId, name, type, position, vpnNamespace)
-    .run();
+  // Allocate the appended position in the write: concurrent creators must not
+  // both use the same MAX captured by separate reads.
+  const inserted = await env.DB
+    .prepare(
+      `INSERT INTO rooms (id, lobby_id, name, type, position, vpn_namespace)
+       VALUES (?, ?, ?, ?, COALESCE(?, (SELECT COALESCE(MAX(position), -1) + 1 FROM rooms WHERE lobby_id = ?)), ?)
+       RETURNING position`,
+    )
+    .bind(id, lobbyId, name, type, position, lobbyId, vpnNamespace)
+    .first<{ position: number }>();
+  if (!inserted) return err("Room could not be created", 500);
 
   const room: Room = {
     id,
     lobby_id: lobbyId,
     name,
     type: type as Room["type"],
-    position,
+    position: inserted.position,
     vpn_namespace: vpnNamespace ?? undefined,
   };
   return json(room, 201);
