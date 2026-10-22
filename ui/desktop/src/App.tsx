@@ -117,7 +117,21 @@ export default function App() {
       if (requestID === lobbyRequestRef.current) setLobbiesLoaded(true);
     }
   }, []);
-  const refreshSnapshot = useCallback(async () => setSnapshot(await bridge<Snapshot>("daemon.snapshot")), []);
+  const snapshotRequestRef = useRef(0);
+  const snapshotAppliedRef = useRef(0);
+  const refreshSnapshot = useCallback(async () => {
+    const requestID = ++snapshotRequestRef.current;
+    try {
+      const data = await bridge<Snapshot>("daemon.snapshot");
+      // Keep successful snapshots ordered without starving a slow read just
+      // because another request has started in the meantime.
+      if (requestID <= snapshotAppliedRef.current) return;
+      snapshotAppliedRef.current = requestID;
+      setSnapshot(data);
+    } catch (error) {
+      if (requestID > snapshotAppliedRef.current) throw error;
+    }
+  }, []);
   const refreshMembers = useCallback(async (lobbyID: string, showLoading = false) => {
     if (lobbyID !== memberLobbyRef.current) return;
     const requestID = ++memberRequestRef.current;
@@ -182,11 +196,21 @@ export default function App() {
   }, [handleDeepLink]);
   useEffect(() => {
     if (!auth.authenticated) return;
-    void refreshLobbies().catch((error) => showError(String(error))); void refreshSnapshot();
+    let snapshotPolling = false;
+    const pollSnapshot = async () => {
+      if (snapshotPolling) return;
+      snapshotPolling = true;
+      try { await refreshSnapshot(); }
+      catch { /* Keep the last snapshot until the next successful poll. */ }
+      finally { snapshotPolling = false; }
+    };
+    void refreshLobbies().catch((error) => showError(String(error)));
+    void pollSnapshot();
     const lobbyTimer = window.setInterval(() => void refreshLobbies().catch(() => {}), 30_000);
-    const daemonTimer = window.setInterval(() => void refreshSnapshot(), 1_000);
+    const daemonTimer = window.setInterval(() => void pollSnapshot(), 1_000);
     return () => {
       lobbyRequestRef.current += 1;
+      snapshotAppliedRef.current = ++snapshotRequestRef.current;
       clearInterval(lobbyTimer); clearInterval(daemonTimer);
     };
   }, [auth.authenticated, refreshLobbies, refreshSnapshot, showError]);
