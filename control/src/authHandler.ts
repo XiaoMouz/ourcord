@@ -366,8 +366,8 @@ export async function confirmDesktopMagic(request: Request, env: Env): Promise<R
   if (!/^[a-f0-9]{64}$/.test(rawToken)) return json({ error: "Invalid or expired link" }, 400);
   const key = `desktop_magic:${await sha256Base64url(rawToken)}`;
   const storedRaw = await env.KV.get(key);
-  await env.KV.delete(key);
   if (!storedRaw) return json({ error: "Invalid or expired link" }, 400);
+  await env.KV.delete(key);
   let stored: { email: string; challenge: string };
   try { stored = JSON.parse(storedRaw); } catch { return json({ error: "Invalid link" }, 400); }
   if (!PKCE_CHALLENGE_RE.test(stored.challenge)) return json({ error: "Invalid link" }, 400);
@@ -411,6 +411,18 @@ async function issueDesktopCode(env: Env, userId: string, email: string, challen
     "INSERT INTO desktop_auth_codes (code_hash, user_id, email, code_challenge, expires_at) VALUES (?,?,?,?,?)",
   ).bind(await sha256Base64url(code), userId, email, challenge, now + DESKTOP_CODE_TTL).run();
   return code;
+}
+
+export async function cleanupExpiredDesktopCodes(env: Env): Promise<number> {
+  // Match exchangeDesktopCode's strict expiry boundary. Use the expiry index
+  // and one bounded batch so old abandoned logins cannot make a cron unbounded.
+  const result = await env.DB.prepare(
+    `DELETE FROM desktop_auth_codes WHERE code_hash IN (
+       SELECT code_hash FROM desktop_auth_codes
+       WHERE expires_at < ? ORDER BY expires_at LIMIT 500
+     )`,
+  ).bind(Math.floor(Date.now() / 1000)).run();
+  return result.meta.changes;
 }
 
 async function getOrCreateUser(env: Env, email: string): Promise<{ id: string; email: string; banned_at: number | null }> {

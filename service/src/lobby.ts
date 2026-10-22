@@ -143,35 +143,31 @@ export async function joinLobby(request: Request, env: Env, lobbyId: string): Pr
     .first();
   if (existing) return json({ message: "Already a member" });
 
-  // N1: atomic conditional UPDATE consumes one invite use only when the
-  // invite is still valid AND under quota. SQLite evaluates the WHERE clause
-  // and the increment as one row-level operation, so concurrent joiners that
-  // raced past the SELECT (the previous design) can no longer all "win" a
-  // single-use invite. meta.changes==0 means another joiner won the race or
-  // the invite expired/was revoked between requests.
-  const upd = await env.DB
-    .prepare(
-      `UPDATE lobby_invites
-          SET uses = uses + 1
-        WHERE code = ?
-          AND lobby_id = ?
-          AND revoked = 0
+  // D1 batch is a transaction: membership and consumption either both commit
+  // or both roll back. changes() refers to the immediately preceding INSERT,
+  // so duplicate requests for the same membership never spend another use.
+  const [inserted] = await env.DB.batch([
+    env.DB.prepare(
+      `INSERT INTO lobby_members (lobby_id, user_id, role, joined_at)
+       SELECT ?, ?, 'member', ?
+         FROM lobby_invites
+        WHERE code = ? AND lobby_id = ? AND revoked = 0
           AND (expires_at IS NULL OR expires_at > ?)
-          AND (max_uses = 0 OR uses < max_uses)`
-    )
-    .bind(code, lobbyId, now)
-    .run();
-  if ((upd.meta?.changes ?? 0) === 0) {
+          AND (max_uses = 0 OR uses < max_uses)
+       ON CONFLICT(lobby_id, user_id) DO NOTHING`,
+    ).bind(lobbyId, auth.sub, now, code, lobbyId, now),
+    env.DB.prepare(
+      "UPDATE lobby_invites SET uses = uses + 1 WHERE code = ? AND lobby_id = ? AND changes() > 0",
+    ).bind(code, lobbyId),
+  ]);
+  if ((inserted.meta?.changes ?? 0) === 0) {
+    // Another request may have just redeemed the last use for this account.
+    const joined = await env.DB.prepare(
+      "SELECT role FROM lobby_members WHERE lobby_id = ? AND user_id = ?",
+    ).bind(lobbyId, auth.sub).first();
+    if (joined) return json({ message: "Already a member" });
     return err("invalid, revoked, or exhausted invite", 403);
   }
-
-  // INSERT OR IGNORE so a duplicate-member race (two requests both passed
-  // the existing check) doesn't 500. We've already consumed an invite use,
-  // which matches the user's intent (they tried to join twice).
-  await env.DB
-    .prepare("INSERT OR IGNORE INTO lobby_members (lobby_id, user_id, role, joined_at) VALUES (?,?,?,?)")
-    .bind(lobbyId, auth.sub, "member", now)
-    .run();
 
   return json({ joined: true });
 }
@@ -444,15 +440,17 @@ export async function deleteRoom(request: Request, env: Env, roomId: string): Pr
     return err("Insufficient permissions", 403);
   }
 
-  const count = await env.DB
-    .prepare("SELECT COUNT(*) AS c FROM rooms WHERE lobby_id = ?")
-    .bind(room.lobby_id)
-    .first<{ c: number }>();
-  if ((count?.c ?? 0) <= 1) {
+  // Evaluate the invariant in the write itself: two owner clients may delete
+  // different rooms concurrently after both have read the same room count.
+  const deleted = await env.DB.prepare(
+    `DELETE FROM rooms
+      WHERE id = ? AND lobby_id = ?
+        AND (SELECT COUNT(*) FROM rooms WHERE lobby_id = ?) > 1`,
+  ).bind(roomId, room.lobby_id, room.lobby_id).run();
+  if ((deleted.meta?.changes ?? 0) === 0) {
     return err("lobby must have at least one room");
   }
 
-  await env.DB.prepare("DELETE FROM rooms WHERE id = ?").bind(roomId).run();
   return json({ deleted: true });
 }
 

@@ -27,6 +27,8 @@ type InviteLink = Extract<OurCordLink, { kind: "invite" }>;
 export default function App() {
   const dialog = useDialog();
   const [auth, setAuth] = useState<AuthState>({ loading: true, authenticated: false });
+  const [authError, setAuthError] = useState("");
+  const authRequestRef = useRef(0);
   const [loginURLs, setLoginURLs] = useState<{ google_url: string; github_url: string }>();
   const [toast, setToast] = useState<ToastMessage | null>(null);
   const toastID = useRef(0);
@@ -67,6 +69,9 @@ export default function App() {
   authRef.current = auth;
 
   const selectedLobby = lobbies.find((entry) => entry.lobby.id === selectedLobbyID) ?? lobbies[0];
+  const memberLobbyRef = useRef("");
+  memberLobbyRef.current = auth.authenticated ? selectedLobby?.lobby.id ?? "" : "";
+  const memberRequestRef = useRef(0);
   const selectedRoom = selectedLobby?.rooms.find((room) => room.id === selectedRoomID);
   const canManage = !!selectedLobby && ["owner", "admin"].includes(selectedLobby.member.role);
   const myUserID = auth.profile?.user?.id ?? "";
@@ -75,29 +80,71 @@ export default function App() {
     : "";
 
   const refreshAuth = useCallback(async () => {
-    const state = await bridge<AuthState>("auth.status");
-    setAuth({ ...state, loading: false });
-    if (!state.authenticated) setLoginURLs(await bridge("auth.begin"));
-  }, []);
-  const refreshLobbies = useCallback(async () => {
+    const requestID = ++authRequestRef.current;
+    setAuthError("");
     try {
-      const data = await bridge<{ lobbies: LobbyEntry[] }>("lobbies.list");
-      setLobbies(data.lobbies);
-      setSelectedLobbyID((current) => current || data.lobbies[0]?.lobby.id || "");
-    } finally {
-      setLobbiesLoaded(true);
+      const state = await bridge<AuthState>("auth.status");
+      if (requestID !== authRequestRef.current) return;
+      // Login actions need the persisted PKCE verifier, so publish the login
+      // screen only after setup succeeds. Newer auth checks supersede this one.
+      const urls = state.authenticated ? undefined : await bridge<{ google_url: string; github_url: string }>("auth.begin");
+      if (requestID !== authRequestRef.current) return;
+      setLoginURLs(urls);
+      setAuth({ ...state, loading: false });
+    } catch (error) {
+      if (requestID !== authRequestRef.current) return;
+      setAuthError(String(error));
+      throw error;
     }
   }, []);
-  const refreshSnapshot = useCallback(async () => setSnapshot(await bridge<Snapshot>("daemon.snapshot")), []);
+  const retryStartup = useCallback(() => {
+    // The startup screen renders the error; event handlers elsewhere surface
+    // refreshAuth failures through their existing notifications.
+    void refreshAuth().catch(() => {});
+  }, [refreshAuth]);
+  const lobbyRequestRef = useRef(0);
+  const refreshLobbies = useCallback(async () => {
+    const requestID = ++lobbyRequestRef.current;
+    try {
+      const data = await bridge<{ lobbies: LobbyEntry[] }>("lobbies.list");
+      // A post-mutation refresh must supersede older polling snapshots.
+      if (requestID !== lobbyRequestRef.current) return;
+      setLobbies(data.lobbies);
+      setSelectedLobbyID((current) => current || data.lobbies[0]?.lobby.id || "");
+    } catch (error) {
+      if (requestID === lobbyRequestRef.current) throw error;
+    } finally {
+      if (requestID === lobbyRequestRef.current) setLobbiesLoaded(true);
+    }
+  }, []);
+  const snapshotRequestRef = useRef(0);
+  const snapshotAppliedRef = useRef(0);
+  const refreshSnapshot = useCallback(async () => {
+    const requestID = ++snapshotRequestRef.current;
+    try {
+      const data = await bridge<Snapshot>("daemon.snapshot");
+      // Keep successful snapshots ordered without starving a slow read just
+      // because another request has started in the meantime.
+      if (requestID <= snapshotAppliedRef.current) return;
+      snapshotAppliedRef.current = requestID;
+      setSnapshot(data);
+    } catch (error) {
+      if (requestID > snapshotAppliedRef.current) throw error;
+    }
+  }, []);
   const refreshMembers = useCallback(async (lobbyID: string, showLoading = false) => {
+    if (lobbyID !== memberLobbyRef.current) return;
+    const requestID = ++memberRequestRef.current;
+    const isCurrent = () => requestID === memberRequestRef.current && lobbyID === memberLobbyRef.current;
     if (!lobbyID) { setMembers([]); return; }
     if (showLoading) setMembersLoading(true);
     try {
       const data = await bridge<{ members: Member[] }>("lobbies.members", { lobby_id: lobbyID });
+      if (!isCurrent()) return;
       setMembers(data.members ?? []);
       void ensureNames((data.members ?? []).map((member) => member.user_id));
-    } catch { setMembers([]); }
-    finally { setMembersLoading(false); }
+    } catch { if (isCurrent()) setMembers([]); }
+    finally { if (isCurrent()) setMembersLoading(false); }
   }, [ensureNames]);
   const syncPresence = useCallback(async () => {
     await bridge("presence.update", { voice_room_id: activeVoiceRoomID });
@@ -132,7 +179,10 @@ export default function App() {
     await applyInvite(link);
   }, [applyInvite, refreshAuth, showError, showNotice]);
 
-  useEffect(() => { void refreshAuth(); }, [refreshAuth]);
+  useEffect(() => {
+    retryStartup();
+    return () => { authRequestRef.current += 1; };
+  }, [retryStartup]);
   useEffect(() => {
     if (!auth.authenticated || !pendingInvite) return;
     setPendingInvite(null);
@@ -146,22 +196,42 @@ export default function App() {
   }, [handleDeepLink]);
   useEffect(() => {
     if (!auth.authenticated) return;
-    void refreshLobbies(); void refreshSnapshot();
-    const lobbyTimer = window.setInterval(() => void refreshLobbies(), 30_000);
-    const daemonTimer = window.setInterval(() => void refreshSnapshot(), 1_000);
-    return () => { clearInterval(lobbyTimer); clearInterval(daemonTimer); };
-  }, [auth.authenticated, refreshLobbies, refreshSnapshot]);
+    let snapshotPolling = false;
+    const pollSnapshot = async () => {
+      if (snapshotPolling) return;
+      snapshotPolling = true;
+      try { await refreshSnapshot(); }
+      catch { /* Keep the last snapshot until the next successful poll. */ }
+      finally { snapshotPolling = false; }
+    };
+    void refreshLobbies().catch((error) => showError(String(error)));
+    void pollSnapshot();
+    const lobbyTimer = window.setInterval(() => void refreshLobbies().catch(() => {}), 30_000);
+    const daemonTimer = window.setInterval(() => void pollSnapshot(), 1_000);
+    return () => {
+      lobbyRequestRef.current += 1;
+      snapshotAppliedRef.current = ++snapshotRequestRef.current;
+      clearInterval(lobbyTimer); clearInterval(daemonTimer);
+    };
+  }, [auth.authenticated, refreshLobbies, refreshSnapshot, showError]);
   useEffect(() => {
     if (!auth.authenticated) return;
     const lobbyID = selectedLobby?.lobby.id ?? "";
+    let cancelled = false;
     setMembers([]); // clear stale rows so the switch shows a loader, not the old lobby
+    setMembersLoading(!!lobbyID);
     const refreshPresence = async (showLoading = false) => {
       try { await syncPresence(); } catch { /* TTL handles transient service failures */ }
+      if (cancelled) return;
       await refreshMembers(lobbyID, showLoading);
     };
     void refreshPresence(true);
     const timer = window.setInterval(() => void refreshPresence(), 30_000);
-    return () => clearInterval(timer);
+    return () => {
+      cancelled = true;
+      memberRequestRef.current += 1;
+      clearInterval(timer);
+    };
   }, [auth.authenticated, selectedLobby?.lobby.id, refreshMembers, syncPresence]);
   useEffect(() => {
     if (!magicRetryUntil) { setMagicCooldownSeconds(0); return; }
@@ -295,7 +365,15 @@ export default function App() {
 
   if (auth.loading) return <div className="flex h-screen min-w-[920px] flex-col bg-base-300 text-base-content">{titleBar}<div className="hero min-h-0 flex-1"><div className="flex flex-col items-center gap-4">
     <div className="avatar avatar-placeholder"><div className="h-16 w-16 rounded-box bg-neutral text-neutral-content"><span className="text-2xl font-semibold">O</span></div></div>
-    <Spinner label="正在启动 OurCord" />
+    {authError ? <>
+      <div role="alert" className="alert max-w-lg">
+        <div><h1 className="font-semibold">暂时无法启动 OurCord</h1>
+          <p className="mt-1 text-sm">请检查网络连接后重试。如果问题持续，请重新打开应用。</p>
+          <p className="mt-2 break-all text-sm">{authError}</p>
+        </div>
+      </div>
+      <button className="btn" onClick={retryStartup}>重试</button>
+    </> : <Spinner label="正在启动 OurCord" />}
   </div></div></div>;
   if (!auth.authenticated) return <div className="flex h-screen min-w-[920px] flex-col bg-base-200 text-base-content">{titleBar}<div className="min-h-0 flex-1">
     <Login busy={busy} cooldownSeconds={magicCooldownSeconds} loginURLs={loginURLs} onMagic={(email) => void sendMagic(email)} />
