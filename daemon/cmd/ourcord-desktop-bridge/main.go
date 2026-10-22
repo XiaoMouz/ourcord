@@ -66,12 +66,14 @@ type bridge struct {
 	stateDir    string
 	downloadDir string // optional destination override; defaults to the OS downloads directory
 	credentials credentialStore
+	clock       func() time.Time // defaults to time.Now
 
-	daemonMu    sync.Mutex
-	daemon      *client.Client
-	authMu      sync.Mutex
-	authRefresh singleflight.Group
-	sessionMu   sync.RWMutex
+	daemonMu        sync.Mutex
+	daemon          *client.Client
+	authMu          sync.Mutex
+	authRefresh     singleflight.Group
+	refreshCooldown *deviceRefreshCooldown // guarded by authMu
+	sessionMu       sync.RWMutex
 }
 
 func main() {
@@ -863,6 +865,7 @@ func (b *bridge) authedJSON(method, base, path string, body any) (any, error) {
 type httpStatusError struct {
 	status  int
 	message string
+	retryAt time.Time
 }
 
 func (e *httpStatusError) Error() string { return e.message }
@@ -933,7 +936,10 @@ func (b *bridge) api(method, base, path, token string, body any) ([]byte, error)
 		if failure.Error == "" {
 			failure.Error = http.StatusText(resp.StatusCode)
 		}
-		return nil, &httpStatusError{status: resp.StatusCode, message: failure.Error}
+		return nil, &httpStatusError{
+			status: resp.StatusCode, message: failure.Error,
+			retryAt: parseRetryAfter(resp.Header.Get("Retry-After"), b.now()),
+		}
 	}
 	return data, nil
 }
@@ -1050,7 +1056,7 @@ func (b *bridge) fetchProfile(token string) (any, error) {
 
 func (b *bridge) exchangeStoredDeviceCredential(staleToken string) (string, error) {
 	// Share failures as well as successful refreshes with overlapping callers.
-	// Completed failures are not cached: a later request can retry immediately.
+	// Only an explicit server Retry-After delays later requests.
 	value, err, _ := b.authRefresh.Do(staleToken, func() (any, error) {
 		return b.refreshStoredDeviceCredential(staleToken)
 	})
@@ -1085,8 +1091,23 @@ func (b *bridge) refreshStoredDeviceCredential(staleToken string) (string, error
 	if !strings.HasPrefix(deviceToken, "dt_") {
 		return "", keyring.ErrNotFound
 	}
+	fingerprint := sha256.Sum256([]byte(deviceToken))
+	if cooldown := b.refreshCooldown; cooldown != nil &&
+		cooldown.baseURL == b.controlURL && cooldown.credential == fingerprint &&
+		b.now().Before(cooldown.until) {
+		return "", cooldown.err
+	}
+	b.refreshCooldown = nil
 	data, err := b.api(http.MethodPost, b.controlURL, "/api/auth/device", "", map[string]string{"device_token": deviceToken})
 	if err != nil {
+		var responseErr *httpStatusError
+		if errors.As(err, &responseErr) &&
+			(responseErr.status == http.StatusTooManyRequests || responseErr.status == http.StatusServiceUnavailable) &&
+			responseErr.retryAt.After(b.now()) {
+			b.refreshCooldown = &deviceRefreshCooldown{
+				baseURL: b.controlURL, credential: fingerprint, until: responseErr.retryAt, err: err,
+			}
+		}
 		return "", err
 	}
 	var exchanged struct {
