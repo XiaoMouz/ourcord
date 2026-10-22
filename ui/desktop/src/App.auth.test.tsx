@@ -79,6 +79,59 @@ describe("App startup authentication recovery", () => {
     await act(async () => handler([`ourcord://auth?code=${"a".repeat(64)}`]));
   }
 
+  it.each([false, true])("preserves the pending verifier while resolving a cold-start callback (StrictMode: %s)", async (strict) => {
+    const initialURLs = deferred<string[] | null>();
+    const exchange = deferred<void>();
+    const fallback = vi.mocked(bridge).getMockImplementation()!;
+    let verifier = "pending-login-verifier";
+    let authenticated = false;
+    vi.mocked(getCurrent).mockReturnValue(initialURLs.promise);
+    vi.mocked(bridge).mockImplementation(async (method, params) => {
+      if (method === "auth.status") return { authenticated };
+      if (method === "auth.begin") {
+        verifier = "replacement-login-verifier";
+        return loginURLs;
+      }
+      if (method === "auth.exchange") {
+        await exchange.promise;
+        if (verifier !== "pending-login-verifier") throw new Error("PKCE verifier replaced");
+        authenticated = true;
+        return {};
+      }
+      return fallback(method, params);
+    });
+
+    await mount(strict);
+    expect(calls("auth.begin")).toHaveLength(0);
+    await act(async () => initialURLs.resolve([`ourcord://auth?code=${"d".repeat(64)}`]));
+    expect(calls("auth.exchange")).toHaveLength(1);
+    expect(calls("auth.begin")).toHaveLength(0);
+    await act(async () => exchange.resolve());
+    expect(container.textContent).toContain("选择一个房间");
+    expect(calls("auth.begin")).toHaveLength(0);
+  });
+
+  it("waits for an in-flight URL event when the initial callback is delivered twice", async () => {
+    const initialURLs = deferred<string[] | null>();
+    const exchange = deferred<unknown>();
+    const fallback = vi.mocked(bridge).getMockImplementation()!;
+    vi.mocked(getCurrent).mockReturnValue(initialURLs.promise);
+    vi.mocked(bridge).mockImplementation(async (method, params) => {
+      if (method === "auth.exchange") return exchange.promise;
+      return fallback(method, params);
+    });
+    status.resolve({ authenticated: false });
+    await mount();
+    await signInFromDeepLink();
+    await act(async () => initialURLs.resolve([`ourcord://auth?code=${"a".repeat(64)}`]));
+    expect(calls("auth.exchange")).toHaveLength(1);
+    expect(calls("auth.begin")).toHaveLength(0);
+    status = deferred();
+    status.resolve({ authenticated: true });
+    await act(async () => exchange.resolve({}));
+    expect(container.textContent).toContain("选择一个房间");
+  });
+
   it("shows a recoverable status error and retries only when clicked", async () => {
     vi.useFakeTimers();
     await mount();
@@ -156,12 +209,124 @@ describe("App startup authentication recovery", () => {
     expect(container.textContent).not.toContain("欢迎回来");
   });
 
-  it("discards the replaced StrictMode startup check before starting login setup", async () => {
+  it("does not start PKCE setup from a stale status while a callback is exchanging", async () => {
+    const exchange = deferred<unknown>();
+    const fallback = vi.mocked(bridge).getMockImplementation()!;
+    vi.mocked(bridge).mockImplementation(async (method, params) => {
+      if (method === "auth.exchange") return exchange.promise;
+      return fallback(method, params);
+    });
+    await mount();
+    await signInFromDeepLink();
+    await act(async () => status.resolve({ authenticated: false }));
+    expect(calls("auth.begin")).toHaveLength(0);
+    status = deferred();
+    status.resolve({ authenticated: true });
+    await act(async () => exchange.resolve({}));
+    expect(container.textContent).toContain("选择一个房间");
+  });
+
+  it("discards the replaced StrictMode startup before checking authentication", async () => {
     await mount(true);
-    expect(calls("auth.status")).toHaveLength(2);
+    expect(vi.mocked(getCurrent)).toHaveBeenCalledTimes(2);
+    expect(calls("auth.status")).toHaveLength(1);
     await act(async () => status.resolve({ authenticated: false }));
     expect(calls("auth.begin")).toHaveLength(1);
     await act(async () => begin.resolve(loginURLs));
+    expect(container.textContent).toContain("欢迎回来");
+  });
+
+  it("recovers a failed startup URL event using the same verifier when getCurrent is empty", async () => {
+    const exchange = deferred<unknown>();
+    const fallback = vi.mocked(bridge).getMockImplementation()!;
+    let verifier = "original-verifier";
+    let attempts = 0;
+    vi.mocked(bridge).mockImplementation(async (method, params) => {
+      if (method === "auth.begin") { verifier = "replacement-verifier"; return loginURLs; }
+      if (method === "auth.exchange") {
+        attempts += 1;
+        if (attempts === 1) return exchange.promise;
+        if (verifier !== "original-verifier") throw new Error("PKCE verifier replaced");
+        return {};
+      }
+      return fallback(method, params);
+    });
+    await mount();
+    await signInFromDeepLink();
+    await act(async () => status.resolve({ authenticated: false }));
+    await act(async () => exchange.reject(new Error("exchange temporarily offline")));
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain("exchange temporarily offline");
+    expect(container.textContent).not.toContain("正在启动 OurCord");
+    expect(calls("auth.begin")).toHaveLength(0);
+    status = deferred();
+    status.resolve({ authenticated: true });
+    await retry();
+    expect(calls("auth.exchange")).toHaveLength(2);
+    expect(calls("auth.exchange")[1][1]).toEqual(calls("auth.exchange")[0][1]);
+    expect(calls("auth.begin")).toHaveLength(0);
+    expect(container.textContent).toContain("选择一个房间");
+  });
+
+  it("retries a failed startup link read without replacing the pending verifier", async () => {
+    vi.mocked(getCurrent).mockRejectedValueOnce(new Error("startup link unavailable"));
+    status.resolve({ authenticated: false });
+    begin.resolve(loginURLs);
+    await mount();
+    expect(container.textContent).toContain("startup link unavailable");
+    expect(calls("auth.status")).toHaveLength(0);
+    expect(calls("auth.begin")).toHaveLength(0);
+    await retry();
+    expect(vi.mocked(getCurrent)).toHaveBeenCalledTimes(2);
+    expect(calls("auth.begin")).toHaveLength(1);
+    expect(container.textContent).toContain("欢迎回来");
+  });
+
+  it("preserves the original verifier when a cold-start exchange fails transiently", async () => {
+    const fallback = vi.mocked(bridge).getMockImplementation()!;
+    let verifier = "original-verifier";
+    let authenticated = false;
+    let attempts = 0;
+    vi.mocked(getCurrent).mockResolvedValue([`ourcord://auth?code=${"e".repeat(64)}`]);
+    vi.mocked(bridge).mockImplementation(async (method, params) => {
+      if (method === "auth.status") return { authenticated };
+      if (method === "auth.begin") { verifier = "new-verifier"; return loginURLs; }
+      if (method === "auth.exchange") {
+        attempts += 1;
+        if (attempts === 1) throw new Error("network unavailable");
+        if (verifier !== "original-verifier") throw new Error("PKCE verifier replaced");
+        authenticated = true;
+        return {};
+      }
+      return fallback(method, params);
+    });
+    await mount();
+    expect(calls("auth.begin")).toHaveLength(0);
+    expect(container.textContent).toContain("network unavailable");
+    await retry();
+    expect(calls("auth.exchange")).toHaveLength(2);
+    expect(calls("auth.begin")).toHaveLength(0);
+    expect(container.textContent).toContain("选择一个房间");
+  });
+
+  it("starts a new login after an expired callback only when explicitly requested", async () => {
+    const exchange = deferred<unknown>();
+    const fallback = vi.mocked(bridge).getMockImplementation()!;
+    vi.mocked(getCurrent).mockResolvedValue([`ourcord://auth?code=${"e".repeat(64)}`]);
+    vi.mocked(bridge).mockImplementation(async (method, params) => {
+      if (method === "auth.exchange") return exchange.promise;
+      return fallback(method, params);
+    });
+    status.resolve({ authenticated: false });
+    begin.resolve(loginURLs);
+    await mount();
+    expect(calls("auth.begin")).toHaveLength(0);
+    await act(async () => exchange.reject(new Error("authorization expired")));
+    expect(calls("auth.begin")).toHaveLength(0);
+    expect(container.textContent).toContain("authorization expired");
+    const restart = [...container.querySelectorAll("button")].find((item) => item.textContent === "重新开始登录");
+    expect(restart).toBeDefined();
+    await act(async () => restart!.click());
+    expect(calls("auth.begin")).toHaveLength(1);
     expect(container.textContent).toContain("欢迎回来");
   });
 
