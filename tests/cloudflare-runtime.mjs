@@ -254,6 +254,23 @@ try {
   // Hibernation itself is covered by constructor reconstruction tests; this
   // verifies native attachments, SQLite storage and runtime event callbacks.
   console.log("PASS workerd: hibernatable WebSocket handshake, replay and replacement connection");
+
+  // A JSON document is file data, even when it contains a property named url.
+  // The desktop bridge relies on Content-Disposition to distinguish this
+  // response from the external-backend JSON download descriptor.
+  const jsonContent = JSON.stringify({ url: "https://example.invalid/file-data", configuration: true });
+  const jsonInitiated = await call("/api/rooms/R2/files", "POST", JSON.stringify({
+    filename: "config.json", size_bytes: Buffer.byteLength(jsonContent), mime_type: "application/json",
+  }));
+  assert.equal(jsonInitiated.status, 201);
+  const jsonFile = await jsonInitiated.json();
+  assert.equal((await call(jsonFile.upload_url, "PUT", jsonContent)).status, 200);
+  const jsonDownloaded = await call(`/api/rooms/R2/files/${jsonFile.id}/download`);
+  assert.equal(jsonDownloaded.status, 200);
+  assert.equal(jsonDownloaded.headers.get("Content-Type"), "application/json");
+  assert.match(jsonDownloaded.headers.get("Content-Disposition"), /^attachment;/);
+  assert.equal(await jsonDownloaded.text(), jsonContent);
+  console.log("PASS workerd: R2 JSON attachments retain their bytes and attachment disposition");
 } finally {
   for (const ws of sockets) { try { ws.close(1000, "test complete"); } catch {} }
   await mf?.dispose();

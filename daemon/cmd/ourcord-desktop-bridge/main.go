@@ -62,6 +62,7 @@ type bridge struct {
 	fileHTTP    *http.Client // no client-level timeout; file transfers are context-bounded
 	socketPath  string
 	stateDir    string
+	downloadDir string // optional destination override; defaults to the OS downloads directory
 	credentials credentialStore
 
 	daemonMu sync.Mutex
@@ -602,14 +603,21 @@ func (b *bridge) downloadFile(roomID, fileID, filename string) (any, error) {
 		return nil, errors.New("not authenticated")
 	}
 	url := strings.TrimRight(b.serviceURL, "/") + "/api/rooms/" + pathSegment(roomID) + "/files/" + pathSegment(fileID) + "/download"
-	body, contentType, err := b.fetchStream(http.MethodGet, url, token)
+	body, headers, err := b.fetchStream(http.MethodGet, url, token)
 	if err != nil {
 		return nil, err
 	}
 	defer body.Close()
-	// Backend-hosted files answer with a JSON redirect; follow it unauthenticated.
-	if strings.HasPrefix(contentType, "application/json") {
-		data, _ := io.ReadAll(io.LimitReader(body, 1<<20))
+	// R2 objects retain their original MIME type, including application/json.
+	// The service marks raw file bytes as an attachment; only its unmarked
+	// JSON response is a backend download descriptor.
+	contentType, _, _ := mime.ParseMediaType(headers.Get("Content-Type"))
+	disposition, _, _ := mime.ParseMediaType(headers.Get("Content-Disposition"))
+	if contentType == "application/json" && disposition != "attachment" {
+		data, err := io.ReadAll(io.LimitReader(body, 1<<20))
+		if err != nil {
+			return nil, errors.New("download unavailable")
+		}
 		var redirect struct {
 			URL string `json:"url"`
 		}
@@ -628,12 +636,12 @@ func (b *bridge) downloadFile(roomID, fileID, filename string) (any, error) {
 
 // fetchStream issues a GET and returns the still-open body for streaming. The
 // caller must Close it.
-func (b *bridge) fetchStream(method, url, token string) (io.ReadCloser, string, error) {
+func (b *bridge) fetchStream(method, url, token string) (io.ReadCloser, http.Header, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	req, err := http.NewRequestWithContext(ctx, method, url, nil)
 	if err != nil {
 		cancel()
-		return nil, "", err
+		return nil, nil, err
 	}
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
@@ -641,14 +649,14 @@ func (b *bridge) fetchStream(method, url, token string) (io.ReadCloser, string, 
 	resp, err := b.fileHTTP.Do(req)
 	if err != nil {
 		cancel()
-		return nil, "", errors.New("download failed")
+		return nil, nil, errors.New("download failed")
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		resp.Body.Close()
 		cancel()
-		return nil, "", fmt.Errorf("download failed (%d)", resp.StatusCode)
+		return nil, nil, fmt.Errorf("download failed (%d)", resp.StatusCode)
 	}
-	return &cancelReadCloser{ReadCloser: resp.Body, cancel: cancel}, resp.Header.Get("Content-Type"), nil
+	return &cancelReadCloser{ReadCloser: resp.Body, cancel: cancel}, resp.Header, nil
 }
 
 type cancelReadCloser struct {
@@ -662,30 +670,57 @@ func (c *cancelReadCloser) Close() error {
 	return err
 }
 
-// saveDownload writes a stream to <downloads>/<filename>, avoiding overwrite by
-// suffixing the file id, and returns the saved path.
+// saveDownload writes a complete stream to a new file and returns its path.
 func (b *bridge) saveDownload(filename, fileID string, src io.Reader) (any, error) {
+	return b.saveDownloadWithLimit(filename, fileID, src, 512<<20)
+}
+
+func (b *bridge) saveDownloadWithLimit(filename, fileID string, src io.Reader, limit int64) (any, error) {
 	name := safeFilename(filename)
 	if name == "" {
 		name = "ourcord-" + pathSegment(fileID)
 	}
-	dir := downloadsDir()
-	target := filepath.Join(dir, name)
-	if _, err := os.Stat(target); err == nil {
-		ext := filepath.Ext(name)
-		target = filepath.Join(dir, strings.TrimSuffix(name, ext)+"-"+pathSegment(fileID)+ext)
+	dir := b.downloadDir
+	if dir == "" {
+		dir = downloadsDir()
 	}
-	out, err := os.Create(target)
+	target := filepath.Join(dir, name)
+	out, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if errors.Is(err, os.ErrExist) {
+		ext := filepath.Ext(name)
+		stem := strings.TrimSuffix(name, ext) + "-" + pathSegment(fileID)
+		target = filepath.Join(dir, stem+ext)
+		out, err = os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+		if errors.Is(err, os.ErrExist) {
+			// CreateTemp also uses exclusive creation, so concurrent downloads
+			// and existing symlinks can never redirect or overwrite this copy.
+			out, err = os.CreateTemp(dir, stem+"-*"+ext)
+			if err == nil {
+				target = out.Name()
+			}
+		}
+	}
 	if err != nil {
 		return nil, fmt.Errorf("save file: %w", err)
 	}
-	if _, err := io.Copy(out, io.LimitReader(src, 512<<20)); err != nil {
-		out.Close()
+	saved := false
+	defer func() {
+		_ = out.Close()
+		if !saved {
+			_ = os.Remove(target)
+		}
+	}()
+	written, err := io.Copy(out, io.LimitReader(src, limit+1))
+	if err != nil {
 		return nil, fmt.Errorf("save file: %w", err)
+	}
+	if written > limit {
+		return nil, fmt.Errorf("download exceeds size limit (%d bytes)", limit)
 	}
 	if err := out.Close(); err != nil {
 		return nil, fmt.Errorf("save file: %w", err)
 	}
+	saved = true
 	return map[string]string{"saved_path": target}, nil
 }
 
