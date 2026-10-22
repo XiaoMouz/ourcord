@@ -64,9 +64,10 @@ type bridge struct {
 	stateDir    string
 	credentials credentialStore
 
-	daemonMu sync.Mutex
-	daemon   *client.Client
-	authMu   sync.Mutex
+	daemonMu  sync.Mutex
+	daemon    *client.Client
+	authMu    sync.Mutex
+	sessionMu sync.RWMutex
 }
 
 func main() {
@@ -140,6 +141,21 @@ func (b *bridge) handle(req request) (out response) {
 }
 
 func (b *bridge) dispatch(method string, raw json.RawMessage) (any, error) {
+	// Account requests may refresh credentials or enroll the daemon. Let them
+	// finish before logout retires that identity and clears its credentials.
+	// Ordinary requests still run concurrently; file streams and daemon status
+	// do not write account credentials and must not hold logout behind a transfer.
+	if method == "auth.logout" {
+		b.sessionMu.Lock()
+		defer b.sessionMu.Unlock()
+	} else if method != "files.upload" && method != "files.download" {
+		family, _, _ := strings.Cut(method, ".")
+		switch family {
+		case "auth", "profile", "profiles", "lobbies", "rooms", "messages", "presence", "devices", "files":
+			b.sessionMu.RLock()
+			defer b.sessionMu.RUnlock()
+		}
+	}
 	params := map[string]any{}
 	if len(raw) > 0 && string(raw) != "null" {
 		if err := json.Unmarshal(raw, &params); err != nil {
@@ -246,6 +262,7 @@ func (b *bridge) dispatch(method string, raw json.RawMessage) (any, error) {
 		}
 		_ = b.credentialStore().Delete(credentialService, jwtCredential)
 		_ = b.credentialStore().Delete(credentialService, deviceCredential)
+		_ = b.credentialStore().Delete(credentialService, pkceCredential)
 		_ = os.Remove(filepath.Join(b.clientStateDir(), "device.token"))
 		return map[string]bool{"authenticated": false}, nil
 	case "profile.update":
