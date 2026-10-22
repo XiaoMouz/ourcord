@@ -10,8 +10,13 @@ import { formatBps, formatRelative, loadPercent, healthBadge, summarizeRelays } 
 // must be listed in the control's ADMIN_USER_IDS or the endpoint returns 403.
 
 const CONTROL_URL_KEY = "ourcord.admin.controlUrl";
-const TOKEN_KEY = "ourcord.admin.token";
+const SESSION_KEY = "ourcord.admin.session";
 const REFRESH_MS = 15000;
+
+interface ControlSession {
+  controlUrl: string;
+  token: string;
+}
 
 interface RelayRow {
   id: string;
@@ -48,7 +53,7 @@ function trimUrl(u: string): string {
 
 export function FleetConsole() {
   const [controlUrl, setControlUrl] = useState("");
-  const [token, setToken] = useState("");
+  const [session, setSession] = useState<ControlSession | null>(null);
   const [email, setEmail] = useState("");
   const [otp, setOtp] = useState("");
   const [otpSent, setOtpSent] = useState(false);
@@ -56,6 +61,7 @@ export function FleetConsole() {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const pendingFleet = useRef<AbortController | null>(null);
+  const pendingAuth = useRef<AbortController | null>(null);
 
   const cancelFleet = useCallback(() => {
     const pending = pendingFleet.current;
@@ -63,37 +69,51 @@ export function FleetConsole() {
     pending?.abort();
   }, []);
 
-  // Restore persisted control URL + session token on mount. We deliberately
-  // hydrate in an effect (empty on both server and client first render, then
+  const cancelAuth = useCallback(() => {
+    const pending = pendingAuth.current;
+    pendingAuth.current = null;
+    pending?.abort();
+  }, []);
+  useEffect(() => cancelAuth, [cancelAuth]);
+
+  // Restore the session and its issuing server as one value. The shared URL
+  // preference can change in another tab; it must never redirect a token.
+  // Old bare tokens have no trustworthy server binding and require a new login.
+  // Hydrate in an effect (empty on both server and client first render, then
   // updated) so storage-derived values never cause an SSR hydration mismatch.
   useEffect(() => {
     try {
       // eslint-disable-next-line react-hooks/set-state-in-effect
       setControlUrl(localStorage.getItem(CONTROL_URL_KEY) ?? "");
-      setToken(sessionStorage.getItem(TOKEN_KEY) ?? "");
+      sessionStorage.removeItem("ourcord.admin.token");
+      const stored = JSON.parse(sessionStorage.getItem(SESSION_KEY) ?? "null") as Partial<ControlSession> | null;
+      if (stored && typeof stored.controlUrl === "string" && stored.controlUrl && typeof stored.token === "string" && stored.token) {
+        setControlUrl(stored.controlUrl);
+        setSession({ controlUrl: stored.controlUrl, token: stored.token });
+      }
     } catch {
       /* storage unavailable (SSR / privacy mode) — stay unauthenticated */
     }
   }, []);
 
   const fetchFleet = useCallback(async () => {
-    if (!controlUrl || !token || pendingFleet.current) return;
+    if (!session || pendingFleet.current) return;
     const controller = new AbortController();
     pendingFleet.current = controller;
     const timeout = window.setTimeout(() => controller.abort(), REFRESH_MS);
     const isCurrent = () => pendingFleet.current === controller && !controller.signal.aborted;
     setError("");
     try {
-      const r = await fetch(`${trimUrl(controlUrl)}/api/control/fleet`, {
-        headers: { Authorization: `Bearer ${token}` },
+      const r = await fetch(`${session.controlUrl}/api/control/fleet`, {
+        headers: { Authorization: `Bearer ${session.token}` },
         signal: controller.signal,
       });
       if (!isCurrent()) return;
       if (r.status === 401) {
         setError("会话已过期，请重新登录。");
         setFleet(null);
-        setToken("");
-        try { sessionStorage.removeItem(TOKEN_KEY); } catch { /* ignore */ }
+        setSession(null);
+        try { sessionStorage.removeItem(SESSION_KEY); } catch { /* ignore */ }
         return;
       }
       if (r.status === 403) {
@@ -113,73 +133,79 @@ export function FleetConsole() {
       window.clearTimeout(timeout);
       if (pendingFleet.current === controller) pendingFleet.current = null;
     }
-  }, [controlUrl, token]);
+  }, [session]);
 
   // Timer and manual refresh share one pending request for the current session.
   useEffect(() => {
-    if (!token) return;
+    if (!session) return;
     // eslint-disable-next-line react-hooks/set-state-in-effect
     void fetchFleet();
     const id = setInterval(fetchFleet, REFRESH_MS);
     return () => { clearInterval(id); cancelFleet(); };
-  }, [token, fetchFleet, cancelFleet]);
+  }, [session, fetchFleet, cancelFleet]);
 
-  async function requestOtp() {
-    setBusy(true);
+  function resetLogin() {
+    cancelAuth();
+    setBusy(false);
+    setOtp("");
+    setOtpSent(false);
     setError("");
-    try {
-      const base = trimUrl(controlUrl);
-      try { localStorage.setItem(CONTROL_URL_KEY, base); } catch { /* ignore */ }
-      const r = await fetch(`${base}/api/auth/otp/request`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: email.trim() }),
-      });
-      if (!r.ok) {
-        setError(`发送验证码失败：${r.status}`);
-        return;
-      }
-      setOtpSent(true);
-    } catch (e) {
-      setError(`无法连接 control：${String(e)}`);
-    } finally {
-      setBusy(false);
-    }
   }
 
-  async function verifyOtp() {
+  async function authenticate(action: "request" | "verify") {
+    if (pendingAuth.current) return;
+    const base = trimUrl(controlUrl);
+    const controller = new AbortController();
+    pendingAuth.current = controller;
+    const timeout = window.setTimeout(() => controller.abort(), REFRESH_MS);
+    const isCurrent = () => pendingAuth.current === controller && !controller.signal.aborted;
     setBusy(true);
     setError("");
     try {
-      const r = await fetch(`${trimUrl(controlUrl)}/api/auth/otp/verify`, {
+      try { localStorage.setItem(CONTROL_URL_KEY, base); } catch { /* ignore */ }
+      const r = await fetch(`${base}/api/auth/otp/${action}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: email.trim(), otp: otp.trim() }),
+        body: JSON.stringify({ email: email.trim(), ...(action === "verify" ? { otp: otp.trim() } : {}) }),
+        signal: controller.signal,
       });
+      if (!isCurrent()) return;
       if (!r.ok) {
-        setError(r.status === 401 ? "验证码无效或已过期。" : `登录失败：${r.status}`);
+        setError(action === "request" ? `发送验证码失败：${r.status}` : r.status === 401 ? "验证码无效或已过期。" : `登录失败：${r.status}`);
+        return;
+      }
+      if (action === "request") {
+        setOtpSent(true);
         return;
       }
       const body = (await r.json()) as { token: string };
-      setToken(body.token);
-      try { sessionStorage.setItem(TOKEN_KEY, body.token); } catch { /* ignore */ }
+      if (!isCurrent()) return;
+      if (typeof body.token !== "string" || !body.token) throw new Error("登录响应缺少令牌");
+      const nextSession = { controlUrl: base, token: body.token };
+      setSession(nextSession);
+      try { sessionStorage.setItem(SESSION_KEY, JSON.stringify(nextSession)); } catch { /* ignore */ }
       setOtp("");
       setOtpSent(false);
     } catch (e) {
-      setError(`无法连接 control：${String(e)}`);
+      if (pendingAuth.current === controller) setError(`无法连接 control：${String(e)}`);
     } finally {
-      setBusy(false);
+      window.clearTimeout(timeout);
+      if (pendingAuth.current === controller) {
+        pendingAuth.current = null;
+        setBusy(false);
+      }
     }
   }
 
   function signOut() {
     cancelFleet();
-    setToken("");
+    resetLogin();
+    setSession(null);
     setFleet(null);
-    try { sessionStorage.removeItem(TOKEN_KEY); } catch { /* ignore */ }
+    try { sessionStorage.removeItem(SESSION_KEY); } catch { /* ignore */ }
   }
 
-  if (!token) {
+  if (!session) {
     return (
       <div className="adminCard">
         <h2>运营者登录</h2>
@@ -188,7 +214,7 @@ export function FleetConsole() {
             type="url"
             placeholder="https://control.example"
             value={controlUrl}
-            onChange={(e) => setControlUrl(e.target.value)}
+            onChange={(e) => { resetLogin(); setControlUrl(e.target.value); }}
           />
         </label>
         <label>邮箱
@@ -196,11 +222,11 @@ export function FleetConsole() {
             type="email"
             placeholder="operator@example.com"
             value={email}
-            onChange={(e) => setEmail(e.target.value)}
+            onChange={(e) => { resetLogin(); setEmail(e.target.value); }}
           />
         </label>
         {!otpSent ? (
-          <button disabled={busy || !controlUrl || !email} onClick={requestOtp}>发送验证码</button>
+          <button disabled={busy || !controlUrl || !email} onClick={() => void authenticate("request")}>发送验证码</button>
         ) : (
           <>
             <label>验证码
@@ -208,10 +234,10 @@ export function FleetConsole() {
                 inputMode="numeric"
                 placeholder="6 位验证码"
                 value={otp}
-                onChange={(e) => setOtp(e.target.value)}
+                onChange={(e) => { cancelAuth(); setBusy(false); setError(""); setOtp(e.target.value); }}
               />
             </label>
-            <button disabled={busy || otp.length < 6} onClick={verifyOtp}>登录</button>
+            <button disabled={busy || otp.length < 6} onClick={() => void authenticate("verify")}>登录</button>
           </>
         )}
         {error && <p className="adminError">{error}</p>}
