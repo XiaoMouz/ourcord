@@ -76,6 +76,10 @@ jobs:
         with:
           go-version-file: ${{ matrix.mod }}/go.mod
           cache: true
+          cache-dependency-path: |
+            go.work.sum
+            daemon/go.sum
+            relay/go.sum
       - run: go build ./...
       - run: go vet ./...
       - run: go test -race ./...
@@ -96,6 +100,10 @@ jobs:
         with:
           go-version-file: daemon/go.mod
           cache: true
+          cache-dependency-path: |
+            go.work.sum
+            daemon/go.sum
+            relay/go.sum
       # The `voice` build tag pulls in cgo libopus (hraban/opus) and the audio
       # device layer (malgo). Linux needs the Opus + ALSA dev packages; macOS
       # uses CoreAudio and Homebrew's opus/opusfile. The default (tag-less)
@@ -152,6 +160,10 @@ jobs:
         with:
           go-version-file: daemon/go.mod
           cache: true
+          cache-dependency-path: |
+            go.work.sum
+            daemon/go.sum
+            relay/go.sum
       - name: build daemon for ${{ matrix.target.goos }}/${{ matrix.target.goarch }}
         env:
           GOOS: ${{ matrix.target.goos }}
@@ -171,6 +183,10 @@ jobs:
         with:
           go-version-file: daemon/go.mod
           cache: true
+          cache-dependency-path: |
+            go.work.sum
+            daemon/go.sum
+            relay/go.sum
       # Compile + run the windows-tagged tun code natively. This catches
       # windows-only breakage the ubuntu jobs can't, and does NOT need
       # wintun.dll: the driver is loaded lazily only when an adapter is created,
@@ -237,6 +253,10 @@ jobs:
         with:
           go-version-file: daemon/go.mod
           cache: true
+          cache-dependency-path: |
+            go.work.sum
+            daemon/go.sum
+            relay/go.sum
       - uses: dtolnay/rust-toolchain@stable
       - uses: msys2/setup-msys2@v2
         with:
