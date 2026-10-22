@@ -8,9 +8,9 @@ export async function getMessages(request: Request, env: Env, roomId: string): P
 
   // Verify room membership via lobby
   const room = await env.DB
-    .prepare("SELECT lobby_id FROM rooms WHERE id = ?")
+    .prepare("SELECT lobby_id, message_deletion_revision FROM rooms WHERE id = ?")
     .bind(roomId)
-    .first<{ lobby_id: string }>();
+    .first<{ lobby_id: string; message_deletion_revision: number }>();
   if (!room) return err("Room not found", 404);
 
   const isMember = await env.DB
@@ -57,7 +57,9 @@ export async function getMessages(request: Request, env: Env, roomId: string): P
   }
 
   const messages = await stmt.all<Message>();
-  return json({ messages: messages.results.reverse() }); // return chronological order
+  // Read the revision BEFORE the page: if a deletion races this request, the
+  // next poll still observes a newer revision and invalidates cached history.
+  return json({ messages: messages.results.reverse(), deletion_revision: room.message_deletion_revision });
 }
 
 // POST /api/rooms/:roomId/messages

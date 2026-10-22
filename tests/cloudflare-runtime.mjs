@@ -13,6 +13,7 @@ import { createHash, createHmac } from "node:crypto";
 import { verifyExternalUploadFinalization } from "./cloudflare-external-uploads.mjs";
 import { verifyRoomReorder } from "./cloudflare-room-reorder.mjs";
 import { verifyInternalReplay } from "./cloudflare-internal-replay.mjs";
+import { verifyMessageRevisions } from "./cloudflare-message-revisions.mjs";
 import { verifyFileListScan } from "./cloudflare-file-list.mjs";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -120,6 +121,7 @@ try {
     db.prepare("INSERT INTO file_policies(lobby_id,max_temp_files,user_server_enabled,lobby_server_enabled) VALUES ('L1',0,0,0)"),
   ]);
   const service = await mf.getWorker("service");
+  await verifyMessageRevisions({ db, service: await mf.getWorker("service-presence-cost"), jwt });
   await verifyFileListScan({ db, service, metered: await mf.getWorker("service-file-list"), jwt });
   await verifyPresenceIndex({ db, service: await mf.getWorker("service-presence-index"), jwt });
   await verifyInternalReplay({ service, db, secret });
