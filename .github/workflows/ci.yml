@@ -46,6 +46,20 @@ jobs:
       - run: pnpm exec tsc --noEmit
       - run: pnpm test
 
+  cloudflare-runtime:
+    name: Cloudflare runtime (local D1, R2, WebSockets)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - run: corepack enable
+      - run: corepack prepare pnpm@9.15.9 --activate
+      - run: pnpm --dir control install --frozen-lockfile
+      - run: pnpm --dir service install --frozen-lockfile
+      - run: node tests/cloudflare-runtime.mjs
+
   go:
     name: Go (build + vet + race tests)
     runs-on: ubuntu-latest

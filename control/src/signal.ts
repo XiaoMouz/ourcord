@@ -58,6 +58,7 @@ const RATE_BURST = 100;
 // (Map iteration order is insertion order in JS), evicting the oldest entry
 // when a new one would exceed the cap. 256 fits ~5MB at 16KiB max each.
 const MAX_REPLAY_CACHE_ENTRIES = 256;
+const MAX_SESSIONS = 64;
 
 export class SignalDO implements DurableObject {
   private sessions = new Map<string, PeerSession>();
@@ -67,12 +68,29 @@ export class SignalDO implements DurableObject {
 
   constructor(state: DurableObjectState) {
     this.state = state;
+    for (const ws of state.getWebSockets()) {
+      const saved = ws.deserializeAttachment() as Omit<PeerSession, "ws"> | null;
+      if (saved) this.sessions.set(saved.publicKey, { ...saved, ws });
+    }
+    // Attachments preserve sessions, but exceed neither their 2 KiB limit nor
+    // the 30-second replay contract by putting SDP payloads in SQLite instead.
+    state.storage.sql.exec(`CREATE TABLE IF NOT EXISTS signal_replay (
+      key TEXT PRIMARY KEY, message TEXT NOT NULL, cached_at INTEGER NOT NULL
+    )`);
+    state.storage.sql.exec("DELETE FROM signal_replay WHERE cached_at < ?", Date.now() - REPLAY_WINDOW_MS);
+    const rows = state.storage.sql.exec<{ key: string; message: string; cached_at: number }>(
+      "SELECT key, message, cached_at FROM signal_replay WHERE cached_at >= ? ORDER BY cached_at, key",
+      Date.now() - REPLAY_WINDOW_MS,
+    );
+    for (const row of rows) {
+      this.replayCache.set(row.key, { msg: JSON.parse(row.message), cachedAt: row.cached_at });
+    }
   }
 
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
 
-    if (request.headers.get("Upgrade") !== "websocket") {
+    if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
       return new Response("Expected WebSocket upgrade", { status: 426 });
     }
 
@@ -83,13 +101,17 @@ export class SignalDO implements DurableObject {
 
     // If a previous session for this pk is still around (reconnect), close it first.
     const existing = this.sessions.get(publicKey);
+    if (!existing && this.sessions.size >= MAX_SESSIONS) {
+      return new Response("Signal room is full", { status: 429 });
+    }
     if (existing) {
-      try { existing.ws.close(1000, "superseded"); } catch { /* ignore */ }
       this.sessions.delete(publicKey);
+      existing.ws.serializeAttachment(null);
+      try { existing.ws.close(1000, "superseded"); } catch { /* ignore */ }
     }
 
     const { 0: client, 1: server } = new WebSocketPair();
-    server.accept();
+    this.state.acceptWebSocket(server);
 
     const now = Date.now();
     const session: PeerSession = {
@@ -101,6 +123,7 @@ export class SignalDO implements DurableObject {
       tokensUpdatedAt: now,
     };
     this.sessions.set(publicKey, session);
+    this.saveSession(session);
 
     // Tell the new peer who's already here, then announce them to everyone.
     const others = [...this.sessions.keys()].filter((k) => k !== publicKey);
@@ -128,16 +151,41 @@ export class SignalDO implements DurableObject {
       }
     }
 
-    server.addEventListener("message", (event: MessageEvent) => {
-      this.handleMessage(publicKey, event.data as string);
-    });
-    server.addEventListener("close", () => this.dropSession(publicKey));
-    server.addEventListener("error", () => this.dropSession(publicKey));
-
-    // Schedule the next stale-sweep.
-    void this.state.storage.setAlarm(now + ALARM_INTERVAL_MS);
+    // Do not postpone an existing sweep on each reconnect.
+    if (await this.state.storage.getAlarm() === null) {
+      await this.state.storage.setAlarm(now + ALARM_INTERVAL_MS);
+    }
 
     return new Response(null, { status: 101, webSocket: client });
+  }
+
+  webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): void {
+    const session = this.activeSession(ws);
+    if (session) this.handleMessage(session.publicKey, message);
+  }
+
+  webSocketClose(ws: WebSocket, code: number): void {
+    const session = this.activeSession(ws);
+    if (session) this.dropSession(session.publicKey);
+    try { ws.close(code === 1005 || code === 1006 ? 1000 : code); } catch { /* already closed */ }
+  }
+
+  webSocketError(ws: WebSocket): void {
+    const session = this.activeSession(ws);
+    if (session) this.dropSession(session.publicKey);
+    try { ws.close(1011, "WebSocket error"); } catch { /* already closed */ }
+  }
+
+  private activeSession(ws: WebSocket): PeerSession | undefined {
+    const saved = ws.deserializeAttachment() as Omit<PeerSession, "ws"> | null;
+    if (!saved) return;
+    const current = this.sessions.get(saved.publicKey);
+    return current?.ws === ws ? current : undefined;
+  }
+
+  private saveSession(session: PeerSession): void {
+    const { ws, ...saved } = session;
+    ws.serializeAttachment(saved);
   }
 
   // alarm is invoked by the runtime; prune stale sessions and reschedule.
@@ -152,12 +200,16 @@ export class SignalDO implements DurableObject {
     for (const [key, entry] of this.replayCache) {
       if (now - entry.cachedAt > REPLAY_WINDOW_MS) this.replayCache.delete(key);
     }
-    if (this.sessions.size > 0) {
+    this.state.storage.sql.exec("DELETE FROM signal_replay WHERE cached_at < ?", now - REPLAY_WINDOW_MS);
+    // A final sweep must also retire persisted replay data after the last
+    // socket closes, otherwise a quiet object retains stale payloads forever.
+    if (this.sessions.size > 0 || this.replayCache.size > 0) {
       await this.state.storage.setAlarm(now + ALARM_INTERVAL_MS);
     }
   }
 
   private dropSession(publicKey: string): void {
+    this.sessions.get(publicKey)?.ws.serializeAttachment(null);
     if (!this.sessions.delete(publicKey)) return;
     this.broadcast({ type: "leave", from: publicKey });
     // G19: drop-with-≥2-remaining used to be silent; now we re-emit "paired"
@@ -170,14 +222,15 @@ export class SignalDO implements DurableObject {
     }
   }
 
-  private handleMessage(fromKey: string, raw: string): void {
-    if (typeof raw !== "string" || raw.length > MAX_MESSAGE_BYTES) {
+  private handleMessage(fromKey: string, raw: string | ArrayBuffer): void {
+    const session = this.sessions.get(fromKey);
+    if (!session) return;
+    if (typeof raw !== "string" || new TextEncoder().encode(raw).byteLength > MAX_MESSAGE_BYTES) {
       const s = this.sessions.get(fromKey);
       try { s?.ws.close(1009, "message too large"); } catch { /* ignore */ }
       this.dropSession(fromKey);
       return;
     }
-    const session = this.sessions.get(fromKey);
     if (session) {
       // Refill bucket based on time elapsed since the last message.
       const now = Date.now();
@@ -190,9 +243,12 @@ export class SignalDO implements DurableObject {
         return;
       }
       session.tokens -= 1;
+      this.saveSession(session);
     }
     let msg: SignalMessage;
     try { msg = JSON.parse(raw); } catch { return; }
+    if (!msg || typeof msg !== "object" || Array.isArray(msg)) return;
+    if (msg.to !== undefined && (typeof msg.to !== "string" || msg.to.length > 128)) return;
 
     // O3: only client-originated message types are honored. Without this
     // check a peer could spoof server-origin events (paired/unpaired/
@@ -206,7 +262,8 @@ export class SignalDO implements DurableObject {
     }
 
     msg.from = fromKey; // override: clients can't spoof
-    if (session) session.lastSeen = Date.now();
+    session.lastSeen = Date.now();
+    this.saveSession(session);
 
     if (msg.type === "ping") {
       session?.ws.send(JSON.stringify({ type: "pong", from: "server" }));
@@ -224,8 +281,15 @@ export class SignalDO implements DurableObject {
       this.replayCache.delete(cacheKey);
       if (this.replayCache.size >= MAX_REPLAY_CACHE_ENTRIES) {
         const oldest = this.replayCache.keys().next().value;
-        if (oldest !== undefined) this.replayCache.delete(oldest);
+        if (oldest !== undefined) {
+          this.state.storage.sql.exec("DELETE FROM signal_replay WHERE key = ?", oldest);
+          this.replayCache.delete(oldest);
+        }
       }
+      this.state.storage.sql.exec(
+        "INSERT OR REPLACE INTO signal_replay (key, message, cached_at) VALUES (?, ?, ?)",
+        cacheKey, JSON.stringify(msg), Date.now(),
+      );
       this.replayCache.set(cacheKey, { msg, cachedAt: Date.now() });
     }
 
@@ -244,7 +308,11 @@ export class SignalDO implements DurableObject {
     const data = JSON.stringify(msg);
     for (const [key, session] of this.sessions) {
       if (key === excludeKey) continue;
-      try { session.ws.send(data); } catch { this.sessions.delete(key); }
+      try { session.ws.send(data); } catch {
+        session.ws.serializeAttachment(null);
+        this.sessions.delete(key);
+        try { session.ws.close(1011, "send failed"); } catch { /* already closed */ }
+      }
     }
   }
 }
