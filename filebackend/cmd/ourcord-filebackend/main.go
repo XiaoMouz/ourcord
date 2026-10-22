@@ -96,7 +96,30 @@ func (s *server) file(w http.ResponseWriter, r *http.Request) {
 		s.put(w, r, path)
 		return
 	}
-	http.ServeFile(w, r, path)
+	// ServeFile redirects index.html to its directory, invalidating the
+	// path-bound capability used by both completion HEAD and download GET.
+	f, err := os.Open(path)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, os.ErrNotExist) {
+			status = http.StatusNotFound
+		} else if errors.Is(err, os.ErrPermission) {
+			status = http.StatusForbidden
+		}
+		http.Error(w, http.StatusText(status), status)
+		return
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		http.Error(w, "stat file failed", http.StatusInternalServerError)
+		return
+	}
+	if !info.Mode().IsRegular() {
+		http.NotFound(w, r)
+		return
+	}
+	http.ServeContent(w, r, info.Name(), info.ModTime(), f)
 }
 
 // verifyCap checks a service-signed capability against the configured secret.
@@ -183,6 +206,12 @@ func (s *server) resolve(rawPath string) (string, error) {
 	rel := strings.TrimPrefix(rawPath, "/")
 	if rel == "" || strings.Contains(rel, "\x00") {
 		return "", errors.New("invalid path")
+	}
+	// Retain ServeFile's rejection of dot-dot segments before cleaning paths.
+	for _, part := range strings.FieldsFunc(rel, func(r rune) bool { return r == '/' || r == '\\' }) {
+		if part == ".." {
+			return "", errors.New("invalid path")
+		}
 	}
 	clean := filepath.Clean(filepath.FromSlash(rel))
 	if clean == "." || strings.HasPrefix(clean, ".."+string(os.PathSeparator)) || clean == ".." {
