@@ -123,8 +123,10 @@ function startUpdater() {
 
   const appWindow = getCurrentWindow();
   void appWindow.onCloseRequested(async (event) => {
-    if (closing) return;
+    // Each close event needs cancellation, including repeats while cleanup
+    // or an update is pending; otherwise Tauri destroys the window itself.
     event.preventDefault();
+    if (closing) return;
     closing = true;
     await leaveRealtimeSession();
     try {
