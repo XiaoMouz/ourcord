@@ -1,0 +1,32 @@
+name: Control deployment preflight (read only)
+
+on:
+  push:
+    branches: [codex/control-deploy-preflight]
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    defaults:
+      run:
+        working-directory: control
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      WRANGLER_SEND_METRICS: "false"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - run: corepack enable
+      - run: corepack prepare pnpm@9.15.9 --activate
+      - run: pnpm install --frozen-lockfile
+      - name: Record current control deployments for rollback
+        run: pnpm exec wrangler deployments list --name ourcord-control
+      - name: List pending control migrations without applying them
+        run: pnpm exec wrangler d1 migrations list ourcord-control --remote
