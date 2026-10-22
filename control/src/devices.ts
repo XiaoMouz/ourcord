@@ -166,21 +166,28 @@ export async function revokeDevice(request: Request, env: Env, deviceId: string)
   // Revocation retires the network identity as well as its refresh secret.
   // Otherwise a revoked/offline device remains forever in room configs. Clear
   // topology rows explicitly because peer_connectivity predates peer FKs.
-  await env.DB.batch([
-    env.DB
-      .prepare("UPDATE device_tokens SET revoked_at = ? WHERE id = ? AND user_id = ? AND revoked_at IS NULL")
-      .bind(now, deviceId, userId),
+  // Re-enrollment replaces the credential ID while retaining the peer key.
+  // Guard cleanup with the still-live ID, then revoke it last in the same
+  // atomic batch so stale requests cannot delete a rotated device's network.
+  const activeCredential = `EXISTS (SELECT 1 FROM device_tokens
+    WHERE id = ? AND user_id = ? AND revoked_at IS NULL)`;
+  const [, , revoked] = await env.DB.batch([
     env.DB
       // Enrollment may precede peer registration and is not proof of key
       // ownership. Only retire topology for a peer owned by this account.
       .prepare(`DELETE FROM peer_connectivity
         WHERE (src_public_key = ? OR dst_public_key = ?)
-          AND EXISTS (SELECT 1 FROM peers WHERE public_key = ? AND user_id = ?)`)
-      .bind(device.public_key, device.public_key, device.public_key, userId),
+          AND EXISTS (SELECT 1 FROM peers WHERE public_key = ? AND user_id = ?)
+          AND ${activeCredential}`)
+      .bind(device.public_key, device.public_key, device.public_key, userId, deviceId, userId),
     env.DB
-      .prepare("DELETE FROM peers WHERE user_id = ? AND public_key = ?")
-      .bind(userId, device.public_key),
+      .prepare(`DELETE FROM peers WHERE user_id = ? AND public_key = ? AND ${activeCredential}`)
+      .bind(userId, device.public_key, deviceId, userId),
+    env.DB
+      .prepare("UPDATE device_tokens SET revoked_at = ? WHERE id = ? AND user_id = ? AND revoked_at IS NULL")
+      .bind(now, deviceId, userId),
   ]);
+  if (revoked.meta.changes === 0) return json({ error: "device not found" }, 404);
   log({ event: "devices.revoked", user_id: userId, device_id: deviceId });
   return json({ ok: true });
 }
