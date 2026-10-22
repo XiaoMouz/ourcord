@@ -670,9 +670,12 @@ func (c *cancelReadCloser) Close() error {
 	return err
 }
 
-// saveDownload writes a stream to <downloads>/<filename>, avoiding overwrite by
-// suffixing the file id, and returns the saved path.
+// saveDownload writes a complete stream to a new file and returns its path.
 func (b *bridge) saveDownload(filename, fileID string, src io.Reader) (any, error) {
+	return b.saveDownloadWithLimit(filename, fileID, src, 512<<20)
+}
+
+func (b *bridge) saveDownloadWithLimit(filename, fileID string, src io.Reader, limit int64) (any, error) {
 	name := safeFilename(filename)
 	if name == "" {
 		name = "ourcord-" + pathSegment(fileID)
@@ -682,21 +685,42 @@ func (b *bridge) saveDownload(filename, fileID string, src io.Reader) (any, erro
 		dir = downloadsDir()
 	}
 	target := filepath.Join(dir, name)
-	if _, err := os.Stat(target); err == nil {
+	out, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if errors.Is(err, os.ErrExist) {
 		ext := filepath.Ext(name)
-		target = filepath.Join(dir, strings.TrimSuffix(name, ext)+"-"+pathSegment(fileID)+ext)
+		stem := strings.TrimSuffix(name, ext) + "-" + pathSegment(fileID)
+		target = filepath.Join(dir, stem+ext)
+		out, err = os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+		if errors.Is(err, os.ErrExist) {
+			// CreateTemp also uses exclusive creation, so concurrent downloads
+			// and existing symlinks can never redirect or overwrite this copy.
+			out, err = os.CreateTemp(dir, stem+"-*"+ext)
+			if err == nil {
+				target = out.Name()
+			}
+		}
 	}
-	out, err := os.Create(target)
 	if err != nil {
 		return nil, fmt.Errorf("save file: %w", err)
 	}
-	if _, err := io.Copy(out, io.LimitReader(src, 512<<20)); err != nil {
-		out.Close()
+	saved := false
+	defer func() {
+		_ = out.Close()
+		if !saved {
+			_ = os.Remove(target)
+		}
+	}()
+	written, err := io.Copy(out, io.LimitReader(src, limit+1))
+	if err != nil {
 		return nil, fmt.Errorf("save file: %w", err)
+	}
+	if written > limit {
+		return nil, fmt.Errorf("download exceeds size limit (%d bytes)", limit)
 	}
 	if err := out.Close(); err != nil {
 		return nil, fmt.Errorf("save file: %w", err)
 	}
+	saved = true
 	return map[string]string{"saved_path": target}, nil
 }
 
