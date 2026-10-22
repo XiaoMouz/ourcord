@@ -27,6 +27,8 @@ type InviteLink = Extract<OurCordLink, { kind: "invite" }>;
 export default function App() {
   const dialog = useDialog();
   const [auth, setAuth] = useState<AuthState>({ loading: true, authenticated: false });
+  const [authError, setAuthError] = useState("");
+  const authRequestRef = useRef(0);
   const [loginURLs, setLoginURLs] = useState<{ google_url: string; github_url: string }>();
   const [toast, setToast] = useState<ToastMessage | null>(null);
   const toastID = useRef(0);
@@ -78,10 +80,28 @@ export default function App() {
     : "";
 
   const refreshAuth = useCallback(async () => {
-    const state = await bridge<AuthState>("auth.status");
-    setAuth({ ...state, loading: false });
-    if (!state.authenticated) setLoginURLs(await bridge("auth.begin"));
+    const requestID = ++authRequestRef.current;
+    setAuthError("");
+    try {
+      const state = await bridge<AuthState>("auth.status");
+      if (requestID !== authRequestRef.current) return;
+      // Login actions need the persisted PKCE verifier, so publish the login
+      // screen only after setup succeeds. Newer auth checks supersede this one.
+      const urls = state.authenticated ? undefined : await bridge<{ google_url: string; github_url: string }>("auth.begin");
+      if (requestID !== authRequestRef.current) return;
+      setLoginURLs(urls);
+      setAuth({ ...state, loading: false });
+    } catch (error) {
+      if (requestID !== authRequestRef.current) return;
+      setAuthError(String(error));
+      throw error;
+    }
   }, []);
+  const retryStartup = useCallback(() => {
+    // The startup screen renders the error; event handlers elsewhere surface
+    // refreshAuth failures through their existing notifications.
+    void refreshAuth().catch(() => {});
+  }, [refreshAuth]);
   const refreshLobbies = useCallback(async () => {
     try {
       const data = await bridge<{ lobbies: LobbyEntry[] }>("lobbies.list");
@@ -139,7 +159,10 @@ export default function App() {
     await applyInvite(link);
   }, [applyInvite, refreshAuth, showError, showNotice]);
 
-  useEffect(() => { void refreshAuth(); }, [refreshAuth]);
+  useEffect(() => {
+    retryStartup();
+    return () => { authRequestRef.current += 1; };
+  }, [retryStartup]);
   useEffect(() => {
     if (!auth.authenticated || !pendingInvite) return;
     setPendingInvite(null);
@@ -309,7 +332,15 @@ export default function App() {
 
   if (auth.loading) return <div className="flex h-screen min-w-[920px] flex-col bg-base-300 text-base-content">{titleBar}<div className="hero min-h-0 flex-1"><div className="flex flex-col items-center gap-4">
     <div className="avatar avatar-placeholder"><div className="h-16 w-16 rounded-box bg-neutral text-neutral-content"><span className="text-2xl font-semibold">O</span></div></div>
-    <Spinner label="正在启动 OurCord" />
+    {authError ? <>
+      <div role="alert" className="alert max-w-lg">
+        <div><h1 className="font-semibold">暂时无法启动 OurCord</h1>
+          <p className="mt-1 text-sm">请检查网络连接后重试。如果问题持续，请重新打开应用。</p>
+          <p className="mt-2 break-all text-sm">{authError}</p>
+        </div>
+      </div>
+      <button className="btn" onClick={retryStartup}>重试</button>
+    </> : <Spinner label="正在启动 OurCord" />}
   </div></div></div>;
   if (!auth.authenticated) return <div className="flex h-screen min-w-[920px] flex-col bg-base-200 text-base-content">{titleBar}<div className="min-h-0 flex-1">
     <Login busy={busy} cooldownSeconds={magicCooldownSeconds} loginURLs={loginURLs} onMagic={(email) => void sendMagic(email)} />
