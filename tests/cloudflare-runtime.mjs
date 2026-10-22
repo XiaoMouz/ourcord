@@ -7,7 +7,7 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createHmac } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const require = createRequire(join(root, "control/package.json"));
@@ -211,6 +211,43 @@ try {
   const controlDB = await mf.getD1Database("DB", "control");
   await migrate(controlDB, "control");
   const control = await mf.getWorker("control");
+  const kv = await mf.getKVNamespace("KV", "control");
+  const verifier = "v".repeat(43);
+  const challenge = createHash("sha256").update(verifier).digest("base64url");
+  const magicToken = "d".repeat(64);
+  // Seed the emailed capability locally; the browser confirmation, D1 insert,
+  // cron and PKCE exchange below all run through the actual Worker.
+  const confirmLogin = async () => {
+    await kv.put(`desktop_magic:${createHash("sha256").update(magicToken).digest("base64url")}`,
+      JSON.stringify({ email: "cleanup@example.test", challenge }), { expirationTtl: 600 });
+    const confirmed = await control.fetch("https://control.test/api/auth/desktop/magic/confirm", {
+      method: "POST", redirect: "manual", body: new URLSearchParams({ token: magicToken }),
+    });
+    assert.equal(confirmed.status, 303);
+    return new URL(confirmed.headers.get("Location")).searchParams.get("code");
+  };
+  await confirmLogin();
+  await controlDB.prepare("UPDATE desktop_auth_codes SET expires_at = 1").run();
+  await control.scheduled({ scheduledTime: Date.now(), cron: "0 * * * *" });
+  assert.equal(await controlDB.prepare("SELECT COUNT(*) FROM desktop_auth_codes").first("COUNT(*)"), 0);
+  const activeCode = await confirmLogin();
+  const codeOwner = await controlDB.prepare("SELECT id FROM users WHERE email = 'cleanup@example.test'").first("id");
+  for (let start = 0; start < 505; start += 100) {
+    await controlDB.batch(Array.from({ length: Math.min(100, 505 - start) }, (_, offset) =>
+      controlDB.prepare("INSERT INTO desktop_auth_codes VALUES (?, ?, 'cleanup@example.test', ?, 1)")
+        .bind(`expired-${start + offset}`, codeOwner, challenge)));
+  }
+  await control.scheduled({ scheduledTime: Date.now(), cron: "0 * * * *" });
+  assert.equal(await controlDB.prepare("SELECT COUNT(*) FROM desktop_auth_codes").first("COUNT(*)"), 6);
+  const exchangeLogin = () => control.fetch("https://control.test/api/auth/desktop/exchange", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ code: activeCode, code_verifier: verifier }),
+  });
+  assert.equal((await exchangeLogin()).status, 200);
+  assert.equal((await exchangeLogin()).status, 401);
+  await control.scheduled({ scheduledTime: Date.now(), cron: "0 * * * *" });
+  assert.equal(await controlDB.prepare("SELECT COUNT(*) FROM desktop_auth_codes").first("COUNT(*)"), 0);
+  console.log("PASS workerd: abandoned desktop codes cleaned in bounded batches; valid PKCE exchange remains one-time");
   // This public endpoint ordinarily executes four D1 queries. Once blocked,
   // the native limiter rejects it before any queries or KV counters.
   const statuses = [];
@@ -219,7 +256,6 @@ try {
   }
   assert(statuses.includes(200));
   assert(statuses.includes(429));
-  const kv = await mf.getKVNamespace("KV", "control");
   assert.equal((await kv.list({ prefix: "ratelimit:" })).keys.length, 0);
   console.log("PASS workerd: native rate limiter returns 429 without KV writes");
 

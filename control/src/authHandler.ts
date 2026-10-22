@@ -413,6 +413,18 @@ async function issueDesktopCode(env: Env, userId: string, email: string, challen
   return code;
 }
 
+export async function cleanupExpiredDesktopCodes(env: Env): Promise<number> {
+  // Match exchangeDesktopCode's strict expiry boundary. Use the expiry index
+  // and one bounded batch so old abandoned logins cannot make a cron unbounded.
+  const result = await env.DB.prepare(
+    `DELETE FROM desktop_auth_codes WHERE code_hash IN (
+       SELECT code_hash FROM desktop_auth_codes
+       WHERE expires_at < ? ORDER BY expires_at LIMIT 500
+     )`,
+  ).bind(Math.floor(Date.now() / 1000)).run();
+  return result.meta.changes;
+}
+
 async function getOrCreateUser(env: Env, email: string): Promise<{ id: string; email: string; banned_at: number | null }> {
   let user = await env.DB.prepare("SELECT id, email, banned_at FROM users WHERE email = ?")
     .bind(email).first<{ id: string; email: string; banned_at: number | null }>();

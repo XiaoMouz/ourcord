@@ -5,7 +5,7 @@ import { getStunServers, addStunServer } from "./stun";
 import { registerRelay, getRelayMap, getBannedKeys, denyPeerOnRelay, allowPeerOnRelay } from "./relay";
 import { createBan, removeBan, checkBan } from "./ban";
 import { getFleetStatus } from "./ops";
-import { requestOTP, verifyOTP, oauthRedirect, oauthCallback, requestDesktopMagic, confirmDesktopMagicPage, confirmDesktopMagic, exchangeDesktopCode } from "./authHandler";
+import { requestOTP, verifyOTP, oauthRedirect, oauthCallback, requestDesktopMagic, confirmDesktopMagicPage, confirmDesktopMagic, exchangeDesktopCode, cleanupExpiredDesktopCodes } from "./authHandler";
 import { getMe, updateMe, lookupProfiles } from "./profile";
 import { enrollDevice, exchangeDeviceToken, listDevices, revokeDevice } from "./devices";
 import { checkRateLimit } from "./ratelimit";
@@ -15,6 +15,11 @@ import { json as jsonBase } from "./auth";
 export { SignalDO } from "./signal";
 
 export default {
+  async scheduled(_controller: ScheduledController, env: Env): Promise<void> {
+    const deleted = await cleanupExpiredDesktopCodes(env);
+    log({ event: "desktop_auth_codes.cleanup", deleted });
+  },
+
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const requestId = newRequestId();
     // CORS preflight
