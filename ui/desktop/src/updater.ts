@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { check, type DownloadEvent, type Update } from "@tauri-apps/plugin-updater";
@@ -45,6 +46,10 @@ export function checkForDesktopUpdate(): Promise<void> {
   if (checkPromise || downloadPromise || update) return checkPromise ?? downloadPromise ?? Promise.resolve();
   checkPromise = (async () => {
     try {
+      if (!await invoke<boolean>("desktop_updater_available")) {
+        publish({ status: "idle" });
+        return;
+      }
       const available = await check();
       if (!available) {
         publish({ status: "idle" });
