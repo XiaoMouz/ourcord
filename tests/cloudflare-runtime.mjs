@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash, createHmac } from "node:crypto";
+import { verifyInternalReplay } from "./cloudflare-internal-replay.mjs";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const require = createRequire(join(root, "control/package.json"));
@@ -64,7 +65,7 @@ try {
     workers: ["control", "service"].map((name) => ({
       name, modules: true, modulesRoot: join(output, name), scriptPath: join(output, name, "index.js"),
       compatibilityDate: "2024-01-01", compatibilityFlags: ["nodejs_compat"],
-      bindings: { ENVIRONMENT: "production", JWT_SECRET: secret, R2_MAX_BYTES: "10485760", R2_MAX_FILES: "2" },
+      bindings: { ENVIRONMENT: "production", JWT_SECRET: secret, SERVICE_INTERNAL_TOKEN: secret, R2_MAX_BYTES: "10485760", R2_MAX_FILES: "2" },
       d1Databases: { DB: `local-${name}` }, kvNamespaces: ["KV"], ratelimits: limits,
       ...(name === "control"
         ? { durableObjects: { SIGNAL: { className: "SignalDO", useSQLite: true } } }
@@ -80,6 +81,7 @@ try {
     db.prepare("INSERT INTO file_policies(lobby_id,max_temp_files,user_server_enabled,lobby_server_enabled) VALUES ('L1',0,0,0)"),
   ]);
   const service = await mf.getWorker("service");
+  await verifyInternalReplay({ service, db, secret });
   const call = (path, method = "GET", body) => service.fetch(`https://service.test${path}`, {
     method, headers: { Authorization: `Bearer ${jwt()}`, "Content-Type": "application/json" }, body,
   });
@@ -156,6 +158,29 @@ try {
     assert.deepEqual((await response.json()).messages, []);
   }
   console.log("PASS workerd: same-second message pagination, chronological ordering and room-scoped cursors");
+  await db.prepare("INSERT INTO rooms(id,lobby_id,name) VALUES ('Rindex','L1','index bounds')").run();
+  const burstIDs = Array.from({ length: 120 }, (_, i) => `burst-${String(i).padStart(3, "0")}`);
+  await db.batch(burstIDs.map((id) => db.prepare(
+    "INSERT INTO messages(id,room_id,user_id,content,created_at) VALUES (?,'Rindex','u1','burst',100)",
+  ).bind(id)));
+  // Measure the history SQL separately from authorization reads. The SQLite
+  // query-plan tests also inspect the actual handler's generated statements.
+  const historyQueries = [
+    ["", "SELECT * FROM messages WHERE room_id = ? ORDER BY created_at DESC, id DESC LIMIT ?", ["Rindex", 50], 70],
+    ["?before=burst-060&before_created_at=100", "SELECT * FROM messages WHERE room_id = ? AND (created_at, id) < (?, ?) ORDER BY created_at DESC, id DESC LIMIT ?", ["Rindex", 100, "burst-060", 50], 10],
+    ["?before=burst-060", "SELECT * FROM messages WHERE room_id = ? AND (created_at, id) < ((SELECT created_at FROM messages WHERE id = ? AND room_id = ?), ?) ORDER BY created_at DESC, id DESC LIMIT ?", ["Rindex", "burst-060", "Rindex", "burst-060", 50], 10],
+  ];
+  for (const [query, sql, params, start] of historyQueries) {
+    const result = await db.prepare(sql).bind(...params).all();
+    console.log(`D1 history ${query || "latest"}: ${result.meta.rows_read} rows read for ${result.results.length} results`);
+    assert(result.meta.rows_read <= 55, "a 50-message page must seek through the full cursor index");
+    assert.deepEqual(result.results.map((message) => message.id).reverse(), burstIDs.slice(start, start + 50));
+    const response = await call(`/api/rooms/Rindex/messages${query}`);
+    assert.equal(response.status, 200);
+    assert.deepEqual((await response.json()).messages.map((message) => message.id), burstIDs.slice(start, start + 50));
+  }
+  assert.equal((await call("/api/rooms/Rindex", "DELETE")).status, 200);
+  console.log("PASS workerd: same-second message pages use bounded D1 reads and match API ordering");
   const cursorPage = await (await call("/api/rooms/R2/messages?limit=50")).json();
   const boundaryMessage = cursorPage.messages[0];
   assert.equal(boundaryMessage.id, historyIDs[55]);
