@@ -83,6 +83,9 @@ export default {
       if (method === "PATCH" && parts[1] === "rooms" && parts[2] && !parts[3]) {
         return updateRoom(request, env, parts[2]);
       }
+      if (parts[0] === "api" && parts[1] === "rooms" && parts[3] === "reorder" && parts.length === 4 && method === "PATCH") {
+        return updateRoom(request, env, parts[2], true);
+      }
       if (method === "DELETE" && parts[1] === "rooms" && parts[2] && !parts[3]) {
         return deleteRoom(request, env, parts[2]);
       }
