@@ -101,9 +101,12 @@ export default function ChatPane({ room, myUserID, canModerate, getName, ensureN
 
   async function loadOlder() {
     if (messages.length === 0 || loadingOlder) return;
+    const boundary = messages[0];
     setLoadingOlder(true);
     try {
-      const data = await bridge<{ messages: Message[] }>("messages.list", { room_id: room.id, before: messages[0].id, limit: PAGE_SIZE });
+      const data = await bridge<{ messages: Message[] }>("messages.list", {
+        room_id: room.id, before: boundary.id, before_created_at: boundary.created_at, limit: PAGE_SIZE,
+      });
       const older = data.messages ?? [];
       if (older.length === 0) setReachedStart(true);
       setMessages((current) => mergeMessages(current, older));

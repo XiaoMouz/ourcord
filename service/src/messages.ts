@@ -1,7 +1,7 @@
 import { Env, Message } from "./types";
 import { requireAuth, generateId, json, err, checkBodySize } from "./auth";
 
-// GET /api/rooms/:roomId/messages?before=<id>&limit=50
+// GET /api/rooms/:roomId/messages?before=<id>&before_created_at=<seconds>&limit=50
 export async function getMessages(request: Request, env: Env, roomId: string): Promise<Response> {
   const auth = await requireAuth(request, env);
   if (auth instanceof Response) return auth;
@@ -28,9 +28,21 @@ export async function getMessages(request: Request, env: Env, roomId: string): P
     return err("limit must be a positive integer");
   }
   const limit = Math.min(requestedLimit, 100);
+  const rawBeforeCreatedAt = url.searchParams.get("before_created_at");
+  const beforeCreatedAt = rawBeforeCreatedAt === null ? null : Number(rawBeforeCreatedAt);
+  if (rawBeforeCreatedAt !== null &&
+      (!before || !/^\d+$/.test(rawBeforeCreatedAt) || !Number.isSafeInteger(beforeCreatedAt))) {
+    return err("before_created_at must be a non-negative safe integer with before");
+  }
 
   let stmt;
-  if (before) {
+  if (before && beforeCreatedAt !== null) {
+    // A client's saved position survives deletion of the boundary message.
+    // Room membership was checked above; the tuple only locates a page here.
+    stmt = env.DB
+      .prepare("SELECT * FROM messages WHERE room_id = ? AND (created_at, id) < (?, ?) ORDER BY created_at DESC, id DESC LIMIT ?")
+      .bind(roomId, beforeCreatedAt, before, limit);
+  } else if (before) {
     stmt = env.DB
       .prepare(
         "SELECT * FROM messages WHERE room_id = ? AND (created_at, id) < (SELECT created_at, id FROM messages WHERE id = ? AND room_id = ?) ORDER BY created_at DESC, id DESC LIMIT ?"

@@ -14,6 +14,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"math"
 	"mime"
 	"net/http"
 	"net/url"
@@ -311,7 +312,17 @@ func (b *bridge) dispatch(method string, raw json.RawMessage) (any, error) {
 	case "files.download":
 		return b.downloadFile(stringParam(params, "room_id"), stringParam(params, "file_id"), stringParam(params, "filename"))
 	case "messages.list":
-		path := messagesPath(stringParam(params, "room_id"), stringParam(params, "before"), int(numberParam(params, "limit", 50)))
+		before := stringParam(params, "before")
+		var beforeCreatedAt *int64
+		if raw, supplied := params["before_created_at"]; supplied {
+			value, number := raw.(float64)
+			if !number || before == "" || value < 0 || value > 9007199254740991 || math.Trunc(value) != value {
+				return nil, errors.New("before_created_at must be a non-negative safe integer with before")
+			}
+			seconds := int64(value)
+			beforeCreatedAt = &seconds
+		}
+		path := messagesPath(stringParam(params, "room_id"), before, int(numberParam(params, "limit", 50)), beforeCreatedAt)
 		return b.authedJSON(http.MethodGet, b.serviceURL, path, nil)
 	case "messages.send":
 		path := "/api/rooms/" + pathSegment(stringParam(params, "room_id")) + "/messages"
@@ -767,10 +778,13 @@ func safeFilename(name string) string {
 }
 
 // messagesPath builds the room message-history path with optional pagination.
-func messagesPath(roomID, before string, limit int) string {
+func messagesPath(roomID, before string, limit int, beforeCreatedAt *int64) string {
 	query := url.Values{}
 	if before != "" {
 		query.Set("before", before)
+		if beforeCreatedAt != nil {
+			query.Set("before_created_at", strconv.FormatInt(*beforeCreatedAt, 10))
+		}
 	}
 	if limit > 0 {
 		query.Set("limit", strconv.Itoa(limit))

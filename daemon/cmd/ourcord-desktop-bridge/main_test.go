@@ -97,7 +97,7 @@ func TestMessagesPath(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := messagesPath(tt.roomID, tt.before, tt.limit); got != tt.want {
+			if got := messagesPath(tt.roomID, tt.before, tt.limit, nil); got != tt.want {
 				t.Fatalf("messagesPath() = %q, want %q", got, tt.want)
 			}
 		})
