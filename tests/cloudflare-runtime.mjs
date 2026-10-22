@@ -14,6 +14,7 @@ import { verifyExternalUploadFinalization } from "./cloudflare-external-uploads.
 import { verifyRoomReorder } from "./cloudflare-room-reorder.mjs";
 import { verifyInternalReplay } from "./cloudflare-internal-replay.mjs";
 import { verifyFileListScan } from "./cloudflare-file-list.mjs";
+import { verifyControlCors } from "./cloudflare-control-cors.mjs";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const require = createRequire(join(root, "control/package.json"));
@@ -86,6 +87,13 @@ try {
         ? { durableObjects: { SIGNAL: { className: "SignalDO", useSQLite: true } } }
         : { r2Buckets: ["FILES"] }),
     })), {
+      name: "control-cors", modules: true, modulesRoot: join(output, "control"),
+      scriptPath: join(output, "control/index.js"),
+      compatibilityDate: "2024-01-01", compatibilityFlags: ["nodejs_compat"],
+      // Development email delivery is local logging only; native rate gates remain enabled.
+      bindings: { ENVIRONMENT: "development", JWT_SECRET: secret, ADMIN_USER_IDS: "cors-operator" },
+      d1Databases: { DB: "local-control-cors" }, kvNamespaces: { KV: "local-control-cors" }, ratelimits: limits,
+    }, {
       name: "service-file-list", modules: true, modulesRoot: join(output, "service"),
       scriptPath: join(output, "service/file-list.mjs"),
       compatibilityDate: "2024-01-01", compatibilityFlags: ["nodejs_compat"],
@@ -346,6 +354,9 @@ try {
   const controlDB = await mf.getD1Database("DB", "control");
   await migrate(controlDB, "control");
   const control = await mf.getWorker("control");
+  const corsDB = await mf.getD1Database("DB", "control-cors");
+  await migrate(corsDB, "control");
+  await verifyControlCors({ control: await mf.getWorker("control-cors"), db: corsDB, kv: await mf.getKVNamespace("KV", "control-cors"), jwt });
   const kv = await mf.getKVNamespace("KV", "control");
   const verifier = "v".repeat(43);
   const challenge = createHash("sha256").update(verifier).digest("base64url");

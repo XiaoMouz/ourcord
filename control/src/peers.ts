@@ -335,9 +335,9 @@ export async function getPeerConfig(request: Request, env: Env): Promise<Respons
   const relayMap = await buildRelayMap(env, null, userId);
   const relays = relayMap.relays;
 
-  const headers: HeadersInit = { "Content-Type": "application/json" };
-  if (scopeWarning) headers["X-Scope-Warning"] = scopeWarning;
-  return new Response(JSON.stringify({ peers: publicPeerRows, relays }), { headers });
+  const response = json({ peers: publicPeerRows, relays });
+  if (scopeWarning) response.headers.set("X-Scope-Warning", scopeWarning);
+  return response;
 }
 
 // POST /api/peers/connectivity — daemon reports per-peer link capabilities in
