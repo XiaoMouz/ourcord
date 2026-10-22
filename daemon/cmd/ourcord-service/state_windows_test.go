@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
@@ -44,15 +45,28 @@ func assertPrivateStateDACL(t *testing.T, path string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	dacl := stateDACL(t, path)
-	entries := strings.Split(dacl, "(")[1:]
-	if len(entries) != 3 {
-		t.Fatalf("unexpected access entries: %s", dacl)
+	descriptor, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, entry := range entries {
-		fields := strings.Split(strings.TrimSuffix(entry, ")"), ";")
-		if len(fields) != 6 || fields[0] != "A" || (fields[5] != "SY" && fields[5] != "BA" && fields[5] != user.User.Sid.String()) {
-			t.Fatalf("unexpected access grant: %s", dacl)
+	dacl, _, err := descriptor.DACL()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dacl == nil || dacl.AceCount != 3 {
+		t.Fatalf("unexpected access entries: %s", descriptor.String())
+	}
+	for index := uint32(0); index < uint32(dacl.AceCount); index++ {
+		var entry *windows.ACCESS_ALLOWED_ACE
+		if err := windows.GetAce(dacl, index, &entry); err != nil {
+			t.Fatal(err)
+		}
+		if entry.Header.AceType != windows.ACCESS_ALLOWED_ACE_TYPE {
+			t.Fatalf("unexpected ACE type: %s", descriptor.String())
+		}
+		principal := (*windows.SID)(unsafe.Pointer(&entry.SidStart))
+		if !principal.IsWellKnown(windows.WinLocalSystemSid) && !principal.IsWellKnown(windows.WinBuiltinAdministratorsSid) && !principal.Equals(user.User.Sid) {
+			t.Fatalf("unexpected access grant: %s", descriptor.String())
 		}
 	}
 }
