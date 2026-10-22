@@ -46,6 +46,24 @@ jobs:
       - run: pnpm exec tsc --noEmit
       - run: pnpm test
 
+  cloudflare-runtime:
+    name: Cloudflare runtime (local D1, R2, WebSockets)
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - run: corepack enable
+      - run: corepack prepare pnpm@9.15.9 --activate
+      - run: pnpm --dir control install --frozen-lockfile
+      - run: pnpm --dir service install --frozen-lockfile
+      - run: node tests/cloudflare-runtime.mjs
+
   go:
     name: Go (build + vet + race tests)
     runs-on: ubuntu-latest
@@ -62,6 +80,10 @@ jobs:
         with:
           go-version-file: ${{ matrix.mod }}/go.mod
           cache: true
+          cache-dependency-path: |
+            go.work.sum
+            daemon/go.sum
+            relay/go.sum
       - run: go build ./...
       - run: go vet ./...
       - run: go test -race ./...
@@ -82,6 +104,10 @@ jobs:
         with:
           go-version-file: daemon/go.mod
           cache: true
+          cache-dependency-path: |
+            go.work.sum
+            daemon/go.sum
+            relay/go.sum
       # The `voice` build tag pulls in cgo libopus (hraban/opus) and the audio
       # device layer (malgo). Linux needs the Opus + ALSA dev packages; macOS
       # uses CoreAudio and Homebrew's opus/opusfile. The default (tag-less)
@@ -107,6 +133,7 @@ jobs:
       - uses: bufbuild/buf-setup-action@v1
         with:
           version: 1.71.0
+          github_token: ${{ github.token }}
       - working-directory: proto
         run: |
           buf lint
@@ -138,6 +165,10 @@ jobs:
         with:
           go-version-file: daemon/go.mod
           cache: true
+          cache-dependency-path: |
+            go.work.sum
+            daemon/go.sum
+            relay/go.sum
       - name: build daemon for ${{ matrix.target.goos }}/${{ matrix.target.goarch }}
         env:
           GOOS: ${{ matrix.target.goos }}
@@ -157,6 +188,10 @@ jobs:
         with:
           go-version-file: daemon/go.mod
           cache: true
+          cache-dependency-path: |
+            go.work.sum
+            daemon/go.sum
+            relay/go.sum
       # Compile + run the windows-tagged tun code natively. This catches
       # windows-only breakage the ubuntu jobs can't, and does NOT need
       # wintun.dll: the driver is loaded lazily only when an adapter is created,
@@ -218,6 +253,10 @@ jobs:
         with:
           go-version-file: daemon/go.mod
           cache: true
+          cache-dependency-path: |
+            go.work.sum
+            daemon/go.sum
+            relay/go.sum
       - uses: dtolnay/rust-toolchain@stable
       - uses: msys2/setup-msys2@v2
         with:

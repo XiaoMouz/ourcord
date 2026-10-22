@@ -62,11 +62,13 @@ type bridge struct {
 	fileHTTP    *http.Client // no client-level timeout; file transfers are context-bounded
 	socketPath  string
 	stateDir    string
+	downloadDir string // optional destination override; defaults to the OS downloads directory
 	credentials credentialStore
 
-	daemonMu sync.Mutex
-	daemon   *client.Client
-	authMu   sync.Mutex
+	daemonMu  sync.Mutex
+	daemon    *client.Client
+	authMu    sync.Mutex
+	sessionMu sync.RWMutex
 }
 
 func main() {
@@ -140,6 +142,21 @@ func (b *bridge) handle(req request) (out response) {
 }
 
 func (b *bridge) dispatch(method string, raw json.RawMessage) (any, error) {
+	// Account requests may refresh credentials or enroll the daemon. Let them
+	// finish before logout retires that identity and clears its credentials.
+	// Ordinary requests still run concurrently; file streams and daemon status
+	// do not write account credentials and must not hold logout behind a transfer.
+	if method == "auth.logout" {
+		b.sessionMu.Lock()
+		defer b.sessionMu.Unlock()
+	} else if method != "files.upload" && method != "files.download" {
+		family, _, _ := strings.Cut(method, ".")
+		switch family {
+		case "auth", "profile", "profiles", "lobbies", "rooms", "messages", "presence", "devices", "files":
+			b.sessionMu.RLock()
+			defer b.sessionMu.RUnlock()
+		}
+	}
 	params := map[string]any{}
 	if len(raw) > 0 && string(raw) != "null" {
 		if err := json.Unmarshal(raw, &params); err != nil {
@@ -246,6 +263,7 @@ func (b *bridge) dispatch(method string, raw json.RawMessage) (any, error) {
 		}
 		_ = b.credentialStore().Delete(credentialService, jwtCredential)
 		_ = b.credentialStore().Delete(credentialService, deviceCredential)
+		_ = b.credentialStore().Delete(credentialService, pkceCredential)
 		_ = os.Remove(filepath.Join(b.clientStateDir(), "device.token"))
 		return map[string]bool{"authenticated": false}, nil
 	case "profile.update":
@@ -602,14 +620,21 @@ func (b *bridge) downloadFile(roomID, fileID, filename string) (any, error) {
 		return nil, errors.New("not authenticated")
 	}
 	url := strings.TrimRight(b.serviceURL, "/") + "/api/rooms/" + pathSegment(roomID) + "/files/" + pathSegment(fileID) + "/download"
-	body, contentType, err := b.fetchStream(http.MethodGet, url, token)
+	body, headers, err := b.fetchStream(http.MethodGet, url, token)
 	if err != nil {
 		return nil, err
 	}
 	defer body.Close()
-	// Backend-hosted files answer with a JSON redirect; follow it unauthenticated.
-	if strings.HasPrefix(contentType, "application/json") {
-		data, _ := io.ReadAll(io.LimitReader(body, 1<<20))
+	// R2 objects retain their original MIME type, including application/json.
+	// The service marks raw file bytes as an attachment; only its unmarked
+	// JSON response is a backend download descriptor.
+	contentType, _, _ := mime.ParseMediaType(headers.Get("Content-Type"))
+	disposition, _, _ := mime.ParseMediaType(headers.Get("Content-Disposition"))
+	if contentType == "application/json" && disposition != "attachment" {
+		data, err := io.ReadAll(io.LimitReader(body, 1<<20))
+		if err != nil {
+			return nil, errors.New("download unavailable")
+		}
 		var redirect struct {
 			URL string `json:"url"`
 		}
@@ -628,12 +653,12 @@ func (b *bridge) downloadFile(roomID, fileID, filename string) (any, error) {
 
 // fetchStream issues a GET and returns the still-open body for streaming. The
 // caller must Close it.
-func (b *bridge) fetchStream(method, url, token string) (io.ReadCloser, string, error) {
+func (b *bridge) fetchStream(method, url, token string) (io.ReadCloser, http.Header, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	req, err := http.NewRequestWithContext(ctx, method, url, nil)
 	if err != nil {
 		cancel()
-		return nil, "", err
+		return nil, nil, err
 	}
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
@@ -641,14 +666,14 @@ func (b *bridge) fetchStream(method, url, token string) (io.ReadCloser, string, 
 	resp, err := b.fileHTTP.Do(req)
 	if err != nil {
 		cancel()
-		return nil, "", errors.New("download failed")
+		return nil, nil, errors.New("download failed")
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		resp.Body.Close()
 		cancel()
-		return nil, "", fmt.Errorf("download failed (%d)", resp.StatusCode)
+		return nil, nil, fmt.Errorf("download failed (%d)", resp.StatusCode)
 	}
-	return &cancelReadCloser{ReadCloser: resp.Body, cancel: cancel}, resp.Header.Get("Content-Type"), nil
+	return &cancelReadCloser{ReadCloser: resp.Body, cancel: cancel}, resp.Header, nil
 }
 
 type cancelReadCloser struct {
@@ -662,30 +687,57 @@ func (c *cancelReadCloser) Close() error {
 	return err
 }
 
-// saveDownload writes a stream to <downloads>/<filename>, avoiding overwrite by
-// suffixing the file id, and returns the saved path.
+// saveDownload writes a complete stream to a new file and returns its path.
 func (b *bridge) saveDownload(filename, fileID string, src io.Reader) (any, error) {
+	return b.saveDownloadWithLimit(filename, fileID, src, 512<<20)
+}
+
+func (b *bridge) saveDownloadWithLimit(filename, fileID string, src io.Reader, limit int64) (any, error) {
 	name := safeFilename(filename)
 	if name == "" {
 		name = "ourcord-" + pathSegment(fileID)
 	}
-	dir := downloadsDir()
-	target := filepath.Join(dir, name)
-	if _, err := os.Stat(target); err == nil {
-		ext := filepath.Ext(name)
-		target = filepath.Join(dir, strings.TrimSuffix(name, ext)+"-"+pathSegment(fileID)+ext)
+	dir := b.downloadDir
+	if dir == "" {
+		dir = downloadsDir()
 	}
-	out, err := os.Create(target)
+	target := filepath.Join(dir, name)
+	out, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if errors.Is(err, os.ErrExist) {
+		ext := filepath.Ext(name)
+		stem := strings.TrimSuffix(name, ext) + "-" + pathSegment(fileID)
+		target = filepath.Join(dir, stem+ext)
+		out, err = os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+		if errors.Is(err, os.ErrExist) {
+			// CreateTemp also uses exclusive creation, so concurrent downloads
+			// and existing symlinks can never redirect or overwrite this copy.
+			out, err = os.CreateTemp(dir, stem+"-*"+ext)
+			if err == nil {
+				target = out.Name()
+			}
+		}
+	}
 	if err != nil {
 		return nil, fmt.Errorf("save file: %w", err)
 	}
-	if _, err := io.Copy(out, io.LimitReader(src, 512<<20)); err != nil {
-		out.Close()
+	saved := false
+	defer func() {
+		_ = out.Close()
+		if !saved {
+			_ = os.Remove(target)
+		}
+	}()
+	written, err := io.Copy(out, io.LimitReader(src, limit+1))
+	if err != nil {
 		return nil, fmt.Errorf("save file: %w", err)
+	}
+	if written > limit {
+		return nil, fmt.Errorf("download exceeds size limit (%d bytes)", limit)
 	}
 	if err := out.Close(); err != nil {
 		return nil, fmt.Errorf("save file: %w", err)
 	}
+	saved = true
 	return map[string]string{"saved_path": target}, nil
 }
 
@@ -759,7 +811,7 @@ func isHTTPStatus(err error, status int) bool {
 func (b *bridge) apiWithAccount(method, base, path string, body any) ([]byte, string, error) {
 	token, err := b.token()
 	if err != nil {
-		token, err = b.exchangeStoredDeviceCredential()
+		token, err = b.exchangeStoredDeviceCredential(token)
 		if err != nil {
 			if errors.Is(err, keyring.ErrNotFound) || isHTTPStatus(err, http.StatusUnauthorized) {
 				return nil, "", errors.New("not authenticated")
@@ -771,7 +823,7 @@ func (b *bridge) apiWithAccount(method, base, path string, body any) ([]byte, st
 	if !isHTTPStatus(err, http.StatusUnauthorized) {
 		return data, token, err
 	}
-	token, refreshErr := b.exchangeStoredDeviceCredential()
+	token, refreshErr := b.exchangeStoredDeviceCredential(token)
 	if refreshErr != nil {
 		if errors.Is(refreshErr, keyring.ErrNotFound) || isHTTPStatus(refreshErr, http.StatusUnauthorized) {
 			return nil, "", err
@@ -841,7 +893,8 @@ func (b *bridge) token() (string, error) {
 }
 
 func (b *bridge) authStatus() (any, error) {
-	if token, err := b.token(); err == nil {
+	token, err := b.token()
+	if err == nil {
 		if profile, err := b.fetchProfile(token); err == nil {
 			b.ensureDaemonEnrollment(token, profile)
 			return map[string]any{"authenticated": true, "profile": profile}, nil
@@ -850,7 +903,7 @@ func (b *bridge) authStatus() (any, error) {
 		}
 	}
 
-	token, err := b.exchangeStoredDeviceCredential()
+	token, err = b.exchangeStoredDeviceCredential(token)
 	if errors.Is(err, keyring.ErrNotFound) || isHTTPStatus(err, http.StatusUnauthorized) {
 		token, err = b.exchangeDaemonSession()
 	}
@@ -871,6 +924,16 @@ func (b *bridge) authStatus() (any, error) {
 func (b *bridge) exchangeDaemonSession() (string, error) {
 	daemon, err := b.daemonClient()
 	if err != nil {
+		return "", keyring.ErrNotFound
+	}
+	profile, err := daemon.LocalProfile()
+	b.dropDaemon(daemon, err)
+	if err != nil {
+		return "", err
+	}
+	// A running daemon without a device token is normal on first launch and
+	// after logout. Do not turn that state into a failed auth.status request.
+	if !profile.Enrolled {
 		return "", keyring.ErrNotFound
 	}
 	session, err := daemon.RefreshSession()
@@ -921,11 +984,17 @@ func (b *bridge) fetchProfile(token string) (any, error) {
 	return profile, nil
 }
 
-func (b *bridge) exchangeStoredDeviceCredential() (string, error) {
+func (b *bridge) exchangeStoredDeviceCredential(staleToken string) (string, error) {
 	b.authMu.Lock()
 	defer b.authMu.Unlock()
 
 	store := b.credentialStore()
+	// A concurrent request may have refreshed this same rejected JWT while
+	// we waited. Reuse its replacement instead of spending another device
+	// exchange (and another D1 read/write) for the same expiration.
+	if current, err := store.Get(credentialService, jwtCredential); err == nil && current != "" && current != staleToken {
+		return current, nil
+	}
 	deviceToken, err := store.Get(credentialService, deviceCredential)
 	if err != nil {
 		data, readErr := os.ReadFile(filepath.Join(b.clientStateDir(), "device.token"))

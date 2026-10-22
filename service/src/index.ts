@@ -36,6 +36,8 @@ export default {
 
     try {
       if (method === "POST" && path === "/api/presence") {
+        const rl = await checkRateLimit(request, env, "presence", 120, 60);
+        if (rl) return rl;
         return updatePresence(request, env);
       }
       if (method === "DELETE" && path === "/api/presence") {
@@ -113,15 +115,21 @@ export default {
         return initiateUpload(request, env, parts[2]);
       }
       if (method === "PUT" && parts[1] === "rooms" && parts[3] === "files" && parts[5] === "upload") {
-        return uploadToR2(request, env, parts[2], parts[4]);
+        const rl = await checkRateLimit(request, env, "file-upload", 30, 60);
+        if (rl) return rl;
+        return await uploadToR2(request, env, parts[2], parts[4]);
       }
       if (method === "POST" && parts[1] === "rooms" && parts[3] === "files" && parts[5] === "complete") {
+        const rl = await checkRateLimit(request, env, "file-complete", 30, 60);
+        if (rl) return rl;
         return completeExternalUpload(request, env, parts[2], parts[4]);
       }
       if (method === "GET" && parts[1] === "rooms" && parts[3] === "files" && !parts[4]) {
         return listFiles(request, env, parts[2]);
       }
       if (method === "GET" && parts[1] === "rooms" && parts[3] === "files" && parts[5] === "download") {
+        const rl = await checkRateLimit(request, env, "file-download", 120, 60);
+        if (rl) return rl;
         return getDownloadUrl(request, env, parts[2], parts[4]);
       }
 
@@ -144,6 +152,8 @@ export default {
         return unshareBackend(request, env, parts[2], parts[4]);
       }
       if (method === "POST" && parts[1] === "backends" && parts[3] === "check" && !parts[4]) {
+        const rl = await checkRateLimit(request, env, "backend-check", 30, 60);
+        if (rl) return rl;
         return checkBackendHealth(request, env, parts[2]);
       }
 
@@ -250,10 +260,19 @@ export default {
 } satisfies ExportedHandler<Env>;
 
 function applySchema(db: D1Database, sql: string): Promise<unknown[]> {
-  const statements = stripSQLLineComments(sql)
-    .split(";")
-    .map((s) => s.trim())
-    .filter(Boolean);
+  // A trigger contains semicolons inside BEGIN ... END; keep its body in
+  // one D1 statement rather than splitting it into invalid fragments.
+  const statements: string[] = [];
+  let pending = "";
+  for (const part of stripSQLLineComments(sql).split(";")) {
+    pending += part;
+    if (/^\s*CREATE TRIGGER\b/i.test(pending) && !/\bEND\s*$/i.test(pending)) {
+      pending += ";";
+      continue;
+    }
+    if (pending.trim()) statements.push(pending.trim());
+    pending = "";
+  }
   return db.batch(statements.map((s) => db.prepare(s)));
 }
 
