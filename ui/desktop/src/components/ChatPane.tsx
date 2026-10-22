@@ -62,8 +62,15 @@ export default function ChatPane({ room, myUserID, canModerate, getName, ensureN
   }, [room.id, ensureNames]);
 
   useEffect(() => {
-    void poll();
-    const timer = window.setInterval(() => void poll(), POLL_MS);
+    let polling = false;
+    const pollBackground = async () => {
+      if (polling) return;
+      polling = true;
+      try { await poll(); }
+      finally { polling = false; }
+    };
+    void pollBackground();
+    const timer = window.setInterval(() => void pollBackground(), POLL_MS);
     return () => clearInterval(timer);
   }, [poll]);
 
