@@ -67,6 +67,9 @@ export default function App() {
   authRef.current = auth;
 
   const selectedLobby = lobbies.find((entry) => entry.lobby.id === selectedLobbyID) ?? lobbies[0];
+  const memberLobbyRef = useRef("");
+  memberLobbyRef.current = auth.authenticated ? selectedLobby?.lobby.id ?? "" : "";
+  const memberRequestRef = useRef(0);
   const selectedRoom = selectedLobby?.rooms.find((room) => room.id === selectedRoomID);
   const canManage = !!selectedLobby && ["owner", "admin"].includes(selectedLobby.member.role);
   const myUserID = auth.profile?.user?.id ?? "";
@@ -90,14 +93,18 @@ export default function App() {
   }, []);
   const refreshSnapshot = useCallback(async () => setSnapshot(await bridge<Snapshot>("daemon.snapshot")), []);
   const refreshMembers = useCallback(async (lobbyID: string, showLoading = false) => {
+    if (lobbyID !== memberLobbyRef.current) return;
+    const requestID = ++memberRequestRef.current;
+    const isCurrent = () => requestID === memberRequestRef.current && lobbyID === memberLobbyRef.current;
     if (!lobbyID) { setMembers([]); return; }
     if (showLoading) setMembersLoading(true);
     try {
       const data = await bridge<{ members: Member[] }>("lobbies.members", { lobby_id: lobbyID });
+      if (!isCurrent()) return;
       setMembers(data.members ?? []);
       void ensureNames((data.members ?? []).map((member) => member.user_id));
-    } catch { setMembers([]); }
-    finally { setMembersLoading(false); }
+    } catch { if (isCurrent()) setMembers([]); }
+    finally { if (isCurrent()) setMembersLoading(false); }
   }, [ensureNames]);
   const syncPresence = useCallback(async () => {
     await bridge("presence.update", { voice_room_id: activeVoiceRoomID });
@@ -154,14 +161,21 @@ export default function App() {
   useEffect(() => {
     if (!auth.authenticated) return;
     const lobbyID = selectedLobby?.lobby.id ?? "";
+    let cancelled = false;
     setMembers([]); // clear stale rows so the switch shows a loader, not the old lobby
+    setMembersLoading(!!lobbyID);
     const refreshPresence = async (showLoading = false) => {
       try { await syncPresence(); } catch { /* TTL handles transient service failures */ }
+      if (cancelled) return;
       await refreshMembers(lobbyID, showLoading);
     };
     void refreshPresence(true);
     const timer = window.setInterval(() => void refreshPresence(), 30_000);
-    return () => clearInterval(timer);
+    return () => {
+      cancelled = true;
+      memberRequestRef.current += 1;
+      clearInterval(timer);
+    };
   }, [auth.authenticated, selectedLobby?.lobby.id, refreshMembers, syncPresence]);
   useEffect(() => {
     if (!magicRetryUntil) { setMagicCooldownSeconds(0); return; }
