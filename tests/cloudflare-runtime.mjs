@@ -13,6 +13,7 @@ import { createHash, createHmac } from "node:crypto";
 import { verifyExternalUploadFinalization } from "./cloudflare-external-uploads.mjs";
 import { verifyRoomReorder } from "./cloudflare-room-reorder.mjs";
 import { verifyInternalReplay } from "./cloudflare-internal-replay.mjs";
+import { verifyFileListScan } from "./cloudflare-file-list.mjs";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const require = createRequire(join(root, "control/package.json"));
@@ -72,6 +73,8 @@ try {
     readFileSync(join(output, "service/index.js"), "utf8"));
   writeFileSync(join(output, "service/presence-index.mjs"),
     readFileSync(join(root, "tests/cloudflare-presence-index-worker.mjs"), "utf8"));
+  writeFileSync(join(output, "service/file-list.mjs"),
+    readFileSync(join(root, "tests/cloudflare-file-list-worker.mjs"), "utf8"));
   mf = new Miniflare({
     cf: false,
     workers: [...["control", "service"].map((name) => ({
@@ -83,6 +86,12 @@ try {
         ? { durableObjects: { SIGNAL: { className: "SignalDO", useSQLite: true } } }
         : { r2Buckets: ["FILES"] }),
     })), {
+      name: "service-file-list", modules: true, modulesRoot: join(output, "service"),
+      scriptPath: join(output, "service/file-list.mjs"),
+      compatibilityDate: "2024-01-01", compatibilityFlags: ["nodejs_compat"],
+      bindings: { ENVIRONMENT: "production", JWT_SECRET: secret },
+      d1Databases: { DB: "local-service" },
+    }, {
       name: "service-presence-cost", modules: true, modulesRoot: join(output, "service"),
       scriptPath: join(output, "service/presence-cost.mjs"),
       compatibilityDate: "2024-01-01", compatibilityFlags: ["nodejs_compat"],
@@ -111,6 +120,7 @@ try {
     db.prepare("INSERT INTO file_policies(lobby_id,max_temp_files,user_server_enabled,lobby_server_enabled) VALUES ('L1',0,0,0)"),
   ]);
   const service = await mf.getWorker("service");
+  await verifyFileListScan({ db, service, metered: await mf.getWorker("service-file-list"), jwt });
   await verifyPresenceIndex({ db, service: await mf.getWorker("service-presence-index"), jwt });
   await verifyInternalReplay({ service, db, secret });
   await verifyRoomReorder({ service, db, jwt });
