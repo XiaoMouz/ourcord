@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash, createHmac } from "node:crypto";
+import { verifyExternalUploadFinalization } from "./cloudflare-external-uploads.mjs";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const require = createRequire(join(root, "control/package.json"));
@@ -408,6 +409,7 @@ try {
   assert.match(jsonDownloaded.headers.get("Content-Disposition"), /^attachment;/);
   assert.equal(await jsonDownloaded.text(), jsonContent);
   console.log("PASS workerd: R2 JSON attachments retain their bytes and attachment disposition");
+  await verifyExternalUploadFinalization(db, call, service);
 } finally {
   for (const ws of sockets) { try { ws.close(1000, "test complete"); } catch {} }
   await mf?.dispose();

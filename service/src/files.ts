@@ -39,8 +39,9 @@ async function hashUploadToken(token: string): Promise<string> {
 }
 
 async function markUploadFailed(env: Env, fileId: string, msg: string): Promise<void> {
+  // A late verifier must not demote a file another request already published.
   await env.DB
-    .prepare("UPDATE files SET upload_status = 'failed', last_upload_error = ? WHERE id = ?")
+    .prepare("UPDATE files SET upload_status = 'failed', last_upload_error = ? WHERE id = ? AND upload_status = 'pending'")
     .bind(msg.slice(0, 255), fileId)
     .run();
 }
@@ -407,7 +408,7 @@ export async function completeExternalUpload(
   if (file.upload_status !== "pending") return err("File upload is not pending", 409);
   if (!file.upload_token_hash || !file.upload_expires_at) return err("File upload token is missing", 409);
   const now = Math.floor(Date.now() / 1000);
-  if (file.upload_expires_at < now) {
+  if (file.upload_expires_at <= now) {
     await markUploadFailed(env, file.id, "upload token expired");
     return err("upload token expired", 403);
   }
@@ -428,12 +429,12 @@ export async function completeExternalUpload(
     resp = await fetch(url, { method: "HEAD", signal: AbortSignal.timeout(5000) });
   } catch (e) {
     const msg = `backend HEAD failed: ${String(e).slice(0, 160)}`;
-    await env.DB.prepare("UPDATE files SET last_upload_error = ? WHERE id = ?").bind(msg, file.id).run();
+    await env.DB.prepare("UPDATE files SET last_upload_error = ? WHERE id = ? AND upload_status = 'pending'").bind(msg, file.id).run();
     return err(msg, 502);
   }
   if (!resp.ok) {
     const msg = `backend HEAD returned ${resp.status}`;
-    await env.DB.prepare("UPDATE files SET last_upload_error = ? WHERE id = ?").bind(msg, file.id).run();
+    await env.DB.prepare("UPDATE files SET last_upload_error = ? WHERE id = ? AND upload_status = 'pending'").bind(msg, file.id).run();
     return err(msg, 409);
   }
   const contentLength = resp.headers.get("content-length");
@@ -444,7 +445,8 @@ export async function completeExternalUpload(
     return err(msg, 409);
   }
 
-  await env.DB
+  const completedAt = Math.floor(Date.now() / 1000);
+  const published = await env.DB
     .prepare(
       `UPDATE files
        SET upload_status = 'uploaded',
@@ -453,10 +455,14 @@ export async function completeExternalUpload(
            uploaded_at = ?,
            actual_size_bytes = ?,
            last_upload_error = NULL
-       WHERE id = ?`,
+       WHERE id = ? AND upload_status = 'pending' AND upload_token_hash = ?
+         AND upload_expires_at > ?`,
     )
-    .bind(now, actual, file.id)
+    .bind(completedAt, actual, file.id, file.upload_token_hash, completedAt)
     .run();
+  if (published.meta.changes === 0) {
+    return err("Upload reservation removed, expired or already completed", 409);
+  }
   return json({
     uploaded: true,
     bytes: actual,
