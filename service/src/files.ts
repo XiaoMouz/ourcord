@@ -60,7 +60,7 @@ function newFixedLengthStream(length: number): { readable: ReadableStream<Uint8A
 // POST /api/rooms/:roomId/files — initiate file upload
 // Client sends metadata; server returns a pre-signed URL or storage target
 export async function initiateUpload(request: Request, env: Env, roomId: string): Promise<Response> {
-  const tooBig = checkBodySize(request, 4 * 1024);
+  const tooBig = await checkBodySize(request, 4 * 1024);
   if (tooBig) return tooBig;
   const auth = await requireAuth(request, env);
   if (auth instanceof Response) return auth;
@@ -385,7 +385,7 @@ export async function completeExternalUpload(
   roomId: string,
   fileId: string,
 ): Promise<Response> {
-  const tooBig = checkBodySize(request, 1024);
+  const tooBig = await checkBodySize(request, 1024);
   if (tooBig) return tooBig;
   const auth = await requireAuth(request, env);
   if (auth instanceof Response) return auth;
@@ -583,7 +583,7 @@ export async function getFilePolicy(request: Request, env: Env, lobbyId: string)
 
 // PUT /api/lobbies/:lobbyId/file-policy — update file policy (owner/admin only)
 export async function updateFilePolicy(request: Request, env: Env, lobbyId: string): Promise<Response> {
-  const tooBig = checkBodySize(request, 2 * 1024);
+  const tooBig = await checkBodySize(request, 2 * 1024);
   if (tooBig) return tooBig;
   const auth = await requireAuth(request, env);
   if (auth instanceof Response) return auth;

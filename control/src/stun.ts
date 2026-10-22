@@ -41,7 +41,7 @@ export async function getStunServers(request: Request, env: Env): Promise<Respon
 
 // POST /api/stun/servers — admin: add a STUN server
 export async function addStunServer(request: Request, env: Env): Promise<Response> {
-  const tooBig = checkBodySize(request, 1024);
+  const tooBig = await checkBodySize(request, 1024);
   if (tooBig) return tooBig;
   const auth = await requireAdmin(request, env);
   if (auth instanceof Response) return auth;

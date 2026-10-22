@@ -14,7 +14,7 @@ export async function getMe(request: Request, env: Env): Promise<Response> {
 }
 
 export async function updateMe(request: Request, env: Env): Promise<Response> {
-  const tooBig = checkBodySize(request, 1024);
+  const tooBig = await checkBodySize(request, 1024);
   if (tooBig) return tooBig;
   const auth = await requireAuth(request, env);
   if (auth instanceof Response) return auth;
@@ -38,7 +38,7 @@ export async function updateMe(request: Request, env: Env): Promise<Response> {
 }
 
 export async function lookupProfiles(request: Request, env: Env): Promise<Response> {
-  const tooBig = checkBodySize(request, 8 * 1024);
+  const tooBig = await checkBodySize(request, 8 * 1024);
   if (tooBig) return tooBig;
   const auth = await requireAuth(request, env);
   if (auth instanceof Response) return auth;

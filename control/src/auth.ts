@@ -50,36 +50,45 @@ function b64urlDecode(str: string): string {
   return new TextDecoder().decode(bytes);
 }
 
-// constantTimeEqual compares two strings in time proportional to the length
-// of the longer input, with no early termination. HMAC verification must
-// avoid the JS `===` shortcut to neutralize timing side channels that would
-// otherwise let an attacker recover the signature byte-by-byte.
-// M4: enforce a Worker-side cap on request body size for handlers that read
-// JSON. CF Workers default to a ~100 MB body cap, far larger than any legit
-// JSON payload the control plane accepts. Returning 413 early on Content-Length
-// avoids spending CPU/memory parsing attacker-chosen sizes.
-//
-// Note: Content-Length is advisory — chunked uploads can omit it. Workers in
-// practice rejects chunked encoding from clients, so this header is reliable
-// for the public Worker entrypoints. Defense-in-depth callers can still
-// re-check string lengths after parse (already done on user-content fields).
-export function checkBodySize(request: Request, maxBytes: number): Response | null {
+// Mirror in service/src/auth.ts. Check actual bytes before JSON/form parsing;
+// Content-Length is only a fast rejection path and may be absent on streams.
+export async function checkBodySize(request: Request, maxBytes: number): Promise<Response | null> {
   const cl = request.headers.get("content-length");
-  if (cl === null) return null;
-  const n = parseInt(cl, 10);
-  if (!Number.isFinite(n) || n < 0) {
-    return new Response(JSON.stringify({ error: "invalid content-length" }), {
-      status: 400,
-      headers: { "Content-Type": "application/json" },
-    });
+  if (cl !== null && !/^\d+$/.test(cl)) {
+    void request.body?.cancel().catch(() => {});
+    return json({ error: "invalid content-length" }, 400);
   }
-  if (n > maxBytes) {
-    return new Response(JSON.stringify({ error: "request body too large" }), {
-      status: 413,
-      headers: { "Content-Type": "application/json" },
-    });
+  if (cl !== null && Number(cl) > maxBytes) {
+    void request.body?.cancel().catch(() => {});
+    return json({ error: "request body too large" }, 413);
   }
-  return null;
+  if (!request.body) return null;
+
+  // The original branch retains only the bounded body for the existing parser.
+  const reader = request.clone().body!.getReader();
+  let size = 0;
+  const cancel = () => {
+    // Cancel both tee branches. Awaiting one alone can wait for the other;
+    // an untrusted source's cancellation must not hold up the 413 response.
+    void reader.cancel().catch(() => {});
+    void request.body!.cancel().catch(() => {});
+  };
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) return null;
+      size += value.byteLength;
+      if (size > maxBytes) {
+        cancel();
+        return json({ error: "request body too large" }, 413);
+      }
+    }
+  } catch {
+    cancel();
+    return json({ error: "invalid request body" }, 400);
+  } finally {
+    reader.releaseLock();
+  }
 }
 
 export function json(data: unknown, status = 200): Response {
@@ -89,6 +98,7 @@ export function json(data: unknown, status = 200): Response {
   });
 }
 
+// Compare without an early return on the first mismatched character.
 export function constantTimeEqual(a: string, b: string): boolean {
   const al = a.length, bl = b.length;
   let diff = al ^ bl;
