@@ -30,3 +30,37 @@ ENVIRONMENT = "production"
 SERVICE_URL = "https://service.ourcord.mou.best"
 EMAIL_FROM = "OurCord <ourcord@mou.best>"
 EMAIL_RATE_LIMIT_PER_DAY = "10"
+
+# Bound HTTP CPU; rate limits reduce downstream work, not billed ingress.
+[limits]
+cpu_ms = 50
+
+[[ratelimits]]
+name = "RATE_LIMIT_5"
+namespace_id = "11005"
+simple = { limit = 5, period = 60 }
+
+[[ratelimits]]
+name = "RATE_LIMIT_10"
+namespace_id = "11010"
+simple = { limit = 10, period = 60 }
+
+[[ratelimits]]
+name = "RATE_LIMIT_20"
+namespace_id = "11020"
+simple = { limit = 20, period = 60 }
+
+[[ratelimits]]
+name = "RATE_LIMIT_30"
+namespace_id = "11030"
+simple = { limit = 30, period = 60 }
+
+[[ratelimits]]
+name = "RATE_LIMIT_60"
+namespace_id = "11060"
+simple = { limit = 60, period = 60 }
+
+[[ratelimits]]
+name = "RATE_LIMIT_120"
+namespace_id = "11120"
+simple = { limit = 120, period = 60 }

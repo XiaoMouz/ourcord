@@ -1,0 +1,154 @@
+// Local-only workerd integration: no Cloudflare account or production resources.
+// Uses the Miniflare version already installed with control's pinned Wrangler.
+import assert from "node:assert/strict";
+import { createRequire } from "node:module";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { createHmac } from "node:crypto";
+
+const root = dirname(dirname(fileURLToPath(import.meta.url)));
+const require = createRequire(join(root, "control/package.json"));
+const wranglerRequire = createRequire(require.resolve("wrangler"));
+const { Miniflare } = wranglerRequire("miniflare");
+const output = mkdtempSync(join(tmpdir(), "ourcord-runtime-"));
+const secret = "local-runtime-test-secret";
+const limits = Object.fromEntries([5, 10, 20, 30, 60, 120].map((n) => [
+  `RATE_LIMIT_${n}`, { simple: { limit: n, period: 60 } },
+]));
+let mf;
+const sockets = [];
+
+function sqlStatements(sql) {
+  const statements = [];
+  let pending = "";
+  for (const part of sql.replace(/^\s*--.*$/gm, "").split(";")) {
+    pending += part;
+    if (/^\s*CREATE TRIGGER\b/i.test(pending) && !/\bEND\s*$/i.test(pending)) {
+      pending += ";";
+      continue;
+    }
+    if (pending.trim()) statements.push(pending.trim());
+    pending = "";
+  }
+  return statements;
+}
+
+async function migrate(db, module) {
+  const directory = join(root, module, "migrations");
+  for (const file of readdirSync(directory).filter((f) => f.endsWith(".sql")).sort()) {
+    const statements = sqlStatements(readFileSync(join(directory, file), "utf8"));
+    await db.batch(statements.map((sql) => db.prepare(sql)));
+  }
+}
+
+function jwt(sub = "u1") {
+  const data = Buffer.from(JSON.stringify({ sub, email: "test@example.test", iat: 1, exp: 9999999999 })).toString("base64url");
+  return `${data}.${createHmac("sha256", secret).update(data).digest("base64url")}`;
+}
+
+try {
+  for (const module of ["control", "service"]) {
+    execFileSync("pnpm", ["exec", "wrangler", "deploy", "--dry-run", "--outdir", join(output, module)], {
+      cwd: join(root, module), stdio: "pipe", env: { ...process.env, WRANGLER_SEND_METRICS: "false" },
+    });
+  }
+  mf = new Miniflare({
+    cf: false,
+    workers: ["control", "service"].map((name) => ({
+      name, modules: true, modulesRoot: join(output, name), scriptPath: join(output, name, "index.js"),
+      compatibilityDate: "2024-01-01", compatibilityFlags: ["nodejs_compat"],
+      bindings: { ENVIRONMENT: "production", JWT_SECRET: secret, R2_MAX_BYTES: "10485760", R2_MAX_FILES: "2" },
+      d1Databases: { DB: `local-${name}` }, kvNamespaces: ["KV"], ratelimits: limits,
+      ...(name === "control"
+        ? { durableObjects: { SIGNAL: { className: "SignalDO", useSQLite: true } } }
+        : { r2Buckets: ["FILES"] }),
+    })),
+  });
+  const db = await mf.getD1Database("DB", "service");
+  await migrate(db, "service");
+  await db.batch([
+    db.prepare("INSERT INTO lobbies VALUES ('L1','test','u1',NULL,1)"),
+    db.prepare("INSERT INTO rooms(id,lobby_id,name) VALUES ('R1','L1','files'), ('R2','L1','general')"),
+    db.prepare("INSERT INTO lobby_members(lobby_id,user_id,role,joined_at) VALUES ('L1','u1','owner',1)"),
+    db.prepare("INSERT INTO file_policies(lobby_id,max_temp_files,user_server_enabled,lobby_server_enabled) VALUES ('L1',0,0,0)"),
+  ]);
+  const service = await mf.getWorker("service");
+  const call = (path, method = "GET", body) => service.fetch(`https://service.test${path}`, {
+    method, headers: { Authorization: `Bearer ${jwt()}`, "Content-Type": "application/json" }, body,
+  });
+  const initiated = await call("/api/rooms/R1/files", "POST", JSON.stringify({
+    filename: "smoke.bin", size_bytes: 1024 * 1024, mime_type: "application/octet-stream",
+  }));
+  assert.equal(initiated.status, 201, await initiated.clone().text());
+  const file = await initiated.json();
+  const uploads = await Promise.all([1, 2].map(() => call(file.upload_url, "PUT", new Uint8Array(1024 * 1024))));
+  assert.deepEqual(uploads.map((r) => r.status).sort(), [200, 409]);
+  const r2 = await mf.getR2Bucket("FILES", "service");
+  assert.equal((await r2.head(file.storage_key)).size, 1024 * 1024);
+  const downloaded = await call(`/api/rooms/R1/files/${file.id}/download`);
+  assert.equal(downloaded.status, 200);
+  assert.equal((await downloaded.arrayBuffer()).byteLength, 1024 * 1024);
+  assert.equal((await call("/api/rooms/R1", "DELETE")).status, 200);
+  assert.equal((await db.prepare("SELECT COUNT(*) AS n FROM r2_deletion_queue").first()).n, 1);
+  assert.equal((await db.prepare("SELECT reserved_files FROM r2_usage").first()).reserved_files, 1);
+  // Simulate the grace period elapsing, then invoke the actual cron handler.
+  await db.prepare("UPDATE r2_deletion_queue SET not_before = 0").run();
+  await service.scheduled({ scheduledTime: Date.now(), cron: "0 * * * *" });
+  assert.equal(await r2.head(file.storage_key), null);
+  assert.equal((await db.prepare("SELECT reserved_files FROM r2_usage").first()).reserved_files, 0);
+  console.log("PASS workerd: D1 migrations, atomic reservation/PUT, FixedLengthStream, R2 download and cascade cleanup");
+
+  const controlDB = await mf.getD1Database("DB", "control");
+  await migrate(controlDB, "control");
+  const control = await mf.getWorker("control");
+  // This public endpoint ordinarily executes four D1 queries. Once blocked,
+  // the native limiter rejects it before any queries or KV counters.
+  const statuses = [];
+  for (let i = 0; i < 65; i++) {
+    statuses.push((await control.fetch("https://control.test/api/control/status")).status);
+  }
+  assert(statuses.includes(200));
+  assert(statuses.includes(429));
+  const kv = await mf.getKVNamespace("KV", "control");
+  assert.equal((await kv.list({ prefix: "ratelimit:" })).keys.length, 0);
+  console.log("PASS workerd: native rate limiter returns 429 without KV writes");
+
+  const namespace = await mf.getDurableObjectNamespace("SIGNAL", "control");
+  const room = namespace.get(namespace.idFromName("runtime-smoke"));
+  async function connect(pk) {
+    const response = await room.fetch(`https://signal.test/?pk=${pk}`, { headers: { Upgrade: "websocket" } });
+    assert.equal(response.status, 101);
+    const ws = response.webSocket;
+    const messages = [];
+    ws.addEventListener("message", (event) => messages.push(JSON.parse(event.data)));
+    ws.accept();
+    sockets.push(ws);
+    return { ws, messages };
+  }
+  async function until(predicate) {
+    const deadline = Date.now() + 3000;
+    while (!predicate()) {
+      assert(Date.now() < deadline, "timed out waiting for WebSocket event");
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  }
+  const alice = await connect("alice");
+  alice.ws.send(JSON.stringify({ type: "offer", to: "bob", payload: "replay-me" }));
+  alice.ws.send(JSON.stringify({ type: "ping" }));
+  await until(() => alice.messages.some((m) => m.type === "pong"));
+  const bob = await connect("bob");
+  await until(() => bob.messages.some((m) => m.type === "offer" && m.payload === "replay-me"));
+  const replacement = await connect("alice");
+  replacement.ws.send(JSON.stringify({ type: "candidate", to: "bob", payload: "new-session" }));
+  await until(() => bob.messages.some((m) => m.payload === "new-session"));
+  // Hibernation itself is covered by constructor reconstruction tests; this
+  // verifies native attachments, SQLite storage and runtime event callbacks.
+  console.log("PASS workerd: hibernatable WebSocket handshake, replay and replacement connection");
+} finally {
+  for (const ws of sockets) { try { ws.close(1000, "test complete"); } catch {} }
+  await mf?.dispose();
+  rmSync(output, { recursive: true, force: true });
+}

@@ -3,6 +3,7 @@ import worker from "./index";
 import { SignalDO } from "./signal";
 import { signToken, makeToken as makePayload } from "./auth";
 import type { Env } from "./types";
+import { DatabaseSync } from "node:sqlite";
 
 // ─── Test plumbing ────────────────────────────────────────────────────────────
 //
@@ -67,6 +68,7 @@ function makeEnv(overrides: Partial<Env> = {}): Env {
     } as unknown as DurableObjectNamespace,
     ENVIRONMENT: "production",
     JWT_SECRET: SECRET,
+    RATE_LIMIT_60: { limit: vi.fn(async () => ({ success: true })) },
     ...overrides,
   } as Env;
 }
@@ -76,12 +78,33 @@ const ctx = {} as ExecutionContext;
 function signalReq(roomId: string, qs: Record<string, string> = {}): Request {
   const url = new URL(`https://control.example/api/signal/${roomId}`);
   for (const [k, v] of Object.entries(qs)) url.searchParams.set(k, v);
-  return new Request(url.toString(), { method: "GET" });
+  return new Request(url.toString(), { method: "GET", headers: { Upgrade: "websocket" } });
 }
 
 // ─── Route-gate tests (index.ts wiring → SignalDO) ─────────────────────────
 
 describe("/api/signal route gate (W3)", () => {
+  it("rejects ordinary HTTP requests before rate limiting or D1", async () => {
+    const env = makeEnv();
+    const res = await worker.fetch(new Request("https://control.test/api/signal/room"), env, ctx);
+    expect(res.status).toBe(426);
+    expect(env.DB.prepare).not.toHaveBeenCalled();
+    expect(env.RATE_LIMIT_60!.limit).not.toHaveBeenCalled();
+  });
+
+  it("does not allocate a pair DO for a random unregistered peer", async () => {
+    const env = makeEnv({ DB: makeDB([{ first: { 1: 1 } }, { first: null }, { first: null }]) });
+    const res = await worker.fetch(signalReq(ROOM_AB, { token: await tokenFor(), pk: PK_A }), env, ctx);
+    expect(res.status).toBe(404);
+    expect(env.SIGNAL.idFromName).not.toHaveBeenCalled();
+  });
+
+  it("forwards a valid pair with two registered peers", async () => {
+    const env = makeEnv({ DB: makeDB([{ first: { 1: 1 } }, { first: null }, { first: { 1: 1 } }]) });
+    const res = await worker.fetch(signalReq(ROOM_AB, { token: await tokenFor(), pk: PK_A }), env, ctx);
+    expect(res.status).toBe(599);
+    expect(env.SIGNAL.idFromName).toHaveBeenCalledWith(ROOM_AB);
+  });
   it("missing token + pk → 401", async () => {
     const res = await worker.fetch(signalReq(ROOM_AB), makeEnv(), ctx);
     expect(res.status).toBe(401);
@@ -107,6 +130,13 @@ describe("/api/signal route gate (W3)", () => {
     );
     expect(res.status).toBe(403);
     expect(await res.json()).toMatchObject({ error: "peer not owned by user" });
+  });
+
+  it("rejects a banned user with a still-valid token before allocating a DO", async () => {
+    const env = makeEnv({ DB: makeDB([{ first: { 1: 1 } }, { first: { id: "ban1" } }]) });
+    const res = await worker.fetch(signalReq(ROOM_AB, { token: await tokenFor(), pk: PK_A }), env, ctx);
+    expect(res.status).toBe(401);
+    expect(env.SIGNAL.idFromName).not.toHaveBeenCalled();
   });
 
   it("malformed pair roomId → 400", async () => {
@@ -158,8 +188,8 @@ describe("/api/signal route gate (W3)", () => {
     const env = makeEnv({
       KV: makeKV({ [`__seed`]: "" }),
     });
-    // Force the limit by stubbing KV.get to return a count >= the signal cap (60).
-    (env.KV.get as any) = vi.fn(async () => "999");
+    // Reject at the native binding before any authentication/storage work.
+    env.RATE_LIMIT_60 = { limit: vi.fn(async () => ({ success: false })) };
     const res = await worker.fetch(
       signalReq(ROOM_AB, { token: await tokenFor(), pk: PK_A }),
       env,
@@ -177,6 +207,9 @@ class MockWS {
   sent: string[] = [];
   closed: { code?: number; reason?: string } | null = null;
   accepted = false;
+  attachment: unknown = null;
+  serializeAttachment(value: unknown) { this.attachment = structuredClone(value); }
+  deserializeAttachment() { return structuredClone(this.attachment); }
   private listeners: Record<string, Array<(e: any) => void>> = {};
   accept() { this.accepted = true; }
   send(data: string) { this.sent.push(data); }
@@ -197,11 +230,17 @@ class MockWS {
 }
 
 function makeState(): DurableObjectState {
+  const db = new DatabaseSync(":memory:");
+  const sockets: MockWS[] = [];
+  let alarm: number | null = null;
   return {
+    getWebSockets: () => sockets.filter((ws) => !ws.closed),
+    acceptWebSocket: (ws: MockWS) => { ws.accepted = true; sockets.push(ws); },
     storage: {
-      setAlarm: vi.fn(async () => undefined),
-      getAlarm: vi.fn(async () => null),
-      deleteAlarm: vi.fn(async () => undefined),
+      sql: { exec: (sql: string, ...args: unknown[]) => db.prepare(sql).all(...args) },
+      setAlarm: vi.fn(async (value: number) => { alarm = value; }),
+      getAlarm: vi.fn(async () => alarm),
+      deleteAlarm: vi.fn(async () => { alarm = null; }),
     },
   } as unknown as DurableObjectState;
 }
@@ -272,6 +311,64 @@ describe("SignalDO.fetch upgrade handshake", () => {
     expect(res.status).toBe(400);
     restoreGlobals();
   });
+
+  it("restores the roster, rate bucket and replay after hibernation", async () => {
+    const state = makeState();
+    const { server: alice } = installFakeWS();
+    let sig = new SignalDO(state);
+    await sig.fetch(new Request("https://do.example/?pk=alice", { headers: { Upgrade: "websocket" } }));
+    sig.webSocketMessage(alice as unknown as WebSocket, JSON.stringify({ type: "offer", to: "bob", payload: "sdp" }));
+    const tokens = (alice.attachment as { tokens: number }).tokens;
+    sig = new SignalDO(state);
+    const { server: bob } = installFakeWS();
+    await sig.fetch(new Request("https://do.example/?pk=bob", { headers: { Upgrade: "websocket" } }));
+    expect(bob.sentMessages()).toContainEqual({ type: "offer", from: "alice", to: "bob", payload: "sdp" });
+    expect((sig as any).sessions.get("alice").tokens).toBe(tokens);
+    sig.webSocketMessage(bob as unknown as WebSocket, JSON.stringify({ type: "candidate", to: "alice" }));
+    expect(alice.lastSent()).toMatchObject({ type: "candidate", from: "bob" });
+    expect(state.storage.setAlarm).toHaveBeenCalledTimes(1);
+  });
+
+  it("ignores delayed close and message events from a superseded socket", async () => {
+    const sig = new SignalDO(makeState());
+    const req = () => new Request("https://do.example/?pk=alice", { headers: { Upgrade: "websocket" } });
+    const { server: old } = installFakeWS();
+    await sig.fetch(req());
+    const { server: current } = installFakeWS();
+    await sig.fetch(req());
+    sig.webSocketClose(old as unknown as WebSocket, 1000);
+    sig.webSocketMessage(old as unknown as WebSocket, JSON.stringify({ type: "offer", to: "bob" }));
+    expect((sig as any).sessions.get("alice").ws).toBe(current);
+    expect((sig as any).replayCache.size).toBe(0);
+    sig.webSocketMessage(current as unknown as WebSocket, JSON.stringify({ type: "ping" }));
+    expect(current.lastSent()).toMatchObject({ type: "pong" });
+  });
+
+  it("does not replay expired offers after hibernation", async () => {
+    const state = makeState();
+    state.storage.sql.exec("CREATE TABLE signal_replay (key TEXT PRIMARY KEY, message TEXT, cached_at INTEGER)");
+    state.storage.sql.exec("INSERT INTO signal_replay VALUES (?, ?, ?)", "offer:alice->bob", '{"type":"offer"}', Date.now() - 31_000);
+    installFakeWS();
+    const sig = new SignalDO(state);
+    await sig.fetch(new Request("https://do.example/?pk=bob", { headers: { Upgrade: "websocket" } }));
+    expect((sig as any).replayCache.size).toBe(0);
+  });
+
+  it("retires persisted replay data after the last socket leaves", async () => {
+    const state = makeState();
+    const { server } = installFakeWS();
+    const sig = new SignalDO(state);
+    await sig.fetch(new Request("https://do.example/?pk=alice", { headers: { Upgrade: "websocket" } }));
+    sig.webSocketMessage(server as unknown as WebSocket, JSON.stringify({ type: "offer", to: "bob" }));
+    sig.webSocketClose(server as unknown as WebSocket, 1000);
+    await sig.alarm();
+    expect(state.storage.setAlarm).toHaveBeenCalledTimes(2);
+    for (const entry of (sig as any).replayCache.values()) entry.cachedAt -= 31_000;
+    state.storage.sql.exec("UPDATE signal_replay SET cached_at = cached_at - 31000");
+    await sig.alarm();
+    expect([...state.storage.sql.exec("SELECT key FROM signal_replay")]).toEqual([]);
+    expect(state.storage.setAlarm).toHaveBeenCalledTimes(2);
+  });
 });
 
 // For the message-handling tests we drive SignalDO by manipulating its
@@ -339,6 +436,9 @@ describe("SignalDO message routing (C5/H12/J12/O3)", () => {
     const { sigDO, bob } = seed();
     expect(() => (sigDO as any).handleMessage("alice", "{not json")).not.toThrow();
     expect(bob.sentMessages()).toEqual([]);
+    for (const value of ["null", "[]", "123", '"str"']) {
+      expect(() => (sigDO as any).handleMessage("alice", value)).not.toThrow();
+    }
   });
 
   it("ping triggers a server pong back to the sender only", async () => {

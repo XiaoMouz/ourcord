@@ -158,7 +158,10 @@ export async function resolveFileBackend(
 
 export async function probeBackendHealth(baseURL: string): Promise<{ status: "healthy" | "unhealthy"; error: string | null }> {
   try {
-    const resp = await fetch(backendHealthURL(baseURL), { method: "GET" });
+    const resp = await fetch(backendHealthURL(baseURL), { method: "GET", signal: AbortSignal.timeout(5000) });
+    // Only status is needed. Release the connection even if the backend sends
+    // an endless body; otherwise later probes can exhaust fetch connections.
+    await resp.body?.cancel();
     if (resp.ok) return { status: "healthy", error: null };
     return { status: "unhealthy", error: `health returned ${resp.status}` };
   } catch (e) {
