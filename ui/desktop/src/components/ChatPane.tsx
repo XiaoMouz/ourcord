@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { bridge, type FileRecord, type Message, type Room } from "../bridge";
 import { mergeMessages, senderIDs } from "../messages";
+import { shouldSendMessage } from "../composer";
 import { formatBytes, parseAttachments } from "../format";
 import { ChatSkeleton, Spinner } from "./Skeleton";
 import ContextMenu, { type MenuItem } from "./ContextMenu";
@@ -208,8 +209,11 @@ export default function ChatPane({ room, myUserID, canModerate, getName, ensureN
       <IconButton label="上传附件" className="btn-md" disabled={uploading || sending} onClick={() => void attach()}>
         {uploading ? <Spinner /> : "＋"}
       </IconButton>
-      <input className="input min-w-0 flex-1" value={draft} onChange={(e) => { draftRevision.current += 1; setDraft(e.target.value); }}
-        placeholder={uploading ? "上传中…" : `发送到 #${room.name}`} maxLength={4000} disabled={uploading} />
+      <textarea className="textarea min-h-12 max-h-40 min-w-0 flex-1 resize-y" rows={2} value={draft}
+        onChange={(e) => { draftRevision.current += 1; setDraft(e.target.value); }}
+        onKeyDown={(e) => { if (shouldSendMessage(e.nativeEvent)) { e.preventDefault(); void send(); } }}
+        aria-label={`发送到 #${room.name}`} title="Enter 发送，Shift+Enter 换行"
+        placeholder={uploading ? "上传中…" : `发送到 #${room.name}（Shift+Enter 换行）`} maxLength={4000} disabled={uploading} />
       <button className="btn btn-primary" type="submit" disabled={sending || uploading || !draft.trim()}>
         {sending && <Spinner />}发送
       </button>
