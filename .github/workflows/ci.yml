@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, codex/validation-desktop-hardening]
+    branches: [main, codex/validation-current-main]
   pull_request:
 
 permissions:
