@@ -29,6 +29,7 @@ import (
 	"github.com/ourcord/ourcord/daemon/pkg/ipc"
 	"github.com/ourcord/ourcord/daemon/pkg/wg"
 	"github.com/zalando/go-keyring"
+	"golang.org/x/sync/singleflight"
 )
 
 const (
@@ -66,10 +67,11 @@ type bridge struct {
 	downloadDir string // optional destination override; defaults to the OS downloads directory
 	credentials credentialStore
 
-	daemonMu  sync.Mutex
-	daemon    *client.Client
-	authMu    sync.Mutex
-	sessionMu sync.RWMutex
+	daemonMu    sync.Mutex
+	daemon      *client.Client
+	authMu      sync.Mutex
+	authRefresh singleflight.Group
+	sessionMu   sync.RWMutex
 }
 
 func main() {
@@ -1047,6 +1049,18 @@ func (b *bridge) fetchProfile(token string) (any, error) {
 }
 
 func (b *bridge) exchangeStoredDeviceCredential(staleToken string) (string, error) {
+	// Share failures as well as successful refreshes with overlapping callers.
+	// Completed failures are not cached: a later request can retry immediately.
+	value, err, _ := b.authRefresh.Do(staleToken, func() (any, error) {
+		return b.refreshStoredDeviceCredential(staleToken)
+	})
+	if err != nil {
+		return "", err
+	}
+	return value.(string), nil
+}
+
+func (b *bridge) refreshStoredDeviceCredential(staleToken string) (string, error) {
 	b.authMu.Lock()
 	defer b.authMu.Unlock()
 
