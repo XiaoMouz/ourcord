@@ -42,15 +42,23 @@ export default function ChatPane({ room, myUserID, canModerate, getName, ensureN
   const [uploading, setUploading] = useState(false);
   const listRef = useRef<HTMLDivElement>(null);
   const stickToBottom = useRef(true);
+  // Track deletions only for reads already in flight; each read releases its
+  // exclusions on completion instead of retaining an ever-growing tombstone set.
+  const pendingMessageReads = useRef(new Set<Set<string>>());
 
   const poll = useCallback(async () => {
+    const deleted = new Set<string>();
+    pendingMessageReads.current.add(deleted);
     try {
       const data = await bridge<{ messages: Message[] }>("messages.list", { room_id: room.id, limit: PAGE_SIZE });
-      const incoming = data.messages ?? [];
+      const incoming = (data.messages ?? []).filter((message) => !deleted.has(message.id));
       setMessages((current) => mergeMessages(current, incoming));
       void ensureNames(senderIDs(incoming));
     } catch { /* transient poll failure; the next tick retries */ }
-    finally { setLoaded(true); }
+    finally {
+      pendingMessageReads.current.delete(deleted);
+      setLoaded(true);
+    }
   }, [room.id, ensureNames]);
 
   useEffect(() => {
@@ -103,15 +111,20 @@ export default function ChatPane({ room, myUserID, canModerate, getName, ensureN
     if (messages.length === 0 || loadingOlder) return;
     const boundary = messages[0];
     setLoadingOlder(true);
+    const deleted = new Set<string>();
+    pendingMessageReads.current.add(deleted);
     try {
       const data = await bridge<{ messages: Message[] }>("messages.list", {
         room_id: room.id, before: boundary.id, before_created_at: boundary.created_at, limit: PAGE_SIZE,
       });
-      const older = data.messages ?? [];
-      if (older.length === 0) setReachedStart(true);
+      if ((data.messages ?? []).length === 0) setReachedStart(true);
+      const older = (data.messages ?? []).filter((message) => !deleted.has(message.id));
       setMessages((current) => mergeMessages(current, older));
       void ensureNames(senderIDs(older));
-    } catch (e) { onError(String(e)); } finally { setLoadingOlder(false); }
+    } catch (e) { onError(String(e)); } finally {
+      pendingMessageReads.current.delete(deleted);
+      setLoadingOlder(false);
+    }
   }
 
   async function send() {
@@ -149,6 +162,7 @@ export default function ChatPane({ room, myUserID, canModerate, getName, ensureN
     if (!ok) return;
     try {
       await bridge("messages.delete", { room_id: room.id, message_id: message.id });
+      for (const deleted of pendingMessageReads.current) deleted.add(message.id);
       setMessages((current) => current.filter((m) => m.id !== message.id));
     } catch (e) { onError(String(e)); }
   }
