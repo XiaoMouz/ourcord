@@ -10,7 +10,13 @@ export default function Login({ busy, cooldownSeconds, loginURLs, onMagic, onOAu
 }) {
   const [email, setEmail] = useState("");
   const coolingDown = cooldownSeconds > 0;
+  const normalizedEmail = email.trim();
+  const canSubmit = !busy && !coolingDown && normalizedEmail.includes("@");
   const [animateCooldown, setAnimateCooldown] = useState(false);
+
+  function submitMagic() {
+    if (canSubmit) onMagic(normalizedEmail);
+  }
 
   useEffect(() => {
     if (!coolingDown) {
@@ -33,9 +39,13 @@ export default function Login({ busy, cooldownSeconds, loginURLs, onMagic, onOAu
           <fieldset className="fieldset">
             <legend className="fieldset-legend">邮箱地址</legend>
             <input className="input w-full" type="email" value={email} onChange={(e) => setEmail(e.target.value)}
-              placeholder="you@example.com" onKeyDown={(e) => e.key === "Enter" && !coolingDown && onMagic(email)} />
+              placeholder="you@example.com" onKeyDown={(event) => {
+                if (event.key !== "Enter" || event.nativeEvent.isComposing || event.keyCode === 229 || event.repeat) return;
+                event.preventDefault();
+                submitMagic();
+              }} />
           </fieldset>
-          <button className="btn btn-primary btn-block" disabled={busy || coolingDown || !email.includes("@")} onClick={() => onMagic(email)}>
+          <button className="btn btn-primary btn-block" disabled={!canSubmit} onClick={submitMagic}>
             {busy && <span className="loading loading-spinner loading-sm" />}
             {coolingDown ? <span aria-live="polite">
               <span className={`countdown font-mono${animateCooldown ? "" : " countdown-initial"}`}>
