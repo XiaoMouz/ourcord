@@ -83,6 +83,20 @@ try {
   const call = (path, method = "GET", body) => service.fetch(`https://service.test${path}`, {
     method, headers: { Authorization: `Bearer ${jwt()}`, "Content-Type": "application/json" }, body,
   });
+  await db.prepare("INSERT INTO rooms(id,lobby_id,name) VALUES ('Rlimits','L1','limits')").run();
+  await db.batch(Array.from({ length: 105 }, (_, index) => db.prepare(
+    "INSERT INTO messages(id,room_id,user_id,content,created_at) VALUES (?, 'Rlimits', 'u1', 'page bound', 100)"
+  ).bind(`page-bound-${index}`)));
+  for (const [query, expected] of [["", 50], ["?limit=1", 1], ["?limit=100", 100], ["?limit=101", 100]]) {
+    const response = await call(`/api/rooms/Rlimits/messages${query}`);
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).messages.length, expected);
+  }
+  for (const limit of ["-1", "0", "NaN", "1.5", "", "1e3", "3abc", "9007199254740992"]) {
+    const response = await call(`/api/rooms/Rlimits/messages?limit=${encodeURIComponent(limit)}`);
+    assert.equal(response.status, 400, `invalid limit ${JSON.stringify(limit)} must not query unbounded history`);
+  }
+  console.log("PASS workerd: default and capped message pages, invalid limits rejected");
   const initiated = await call("/api/rooms/R1/files", "POST", JSON.stringify({
     filename: "smoke.bin", size_bytes: 1024 * 1024, mime_type: "application/octet-stream",
   }));
