@@ -297,6 +297,7 @@ func TestLogoutClearsSessionAndDeviceCredentials(t *testing.T) {
 	credentials := memoryCredentials{
 		credentialKey(credentialService, jwtCredential):    "jwt",
 		credentialKey(credentialService, deviceCredential): "dt_local",
+		credentialKey(credentialService, pkceCredential):   "pending-login-verifier",
 	}
 	b := &bridge{credentials: credentials, stateDir: stateDir}
 	if _, err := b.dispatch("auth.logout", nil); err != nil {
@@ -307,6 +308,9 @@ func TestLogoutClearsSessionAndDeviceCredentials(t *testing.T) {
 	}
 	if _, err := credentials.Get(credentialService, deviceCredential); !errors.Is(err, keyring.ErrNotFound) {
 		t.Fatalf("device credential still stored: %v", err)
+	}
+	if _, err := credentials.Get(credentialService, pkceCredential); !errors.Is(err, keyring.ErrNotFound) {
+		t.Fatalf("pending login verifier still stored: %v", err)
 	}
 	if _, err := os.Stat(devicePath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("device token file still exists: %v", err)
