@@ -396,27 +396,37 @@ export async function updateRoom(request: Request, env: Env, roomId: string): Pr
     return err("invalid JSON body");
   }
 
-  let newName = room.name;
+  const updates: string[] = [];
+  const values: (string | number)[] = [];
   if (body.name !== undefined) {
     const nameOrErr = validateRoomName(body.name);
     if (nameOrErr instanceof Response) return nameOrErr;
-    newName = nameOrErr;
+    updates.push("name = ?");
+    values.push(nameOrErr);
   }
 
-  let newPosition = room.position;
   if (body.position !== undefined) {
     if (!Number.isInteger(body.position) || body.position < 0 || body.position > 100000) {
       return err("position must be a non-negative integer");
     }
-    newPosition = body.position;
+    updates.push("position = ?");
+    values.push(body.position);
   }
 
-  await env.DB
-    .prepare("UPDATE rooms SET name = ?, position = ? WHERE id = ?")
-    .bind(newName, newPosition, roomId)
-    .run();
+  // Only write supplied fields: a concurrent rename must survive a reorder.
+  // RETURNING also detects deletion after the authorization read.
+  const updated = updates.length > 0
+    ? await env.DB
+      .prepare(`UPDATE rooms SET ${updates.join(", ")} WHERE id = ? RETURNING *`)
+      .bind(...values, roomId)
+      .first<Room>()
+    : await env.DB
+      .prepare("SELECT * FROM rooms WHERE id = ?")
+      .bind(roomId)
+      .first<Room>();
+  if (!updated) return err("Room not found", 404);
 
-  return json({ ...room, name: newName, position: newPosition });
+  return json(updated);
 }
 
 // DELETE /api/rooms/:roomId — owner only. Refuses to delete the last room

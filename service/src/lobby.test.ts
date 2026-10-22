@@ -270,7 +270,7 @@ describe("updateRoom", () => {
       DB: makeDB([
         { first: { id: "R1", lobby_id: "L1", name: "old", type: "text", position: 0 } },
         { first: { role: "admin" } },
-        { run: { meta: { changes: 1 } } },
+        { first: { id: "R1", lobby_id: "L1", name: "new", type: "text", position: 0 } },
       ]),
     } as Env;
     const req = jsonReq("https://x/api/rooms/R1", "PATCH", token, { name: "new" });

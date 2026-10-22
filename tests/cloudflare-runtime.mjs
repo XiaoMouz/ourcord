@@ -92,6 +92,30 @@ try {
   assert.deepEqual(deletions.map((response) => response.status).sort(), [200, 400]);
   assert.equal((await db.prepare("SELECT COUNT(*) AS n FROM rooms WHERE lobby_id = 'Ldelete'").first()).n, 1);
   console.log("PASS workerd: concurrent owner room deletion preserves the last room");
+  await db.prepare("INSERT INTO rooms(id,lobby_id,name,position) VALUES ('Rpatch','L1','original',0)").run();
+  // Deterministically inject a rename after the handler's SELECT but before
+  // its position write. A full-row write would overwrite this intervening edit.
+  await db.prepare(`CREATE TRIGGER test_room_patch_interleaving BEFORE UPDATE OF position ON rooms
+    WHEN OLD.id = 'Rpatch'
+    BEGIN UPDATE rooms SET name = 'renamed' WHERE id = OLD.id; END`).run();
+  const reordered = await call("/api/rooms/Rpatch", "PATCH", JSON.stringify({ position: 7 }));
+  assert.equal(reordered.status, 200);
+  const reorderedRoom = await reordered.json();
+  assert.equal(reorderedRoom.name, "renamed");
+  assert.equal(reorderedRoom.position, 7);
+  assert.deepEqual(
+    await db.prepare("SELECT name,position FROM rooms WHERE id = 'Rpatch'").first(),
+    { name: "renamed", position: 7 },
+  );
+  await db.prepare("DROP TRIGGER test_room_patch_interleaving").run();
+  const renamed = await call("/api/rooms/Rpatch", "PATCH", JSON.stringify({ name: "final" }));
+  assert.equal(renamed.status, 200);
+  assert.equal((await renamed.json()).position, 7);
+  const unchanged = await call("/api/rooms/Rpatch", "PATCH", "{}");
+  assert.equal(unchanged.status, 200);
+  assert.equal((await unchanged.json()).name, "final");
+  assert.equal((await call("/api/rooms/Rpatch", "DELETE")).status, 200);
+  console.log("PASS workerd: partial room PATCH preserves intervening edits and returns stored values");
   await db.prepare("INSERT INTO rooms(id,lobby_id,name) VALUES ('Rlimits','L1','limits')").run();
   await db.batch(Array.from({ length: 105 }, (_, index) => db.prepare(
     "INSERT INTO messages(id,room_id,user_id,content,created_at) VALUES (?, 'Rlimits', 'u1', 'page bound', 100)"
