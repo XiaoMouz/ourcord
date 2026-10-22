@@ -310,6 +310,18 @@ func (b *bridge) dispatch(method string, raw json.RawMessage) (any, error) {
 		if _, ok := params["position"]; ok {
 			payload["position"] = int(numberParam(params, "position", 0))
 		}
+		// Preserve the complete compare-and-swap contract, including zero.
+		for _, key := range []string{"swap_with", "expected_position"} {
+			if value, ok := params[key]; ok {
+				payload[key] = value
+			}
+		}
+		// Older services must reject the swap, not silently apply half of it.
+		_, hasSwap := params["swap_with"]
+		_, hasExpectedPosition := params["expected_position"]
+		if hasSwap || hasExpectedPosition {
+			path += "/reorder"
+		}
 		return b.authedJSON(http.MethodPatch, b.serviceURL, path, payload)
 	case "rooms.delete":
 		path := "/api/rooms/" + pathSegment(stringParam(params, "room_id"))

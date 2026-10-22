@@ -42,6 +42,10 @@ describe("App lobby snapshot races through room controls", () => {
   let serverLobby: LobbyEntry;
   let nextList: ReturnType<typeof deferred<unknown>> | undefined;
   let lists: number;
+  let roomWrites: number;
+  let failSecondRoomWrite: boolean;
+  let rejectSwap: boolean;
+  let loseSwapResponse: boolean;
 
   beforeEach(() => {
     Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
@@ -50,6 +54,10 @@ describe("App lobby snapshot races through room controls", () => {
     serverLobby = lobbyWithRooms("Keep room", "Old room");
     nextList = undefined;
     lists = 0;
+    roomWrites = 0;
+    failSecondRoomWrite = false;
+    rejectSwap = false;
+    loseSwapResponse = false;
     vi.mocked(bridge).mockImplementation(async (method, args) => {
       if (method === "auth.status") return { authenticated: true };
       if (method === "daemon.snapshot") return { daemon_available: false };
@@ -75,8 +83,20 @@ describe("App lobby snapshot races through room controls", () => {
         return {};
       }
       if (method === "rooms.update") {
-        serverLobby = { ...serverLobby, rooms: serverLobby.rooms.map((room) =>
-          room.id === args?.room_id ? { ...room, name: String(args.name) } : room) };
+        roomWrites++;
+        if (failSecondRoomWrite && roomWrites === 2) throw new Error("second write failed");
+        if (rejectSwap) throw new Error("room order changed");
+        const source = serverLobby.rooms.find((room) => room.id === args?.room_id)!;
+        serverLobby = { ...serverLobby, rooms: serverLobby.rooms.map((room) => {
+          if (room.id === args?.room_id) return {
+            ...room,
+            ...(args.name !== undefined ? { name: String(args.name) } : {}),
+            ...(args.position !== undefined ? { position: Number(args.position) } : {}),
+          };
+          if (room.id === args?.swap_with) return { ...room, position: source.position };
+          return room;
+        }) };
+        if (loseSwapResponse) throw new Error("response lost");
         return {};
       }
       throw new Error(`Unexpected bridge method: ${method}`);
@@ -122,6 +142,55 @@ describe("App lobby snapshot races through room controls", () => {
     });
     await button("确定", container.querySelector('[role="dialog"]')!);
   }
+
+
+  it("moves a room atomically even when a second update would fail", async () => {
+    failSecondRoomWrite = true;
+    await mount();
+    await roomAction("上移");
+    expect(serverLobby.rooms.map((room) => room.position)).toEqual([1, 0]);
+    expect(roomWrites).toBe(1);
+    expect(bridge).toHaveBeenCalledWith("rooms.update", {
+      room_id: "room-1", position: 0, expected_position: 1, swap_with: "room-0",
+    });
+    expect(container.textContent!.indexOf("Old room")).toBeLessThan(container.textContent!.indexOf("Keep room"));
+  });
+
+  it("reconciles a committed swap after a lost response without retrying it", async () => {
+    await mount();
+    loseSwapResponse = true;
+    await roomAction("上移");
+    expect(roomWrites).toBe(1);
+    expect(lists).toBe(2);
+    expect(serverLobby.rooms.map((room) => room.position)).toEqual([1, 0]);
+    expect(container.textContent!.indexOf("Old room")).toBeLessThan(container.textContent!.indexOf("Keep room"));
+    expect(container.textContent).toContain("response lost");
+  });
+
+  it("moves down past a same-type neighbor without moving a voice room", async () => {
+    serverLobby.rooms.push(
+      { id: "voice", lobby_id: "lobby", name: "Voice room", type: "voice", position: 2 },
+      { id: "last", lobby_id: "lobby", name: "Last room", type: "text", position: 3 },
+    );
+    await mount();
+    await roomAction("下移");
+    expect(roomWrites).toBe(1);
+    expect(serverLobby.rooms.map((room) => room.position)).toEqual([0, 3, 2, 1]);
+    expect(bridge).toHaveBeenCalledWith("rooms.update", {
+      room_id: "room-1", position: 3, expected_position: 1, swap_with: "last",
+    });
+  });
+
+  it("refreshes a stale order immediately after a rejected swap", async () => {
+    await mount();
+    serverLobby = { ...serverLobby, rooms: serverLobby.rooms.map((room) => ({ ...room, position: 1 - room.position })) };
+    rejectSwap = true;
+    await roomAction("上移");
+    expect(roomWrites).toBe(1);
+    expect(lists).toBe(2);
+    expect(container.textContent).toContain("room order changed");
+    expect(container.textContent!.indexOf("Old room")).toBeLessThan(container.textContent!.indexOf("Keep room"));
+  });
 
   it("does not resurrect a deleted room when a pre-delete poll arrives last", async () => {
     await mount();

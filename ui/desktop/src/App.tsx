@@ -431,8 +431,7 @@ export default function App() {
     } catch (e) { showError(String(e)); }
   }
 
-  // reorderRoom swaps a room with its same-type neighbor by writing the
-  // neighbor's position onto it (service orders rooms by position).
+  // Swap both positions in one request; stale snapshots are rejected by service.
   async function reorderRoom(room: Room, direction: -1 | 1) {
     if (!selectedLobby) return;
     const siblings = selectedLobby.rooms.filter((r) => r.type === room.type).sort((a, b) => a.position - b.position);
@@ -440,10 +439,14 @@ export default function App() {
     const target = siblings[index + direction];
     if (!target) return;
     try {
-      await bridge("rooms.update", { room_id: room.id, position: target.position });
-      await bridge("rooms.update", { room_id: target.id, position: room.position });
-      await refreshLobbies();
+      await bridge("rooms.update", {
+        room_id: room.id, position: target.position,
+        expected_position: room.position, swap_with: target.id,
+      });
     } catch (e) { showError(String(e)); }
+    // A lost response may still have committed; reconcile without rolling back
+    // another client's changes or automatically repeating the mutation.
+    try { await refreshLobbies(); } catch (e) { showError(String(e)); }
   }
 
   const titleBar = <TitleBar update={updater}

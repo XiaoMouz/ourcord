@@ -370,8 +370,8 @@ export async function createRoom(request: Request, env: Env, lobbyId: string): P
   return json(room, 201);
 }
 
-// PATCH /api/rooms/:roomId — owner/admin renames or reorders.
-export async function updateRoom(request: Request, env: Env, roomId: string): Promise<Response> {
+// PATCH /api/rooms/:roomId, or /:roomId/reorder for an atomic pair swap.
+export async function updateRoom(request: Request, env: Env, roomId: string, swapPositions = false): Promise<Response> {
   const tooBig = checkBodySize(request, 4 * 1024);
   if (tooBig) return tooBig;
   const auth = await requireAuth(request, env);
@@ -391,11 +391,41 @@ export async function updateRoom(request: Request, env: Env, roomId: string): Pr
     return err("Insufficient permissions", 403);
   }
 
-  let body: { name?: string; position?: number };
+  let body: { name?: string; position?: number; swap_with?: string; expected_position?: number };
   try {
-    body = await request.json<{ name?: string; position?: number }>();
+    body = await request.json<typeof body>();
   } catch {
     return err("invalid JSON body");
+  }
+  if (!body || typeof body !== "object" || Array.isArray(body)) return err("invalid JSON body");
+
+  if (!swapPositions && (body.swap_with !== undefined || body.expected_position !== undefined)) {
+    return err("Use the room reorder endpoint for swaps");
+  }
+  if (swapPositions) {
+    if (typeof body.swap_with !== "string" || !body.swap_with || body.swap_with === roomId
+      || typeof body.expected_position !== "number" || !Number.isInteger(body.expected_position)
+      || body.expected_position < 0 || body.expected_position > 100000
+      || typeof body.position !== "number" || !Number.isInteger(body.position) || body.position < 0 || body.position > 100000
+      || body.name !== undefined) {
+      return err("swap requires a different room and both expected positions, without name");
+    }
+    // Freeze both old positions before updating either row. The count guard
+    // makes stale, deleted, or out-of-scope pairs a no-op in the same write.
+    const swapped = await env.DB.prepare(`
+      WITH pair AS MATERIALIZED (
+        SELECT id, position FROM rooms
+        WHERE lobby_id = ? AND type = ?
+          AND ((id = ? AND position = ?) OR (id = ? AND position = ?))
+      )
+      UPDATE rooms SET position = (SELECT position FROM pair WHERE id <> rooms.id)
+      WHERE id IN (SELECT id FROM pair) AND (SELECT COUNT(*) FROM pair) = 2
+      RETURNING *
+    `).bind(room.lobby_id, room.type, roomId, body.expected_position, body.swap_with, body.position)
+      .all<Room>();
+    const updated = swapped.results.find((row) => row.id === roomId);
+    if (!updated) return err("Room order changed; refresh and try again", 409);
+    return json(updated);
   }
 
   const updates: string[] = [];

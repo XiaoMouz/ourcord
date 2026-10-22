@@ -9,6 +9,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash, createHmac } from "node:crypto";
 import { verifyExternalUploadFinalization } from "./cloudflare-external-uploads.mjs";
+import { verifyRoomReorder } from "./cloudflare-room-reorder.mjs";
 import { verifyInternalReplay } from "./cloudflare-internal-replay.mjs";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -93,6 +94,7 @@ try {
   ]);
   const service = await mf.getWorker("service");
   await verifyInternalReplay({ service, db, secret });
+  await verifyRoomReorder({ service, db, jwt });
   const call = (path, method = "GET", body) => service.fetch(`https://service.test${path}`, {
     method, headers: { Authorization: `Bearer ${jwt()}`, "Content-Type": "application/json" }, body,
   });
