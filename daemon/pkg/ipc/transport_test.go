@@ -3,10 +3,9 @@ package ipc
 import (
 	"context"
 	"io"
-	"net"
 	"os"
 	"path/filepath"
-	"strings"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -24,6 +23,9 @@ func tempSocket(t *testing.T) (string, []byte) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if runtime.GOOS == "windows" {
+		return `\\.\pipe\ourcord-test-` + filepath.Base(dir), secret
+	}
 	return filepath.Join(dir, "s"), secret
 }
 
@@ -35,18 +37,40 @@ func TestListenAuthenticatedDoesNotReplaceLiveSocket(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = first.Close() })
 
-	if _, err := ListenAuthenticated(sock, nil); err == nil || !strings.Contains(err.Error(), "already running") {
+	if second, err := ListenAuthenticated(sock, nil); err == nil {
+		second.Close()
 		t.Fatalf("second listener error = %v, want already running", err)
 	}
 
-	conn, err := net.Dial("unix", sock)
+	accepted := make(chan error, 1)
+	go func() {
+		connection, err := first.Accept()
+		if err == nil {
+			_ = connection.Close()
+		}
+		accepted <- err
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	conn, err := DialAuthenticated(ctx, sock, nil)
 	if err != nil {
 		t.Fatalf("original listener was replaced: %v", err)
 	}
-	conn.Close()
+	defer conn.Close()
+	select {
+	case err := <-accepted:
+		if err != nil {
+			t.Fatalf("original listener stopped accepting: %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("original listener did not accept the connection")
+	}
 }
 
 func TestListenAuthenticatedForCurrentUID(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix UID ownership and mode bits do not apply to Windows named pipes")
+	}
 	sock, secret := tempSocket(t)
 	lis, err := ListenAuthenticatedForUID(sock, secret, os.Getuid())
 	if err != nil {

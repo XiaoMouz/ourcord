@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -238,6 +239,9 @@ func TestDialAuthenticatedRoundTrip(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	sock := filepath.Join(dir, "s")
+	if runtime.GOOS == "windows" {
+		sock = `\\.\pipe\ourcord-client-test-` + filepath.Base(dir)
+	}
 	secret, err := ipc.LoadOrCreateHMACKey(filepath.Join(dir, "ipc.key"))
 	if err != nil {
 		t.Fatal(err)
