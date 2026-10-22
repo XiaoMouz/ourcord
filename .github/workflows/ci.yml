@@ -274,8 +274,12 @@ jobs:
           Copy-Item "$mingw\bin\libopus-0.dll" src-tauri/binaries/libopus-0.dll
           Copy-Item "$mingw\bin\libopusfile-0.dll" src-tauri/binaries/libopusfile-0.dll
           Copy-Item "$mingw\bin\libogg-0.dll" src-tauri/binaries/libogg-0.dll
-      - name: Compile Tauri application
-        env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_TEST_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_TEST_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: pnpm tauri build --no-bundle
+      - name: Build validation-only NSIS installer
+        run: pnpm tauri build --bundles nsis --config '{"bundle":{"createUpdaterArtifacts":false}}'
+      - name: Upload validation installer
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: ourcord-validation-windows-${{ github.sha }}
+          path: ui/desktop/src-tauri/target/release/bundle/nsis/*.exe
+          if-no-files-found: error
+          retention-days: 7
