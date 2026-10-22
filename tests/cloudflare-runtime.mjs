@@ -83,6 +83,31 @@ try {
   const call = (path, method = "GET", body) => service.fetch(`https://service.test${path}`, {
     method, headers: { Authorization: `Bearer ${jwt()}`, "Content-Type": "application/json" }, body,
   });
+  const historyIDs = Array.from({ length: 105 }, (_, index) => `message-${String(index).padStart(3, "0")}`);
+  await db.batch(historyIDs.map((id) => db.prepare(
+    "INSERT INTO messages(id,room_id,user_id,content,created_at) VALUES (?, 'R2', 'u1', 'same second', 100)"
+  ).bind(id)));
+  await db.batch([
+    db.prepare("INSERT INTO messages(id,room_id,user_id,content,created_at) VALUES ('older', 'R2', 'u1', 'older', 99)"),
+    db.prepare("INSERT INTO messages(id,room_id,user_id,content,created_at) VALUES ('foreign', 'R1', 'u1', 'foreign', 101)"),
+  ]);
+  let history = [];
+  let cursor = "";
+  for (let pageIndex = 0; pageIndex < 4; pageIndex++) {
+    const response = await call(`/api/rooms/R2/messages?limit=50${cursor ? `&before=${cursor}` : ""}`);
+    assert.equal(response.status, 200);
+    const page = (await response.json()).messages;
+    if (page.length === 0) break;
+    history = [...page.map((message) => message.id), ...history];
+    cursor = page[0].id;
+  }
+  assert.deepEqual(history, ["older", ...historyIDs]);
+  for (const invalidCursor of ["foreign", "missing"]) {
+    const response = await call(`/api/rooms/R2/messages?before=${invalidCursor}`);
+    assert.equal(response.status, 200);
+    assert.deepEqual((await response.json()).messages, []);
+  }
+  console.log("PASS workerd: same-second message pagination, chronological ordering and room-scoped cursors");
   const initiated = await call("/api/rooms/R1/files", "POST", JSON.stringify({
     filename: "smoke.bin", size_bytes: 1024 * 1024, mime_type: "application/octet-stream",
   }));

@@ -27,12 +27,12 @@ export async function getMessages(request: Request, env: Env, roomId: string): P
   if (before) {
     stmt = env.DB
       .prepare(
-        "SELECT * FROM messages WHERE room_id = ? AND created_at < (SELECT created_at FROM messages WHERE id = ?) ORDER BY created_at DESC LIMIT ?"
+        "SELECT * FROM messages WHERE room_id = ? AND (created_at, id) < (SELECT created_at, id FROM messages WHERE id = ? AND room_id = ?) ORDER BY created_at DESC, id DESC LIMIT ?"
       )
-      .bind(roomId, before, limit);
+      .bind(roomId, before, roomId, limit);
   } else {
     stmt = env.DB
-      .prepare("SELECT * FROM messages WHERE room_id = ? ORDER BY created_at DESC LIMIT ?")
+      .prepare("SELECT * FROM messages WHERE room_id = ? ORDER BY created_at DESC, id DESC LIMIT ?")
       .bind(roomId, limit);
   }
 
