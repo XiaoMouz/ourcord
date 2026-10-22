@@ -154,7 +154,7 @@ func TestPeerRemovalDoesNotResetSenderNonce(t *testing.T) {
 
 func TestOppositeDirectionsCannotShareNonceWithCollidingSSRCs(t *testing.T) {
 	a, b := mustKey(t), mustKey(t)
-	emit := func(self, peer wgtypes.Key) *parsedPacket {
+	emit := func(self, peerPublic wgtypes.Key) *parsedPacket {
 		fab := newFabric()
 		src, dst := netip.MustParseAddr("198.19.0.40"), netip.MustParseAddr("198.19.0.41")
 		wire := fab.endpoint(dst)
@@ -164,7 +164,7 @@ func TestOppositeDirectionsCannotShareNonceWithCollidingSSRCs(t *testing.T) {
 		}
 		defer e.Stop()
 		e.ssrc = 7
-		e.UpdatePeers([]PeerInfo{{PublicKey: peer.PublicKey(), VPN4: dst}})
+		e.UpdatePeers([]PeerInfo{{PublicKey: peerPublic, VPN4: dst}})
 		e.broadcast(make([]int16, FrameSamples))
 		pkt, err := parsePacket((<-wire.in).data)
 		if err != nil {
@@ -175,6 +175,19 @@ func TestOppositeDirectionsCannotShareNonceWithCollidingSSRCs(t *testing.T) {
 	first, second := emit(a, b.PublicKey()), emit(b, a.PublicKey())
 	if first.header.SSRC != second.header.SSRC || first.counter^second.counter != 1<<63 {
 		t.Fatal("opposite directions did not partition the shared-key nonce space")
+	}
+	key, err := pairKey(a, b.PublicKey())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, packet := range []*parsedPacket{first, second} {
+		opener, err := newOpener(key, 7)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := opener.open(packet.ciphertext, packet.aad, packet.counter); err != nil {
+			t.Fatalf("opposite directions must use the same pair key: %v", err)
+		}
 	}
 }
 
