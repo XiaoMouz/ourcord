@@ -131,6 +131,15 @@ describe("indexed voice presence (real SQLite)", () => {
     expect(snapshot()).toEqual(before);
   });
 
+  it("supports deploying the new heartbeat before the index migration", async () => {
+    db.exec("DROP INDEX idx_lobby_presence_voice");
+    expect((await pulse("R3")).status).toBe(200);
+    expect(own()).toEqual([{ lobby_id: "L1", voice_room_id: null }, { lobby_id: "L2", voice_room_id: "R3" }]);
+    expect((await pulse("R3")).status).toBe(200);
+    expect(changed()).toEqual({ n: 2 });
+    expect(db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+  });
+
   it("adds the index to a populated old database without changing presence", () => {
     db.exec("DROP INDEX idx_lobby_presence_voice");
     const before = snapshot();
