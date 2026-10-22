@@ -31,8 +31,10 @@
 
 ## R2 配额
 
-- 元数据有 `expires_at`，但 R2 自身没有 TTL；过期清理由 `src/index.ts` 的 Workers `scheduled` handler 调 `runR2Cleanup`，删除失败只记日志并留待下次重试。
+- 元数据有 `expires_at`，但 R2 自身没有 TTL；`runR2Cleanup` 与文件删除触发器通过 `r2_deletion_queue` 清理对象。队列必须独立于 room/lobby 的 FK 级联；仅 R2 删除成功后才移除队列行并释放 `r2_usage` 预留。
 - 上传大小/数量/天数限制由后端强制，不要相信前端。
+- 运营者 `R2_MAX_BYTES` / `R2_MAX_FILES` / `R2_MAX_FILE_BYTES` 是跨大厅上限。预留与配额检查必须同一语句完成；D1 `meta.changes` 包含触发器写入，不能用 `=== 1` 判断预留成功。
+- R2 PUT 先原子占用 reservation，10 分钟超时；删除队列至少等到 upload_started_at + 660 秒后才能删对象，避免进行中的上传重建已清理对象。调整超时必须同步迁移中的 grace period。
 
 ## 构建/检查
 
