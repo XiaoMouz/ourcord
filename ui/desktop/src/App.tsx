@@ -102,13 +102,19 @@ export default function App() {
     // refreshAuth failures through their existing notifications.
     void refreshAuth().catch(() => {});
   }, [refreshAuth]);
+  const lobbyRequestRef = useRef(0);
   const refreshLobbies = useCallback(async () => {
+    const requestID = ++lobbyRequestRef.current;
     try {
       const data = await bridge<{ lobbies: LobbyEntry[] }>("lobbies.list");
+      // A post-mutation refresh must supersede older polling snapshots.
+      if (requestID !== lobbyRequestRef.current) return;
       setLobbies(data.lobbies);
       setSelectedLobbyID((current) => current || data.lobbies[0]?.lobby.id || "");
+    } catch (error) {
+      if (requestID === lobbyRequestRef.current) throw error;
     } finally {
-      setLobbiesLoaded(true);
+      if (requestID === lobbyRequestRef.current) setLobbiesLoaded(true);
     }
   }, []);
   const refreshSnapshot = useCallback(async () => setSnapshot(await bridge<Snapshot>("daemon.snapshot")), []);
@@ -176,11 +182,14 @@ export default function App() {
   }, [handleDeepLink]);
   useEffect(() => {
     if (!auth.authenticated) return;
-    void refreshLobbies(); void refreshSnapshot();
-    const lobbyTimer = window.setInterval(() => void refreshLobbies(), 30_000);
+    void refreshLobbies().catch((error) => showError(String(error))); void refreshSnapshot();
+    const lobbyTimer = window.setInterval(() => void refreshLobbies().catch(() => {}), 30_000);
     const daemonTimer = window.setInterval(() => void refreshSnapshot(), 1_000);
-    return () => { clearInterval(lobbyTimer); clearInterval(daemonTimer); };
-  }, [auth.authenticated, refreshLobbies, refreshSnapshot]);
+    return () => {
+      lobbyRequestRef.current += 1;
+      clearInterval(lobbyTimer); clearInterval(daemonTimer);
+    };
+  }, [auth.authenticated, refreshLobbies, refreshSnapshot, showError]);
   useEffect(() => {
     if (!auth.authenticated) return;
     const lobbyID = selectedLobby?.lobby.id ?? "";
