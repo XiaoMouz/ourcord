@@ -145,8 +145,8 @@ func (b *bridge) handle(req request) (out response) {
 func (b *bridge) dispatch(method string, raw json.RawMessage) (any, error) {
 	// Account requests may refresh credentials or enroll the daemon. Let them
 	// finish before logout retires that identity and clears its credentials.
-	// Ordinary requests still run concurrently; file streams and daemon status
-	// do not write account credentials and must not hold logout behind a transfer.
+	// Ordinary requests still run concurrently. File transfers guard their short
+	// credential exchanges separately so logout never waits for a full stream.
 	if method == "auth.logout" {
 		b.sessionMu.Lock()
 		defer b.sessionMu.Unlock()
@@ -530,10 +530,6 @@ func (b *bridge) uploadFile(roomID, path string) (any, error) {
 	if roomID == "" || path == "" {
 		return nil, errors.New("room_id and path required")
 	}
-	token, err := b.token()
-	if err != nil {
-		return nil, errors.New("not authenticated")
-	}
 	info, err := os.Stat(path)
 	if err != nil || info.IsDir() {
 		return nil, errors.New("file not found")
@@ -541,7 +537,7 @@ func (b *bridge) uploadFile(roomID, path string) (any, error) {
 	filename := safeFilename(filepath.Base(path))
 	initPath := "/api/rooms/" + pathSegment(roomID) + "/files"
 	initBody := map[string]any{"filename": filepath.Base(path), "mime_type": detectMIME(path), "size_bytes": info.Size()}
-	initData, err := b.api(http.MethodPost, b.serviceURL, initPath, token, initBody)
+	initData, err := b.fileAPI(http.MethodPost, initPath, initBody)
 	if err != nil {
 		return nil, err
 	}
@@ -558,7 +554,9 @@ func (b *bridge) uploadFile(roomID, path string) (any, error) {
 
 	if init.StorageLocation == "r2" {
 		// R2 proxy PUT is authed and enforces an exact byte count.
-		if err := b.putFile(strings.TrimRight(b.serviceURL, "/")+init.UploadURL, token, path, info.Size()); err != nil {
+		if err := b.fileAccountRequest(func(token string) error {
+			return b.putFile(strings.TrimRight(b.serviceURL, "/")+init.UploadURL, token, path, info.Size())
+		}); err != nil {
 			return nil, err
 		}
 	} else {
@@ -567,7 +565,7 @@ func (b *bridge) uploadFile(roomID, path string) (any, error) {
 			return nil, err
 		}
 		if init.CompleteURL != "" {
-			if _, err := b.api(http.MethodPost, b.serviceURL, init.CompleteURL, token, map[string]string{"upload_token": init.UploadToken}); err != nil {
+			if _, err := b.fileAPI(http.MethodPost, init.CompleteURL, map[string]string{"upload_token": init.UploadToken}); err != nil {
 				return nil, fmt.Errorf("finalize upload: %w", err)
 			}
 		}
@@ -599,7 +597,7 @@ func (b *bridge) putFile(url, token, path string, size int64) error {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("upload failed (%d)", resp.StatusCode)
+		return &httpStatusError{status: resp.StatusCode, message: fmt.Sprintf("upload failed (%d)", resp.StatusCode)}
 	}
 	return nil
 }
@@ -626,12 +624,14 @@ func (b *bridge) downloadFile(roomID, fileID, filename string) (any, error) {
 	if roomID == "" || fileID == "" {
 		return nil, errors.New("room_id and file_id required")
 	}
-	token, err := b.token()
-	if err != nil {
-		return nil, errors.New("not authenticated")
-	}
 	url := strings.TrimRight(b.serviceURL, "/") + "/api/rooms/" + pathSegment(roomID) + "/files/" + pathSegment(fileID) + "/download"
-	body, headers, err := b.fetchStream(http.MethodGet, url, token)
+	var body io.ReadCloser
+	var headers http.Header
+	err := b.fileAccountRequest(func(token string) error {
+		var requestErr error
+		body, headers, requestErr = b.fetchStream(http.MethodGet, url, token)
+		return requestErr
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -682,7 +682,7 @@ func (b *bridge) fetchStream(method, url, token string) (io.ReadCloser, http.Hea
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		resp.Body.Close()
 		cancel()
-		return nil, nil, fmt.Errorf("download failed (%d)", resp.StatusCode)
+		return nil, nil, &httpStatusError{status: resp.StatusCode, message: fmt.Sprintf("download failed (%d)", resp.StatusCode)}
 	}
 	return &cancelReadCloser{ReadCloser: resp.Body, cancel: cancel}, resp.Header, nil
 }
@@ -690,6 +690,54 @@ func (b *bridge) fetchStream(method, url, token string) (io.ReadCloser, http.Hea
 type cancelReadCloser struct {
 	io.ReadCloser
 	cancel context.CancelFunc
+}
+
+// fileAccountRequest is only for our service, never capability URLs on a file
+// backend. Reopen PUT files on retry, and release rejected GET bodies before
+// returning a status error. Credential writes are protected from logout without
+// holding sessionMu across a potentially long upload or download.
+func (b *bridge) fileAccountRequest(send func(string) error) error {
+	b.sessionMu.RLock()
+	token, err := b.token()
+	if err != nil {
+		token, err = b.exchangeStoredDeviceCredential(token)
+	}
+	b.sessionMu.RUnlock()
+	if err != nil {
+		if errors.Is(err, keyring.ErrNotFound) || isHTTPStatus(err, http.StatusUnauthorized) {
+			return errors.New("not authenticated")
+		}
+		return err
+	}
+
+	requestErr := send(token)
+	if !isHTTPStatus(requestErr, http.StatusUnauthorized) {
+		return requestErr
+	}
+	b.sessionMu.RLock()
+	// A logout may have completed while the stream was in flight. Do not
+	// revive its identity from a delayed 401 or a disk credential fallback.
+	if _, err = b.token(); err == nil {
+		token, err = b.exchangeStoredDeviceCredential(token)
+	}
+	b.sessionMu.RUnlock()
+	if err != nil {
+		if errors.Is(err, keyring.ErrNotFound) || isHTTPStatus(err, http.StatusUnauthorized) {
+			return requestErr
+		}
+		return err
+	}
+	return send(token)
+}
+
+func (b *bridge) fileAPI(method, path string, body any) ([]byte, error) {
+	var data []byte
+	err := b.fileAccountRequest(func(token string) error {
+		var requestErr error
+		data, requestErr = b.api(method, b.serviceURL, path, token, body)
+		return requestErr
+	})
+	return data, err
 }
 
 func (c *cancelReadCloser) Close() error {
