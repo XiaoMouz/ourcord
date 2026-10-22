@@ -27,6 +27,10 @@ jobs:
         with:
           go-version-file: daemon/go.mod
           cache: true
+          cache-dependency-path: |
+            go.work.sum
+            daemon/go.sum
+            relay/go.sum
       - uses: dtolnay/rust-toolchain@stable
       - uses: msys2/setup-msys2@v2
         with:
@@ -210,6 +214,10 @@ jobs:
         with:
           go-version-file: daemon/go.mod
           cache: true
+          cache-dependency-path: |
+            go.work.sum
+            daemon/go.sum
+            relay/go.sum
       - uses: dtolnay/rust-toolchain@stable
       - name: Install native audio dependencies
         run: brew install opus opusfile pkg-config
