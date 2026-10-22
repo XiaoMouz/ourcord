@@ -154,6 +154,60 @@ try {
   assert.equal((await db.prepare("SELECT reserved_files FROM r2_usage").first()).reserved_files, 0);
   console.log("PASS workerd: D1 migrations, atomic reservation/PUT, FixedLengthStream, R2 download and cascade cleanup");
 
+  const makeInvite = async (maxUses = 1) => {
+    const response = await call("/api/lobbies/L1/invites", "POST", JSON.stringify({ max_uses: maxUses }));
+    assert.equal(response.status, 201);
+    return (await response.json()).code;
+  };
+  const redeem = (code, user) => service.fetch("https://service.test/api/lobbies/L1/join", {
+    method: "POST", headers: { Authorization: `Bearer ${jwt(user)}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ code }),
+  });
+  const inviteUses = (code) => db.prepare("SELECT uses FROM lobby_invites WHERE code = ?").bind(code).first("uses");
+  const singleUse = await makeInvite();
+  const sameUser = await Promise.all([redeem(singleUse, "invite-guest"), redeem(singleUse, "invite-guest")]);
+  assert.deepEqual(sameUser.map((response) => response.status), [200, 200]);
+  assert.equal(await inviteUses(singleUse), 1);
+  assert.equal((await redeem(singleUse, "different-guest")).status, 403);
+  const raceInvite = await makeInvite();
+  const distinctUsers = await Promise.all([redeem(raceInvite, "race-guest-1"), redeem(raceInvite, "race-guest-2")]);
+  assert.deepEqual(distinctUsers.map((response) => response.status).sort(), [200, 403]);
+  assert.equal(await inviteUses(raceInvite), 1);
+
+  const retryInvite = await makeInvite();
+  await db.prepare(`CREATE TRIGGER fail_test_membership BEFORE INSERT ON lobby_members
+    WHEN NEW.user_id = 'retry-guest'
+    BEGIN SELECT RAISE(ABORT, 'injected membership failure'); END`).run();
+  let writeFailed = false;
+  try {
+    writeFailed = (await redeem(retryInvite, "retry-guest")).status >= 500;
+  } catch (error) {
+    assert.match(String(error), /injected membership failure/);
+    writeFailed = true;
+  }
+  assert(writeFailed, "the injected D1 failure must reach the caller");
+  assert.equal(await inviteUses(retryInvite), 0);
+  assert.equal(await db.prepare("SELECT user_id FROM lobby_members WHERE user_id = 'retry-guest'").first(), null);
+  await db.prepare("DROP TRIGGER fail_test_membership").run();
+  assert.equal((await redeem(retryInvite, "retry-guest")).status, 200);
+  assert.equal(await inviteUses(retryInvite), 1);
+  const rollbackInvite = await makeInvite();
+  await db.prepare(`CREATE TRIGGER fail_test_consumption BEFORE UPDATE ON lobby_invites
+    BEGIN SELECT RAISE(ABORT, 'injected consumption failure'); END`).run();
+  let consumptionFailed = false;
+  try {
+    consumptionFailed = (await redeem(rollbackInvite, "rollback-guest")).status >= 500;
+  } catch (error) {
+    assert.match(String(error), /injected consumption failure/);
+    consumptionFailed = true;
+  }
+  assert(consumptionFailed, "the second statement must fail in this test");
+  assert.equal(await inviteUses(rollbackInvite), 0);
+  assert.equal(await db.prepare("SELECT user_id FROM lobby_members WHERE user_id = 'rollback-guest'").first(), null);
+  await db.prepare("DROP TRIGGER fail_test_consumption").run();
+  assert.equal((await redeem(rollbackInvite, "rollback-guest")).status, 200);
+  console.log("PASS workerd: transactional invite redemption, duplicate accounts, quota and retry after D1 write failure");
+
   const controlDB = await mf.getD1Database("DB", "control");
   await migrate(controlDB, "control");
   const control = await mf.getWorker("control");
@@ -200,6 +254,23 @@ try {
   // Hibernation itself is covered by constructor reconstruction tests; this
   // verifies native attachments, SQLite storage and runtime event callbacks.
   console.log("PASS workerd: hibernatable WebSocket handshake, replay and replacement connection");
+
+  // A JSON document is file data, even when it contains a property named url.
+  // The desktop bridge relies on Content-Disposition to distinguish this
+  // response from the external-backend JSON download descriptor.
+  const jsonContent = JSON.stringify({ url: "https://example.invalid/file-data", configuration: true });
+  const jsonInitiated = await call("/api/rooms/R2/files", "POST", JSON.stringify({
+    filename: "config.json", size_bytes: Buffer.byteLength(jsonContent), mime_type: "application/json",
+  }));
+  assert.equal(jsonInitiated.status, 201);
+  const jsonFile = await jsonInitiated.json();
+  assert.equal((await call(jsonFile.upload_url, "PUT", jsonContent)).status, 200);
+  const jsonDownloaded = await call(`/api/rooms/R2/files/${jsonFile.id}/download`);
+  assert.equal(jsonDownloaded.status, 200);
+  assert.equal(jsonDownloaded.headers.get("Content-Type"), "application/json");
+  assert.match(jsonDownloaded.headers.get("Content-Disposition"), /^attachment;/);
+  assert.equal(await jsonDownloaded.text(), jsonContent);
+  console.log("PASS workerd: R2 JSON attachments retain their bytes and attachment disposition");
 } finally {
   for (const ws of sockets) { try { ws.close(1000, "test complete"); } catch {} }
   await mf?.dispose();
