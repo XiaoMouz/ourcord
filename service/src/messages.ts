@@ -21,7 +21,13 @@ export async function getMessages(request: Request, env: Env, roomId: string): P
 
   const url = new URL(request.url);
   const before = url.searchParams.get("before"); // message id for pagination
-  const limit = Math.min(parseInt(url.searchParams.get("limit") ?? "50", 10), 100);
+  const rawLimit = url.searchParams.get("limit");
+  const requestedLimit = rawLimit === null ? 50 : Number(rawLimit);
+  if ((rawLimit !== null && !/^\d+$/.test(rawLimit))
+      || !Number.isSafeInteger(requestedLimit) || requestedLimit < 1) {
+    return err("limit must be a positive integer");
+  }
+  const limit = Math.min(requestedLimit, 100);
 
   let stmt;
   if (before) {

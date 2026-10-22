@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { sendMessage } from "./messages";
+import { getMessages, sendMessage } from "./messages";
 import type { Env } from "./types";
 
 const SECRET = "test-secret-1234567890abcdef";
@@ -61,6 +61,24 @@ async function postMessage(token: string, body: object): Promise<Request> {
     body: json,
   });
 }
+
+describe("getMessages page bounds", () => {
+  it.each(["-1", "0", "NaN", "1.5", "", "1e3", "3abc", "9007199254740992"])(
+    "rejects invalid limit %j before querying message history", async (limit) => {
+      const db = makeDB([{ first: { lobby_id: "L" } }, { first: { 1: 1 } }]);
+      const env = { ENVIRONMENT: "production", JWT_SECRET: SECRET, DB: db } as Env;
+      const url = new URL("https://service.example/api/rooms/r1/messages");
+      url.searchParams.set("limit", limit);
+      const request = new Request(url, {
+        headers: { Authorization: `Bearer ${await makeToken()}` },
+      });
+      const response = await getMessages(request, env, "r1");
+      expect(response.status).toBe(400);
+      expect(await response.json()).toEqual({ error: "limit must be a positive integer" });
+      expect(db.prepare).toHaveBeenCalledTimes(2);
+    },
+  );
+});
 
 describe("sendMessage room.type gating", () => {
   it("allows text room", async () => {
