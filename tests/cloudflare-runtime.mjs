@@ -1,5 +1,6 @@
 // Local-only workerd integration: no Cloudflare account or production resources.
 // Uses the Miniflare version already installed with control's pinned Wrangler.
+import { verifyPresenceRetirement } from "./cloudflare-presence-cost.mjs";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { execFileSync } from "node:child_process";
@@ -9,7 +10,6 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash, createHmac } from "node:crypto";
 import { verifyExternalUploadFinalization } from "./cloudflare-external-uploads.mjs";
-import { verifyPresenceRetirement } from "./cloudflare-presence-cost.mjs";
 import { verifyInternalReplay } from "./cloudflare-internal-replay.mjs";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -102,7 +102,6 @@ try {
   ]);
   const service = await mf.getWorker("service");
   await verifyInternalReplay({ service, db, secret });
-  await verifyPresenceRetirement({ db, service: await mf.getWorker("service-presence-cost"), jwt });
   const call = (path, method = "GET", body) => service.fetch(`https://service.test${path}`, {
     method, headers: { Authorization: `Bearer ${jwt()}`, "Content-Type": "application/json" }, body,
   });
@@ -461,6 +460,7 @@ try {
   assert.equal(await jsonDownloaded.text(), jsonContent);
   console.log("PASS workerd: R2 JSON attachments retain their bytes and attachment disposition");
   await verifyExternalUploadFinalization(db, call, service);
+  await verifyPresenceRetirement({ db, service: await mf.getWorker("service-presence-cost"), jwt });
 } finally {
   for (const ws of sockets) { try { ws.close(1000, "test complete"); } catch {} }
   await mf?.dispose();
