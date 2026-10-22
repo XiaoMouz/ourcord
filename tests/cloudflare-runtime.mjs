@@ -92,6 +92,29 @@ try {
   assert.deepEqual(deletions.map((response) => response.status).sort(), [200, 400]);
   assert.equal((await db.prepare("SELECT COUNT(*) AS n FROM rooms WHERE lobby_id = 'Ldelete'").first()).n, 1);
   console.log("PASS workerd: concurrent owner room deletion preserves the last room");
+  await db.prepare("INSERT INTO rooms(id,lobby_id,name) VALUES ('Rindex','L1','index bounds')").run();
+  const burstIDs = Array.from({ length: 120 }, (_, i) => `burst-${String(i).padStart(3, "0")}`);
+  await db.batch(burstIDs.map((id) => db.prepare(
+    "INSERT INTO messages(id,room_id,user_id,content,created_at) VALUES (?,'Rindex','u1','burst',100)",
+  ).bind(id)));
+  // Measure the history SQL separately from authorization reads. The SQLite
+  // query-plan tests also inspect the actual handler's generated statements.
+  const historyQueries = [
+    ["", "SELECT * FROM messages WHERE room_id = ? ORDER BY created_at DESC, id DESC LIMIT ?", ["Rindex", 50], 70],
+    ["?before=burst-060&before_created_at=100", "SELECT * FROM messages WHERE room_id = ? AND (created_at, id) < (?, ?) ORDER BY created_at DESC, id DESC LIMIT ?", ["Rindex", 100, "burst-060", 50], 10],
+    ["?before=burst-060", "SELECT * FROM messages WHERE room_id = ? AND (created_at, id) < ((SELECT created_at FROM messages WHERE id = ? AND room_id = ?), ?) ORDER BY created_at DESC, id DESC LIMIT ?", ["Rindex", "burst-060", "Rindex", "burst-060", 50], 10],
+  ];
+  for (const [query, sql, params, start] of historyQueries) {
+    const result = await db.prepare(sql).bind(...params).all();
+    console.log(`D1 history ${query || "latest"}: ${result.meta.rows_read} rows read for ${result.results.length} results`);
+    assert(result.meta.rows_read <= 55, "a 50-message page must seek through the full cursor index");
+    assert.deepEqual(result.results.map((message) => message.id).reverse(), burstIDs.slice(start, start + 50));
+    const response = await call(`/api/rooms/Rindex/messages${query}`);
+    assert.equal(response.status, 200);
+    assert.deepEqual((await response.json()).messages.map((message) => message.id), burstIDs.slice(start, start + 50));
+  }
+  assert.equal((await call("/api/rooms/Rindex", "DELETE")).status, 200);
+  console.log("PASS workerd: same-second message pages use bounded D1 reads and match API ordering");
   await db.prepare("INSERT INTO rooms(id,lobby_id,name) VALUES ('Rlimits','L1','limits')").run();
   await db.batch(Array.from({ length: 105 }, (_, index) => db.prepare(
     "INSERT INTO messages(id,room_id,user_id,content,created_at) VALUES (?, 'Rlimits', 'u1', 'page bound', 100)"
