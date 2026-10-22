@@ -345,14 +345,21 @@ try {
   const confirmLogin = async () => {
     await kv.put(`desktop_magic:${createHash("sha256").update(magicToken).digest("base64url")}`,
       JSON.stringify({ email: "cleanup@example.test", challenge }), { expirationTtl: 600 });
+    const issuedAfter = Math.floor(Date.now() / 1000);
     const confirmed = await control.fetch("https://control.test/api/auth/desktop/magic/confirm", {
       method: "POST", redirect: "manual", body: new URLSearchParams({ token: magicToken }),
     });
     assert.equal(confirmed.status, 200);
     assert.equal(confirmed.headers.get("Location"), null);
-    const handoff = (await confirmed.text()).match(/href="(ourcord:\/\/auth\?code=[a-f0-9]{64})"/);
+    const confirmationHTML = await confirmed.text();
+    assert.ok(confirmationHTML.includes("expires in 10 minutes"));
+    const handoff = confirmationHTML.match(/href="(ourcord:\/\/auth\?code=[a-f0-9]{64})"/);
     assert.ok(handoff, "confirmation must preserve a clickable app handoff");
-    return new URL(handoff[1]).searchParams.get("code");
+    const code = new URL(handoff[1]).searchParams.get("code");
+    const expiresAt = await controlDB.prepare("SELECT expires_at FROM desktop_auth_codes WHERE code_hash = ?")
+      .bind(createHash("sha256").update(code).digest("base64url")).first("expires_at");
+    assert.ok(expiresAt >= issuedAfter + 600 && expiresAt <= Math.floor(Date.now() / 1000) + 600);
+    return code;
   };
   await confirmLogin();
   await controlDB.prepare("UPDATE desktop_auth_codes SET expires_at = 1").run();

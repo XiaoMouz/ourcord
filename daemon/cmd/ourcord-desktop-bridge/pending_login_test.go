@@ -41,7 +41,8 @@ func TestPendingLoginSurvivesAppReinitialization(t *testing.T) {
 		_, _ = writer.Write([]byte(`{"token":"synthetic-test-token","user_id":"test-user"}`))
 	}))
 	defer server.Close()
-	first := &bridge{controlURL: server.URL, http: server.Client(), credentials: credentials}
+	now := time.Unix(1800000000, 0)
+	first := &bridge{controlURL: server.URL, http: server.Client(), credentials: credentials, clock: func() time.Time { return now }}
 	started, err := first.dispatch("auth.begin", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -51,9 +52,11 @@ func TestPendingLoginSurvivesAppReinitialization(t *testing.T) {
 		t.Fatal(err)
 	}
 	originalChallenge = loginURL.Query().Get("code_challenge")
+	now = now.Add(20 * time.Minute)
 	reopened := &bridge{
 		controlURL: server.URL, http: server.Client(), credentials: credentials,
 		stateDir: t.TempDir(), socketPath: "missing-test-daemon",
+		clock: func() time.Time { return now },
 	}
 	if _, err := reopened.dispatch("auth.begin", nil); err != nil {
 		t.Fatal(err)
@@ -64,6 +67,25 @@ func TestPendingLoginSurvivesAppReinitialization(t *testing.T) {
 	}
 	if _, err := reopened.dispatch("auth.exchange", params); err != nil {
 		t.Fatalf("pending login must survive ordinary app reinitialization: %v", err)
+	}
+}
+
+func TestPendingLoginExpiresAfterFullEmailAndCodeWindows(test *testing.T) {
+	now := time.Unix(1800000000, 0)
+	desktop := &bridge{controlURL: "https://control.test", credentials: memoryCredentials{}, clock: func() time.Time { return now }}
+	if _, err := desktop.dispatch("auth.begin", nil); err != nil {
+		test.Fatal(err)
+	}
+	original, err := desktop.readPendingLogin(now)
+	if err != nil {
+		test.Fatal(err)
+	}
+	if original.ExpiresAt != now.Add(21*time.Minute).Unix() {
+		test.Fatal("pending login must allow ten minutes each for email and code, plus one minute for delivery")
+	}
+	now = now.Add(21 * time.Minute)
+	if _, err := desktop.dispatch("auth.exchange", json.RawMessage(`{"code":"synthetic-code"}`)); err == nil || err.Error() != "login session expired" {
+		test.Fatalf("expired pending login = %v", err)
 	}
 }
 

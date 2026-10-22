@@ -70,6 +70,7 @@ describe("desktop authorization code lifecycle (real SQLite)", () => {
     expect(confirmed.headers.get("Referrer-Policy")).toBe("no-referrer");
     const html = await confirmed.text();
     expect(html).toContain("Open OurCord");
+    expect(html).toContain("expires in 10 minutes");
     expect(html).not.toContain(link.searchParams.get("token")!);
     expect(html).not.toContain("<form");
     const callback = html.match(/href="(ourcord:\/\/auth\?code=[a-f0-9]{64})"/);
@@ -91,7 +92,7 @@ describe("desktop authorization code lifecycle (real SQLite)", () => {
     const code = await issueThroughMagicConfirmation();
     expect(count()).toBe(1);
     // The browser confirmation succeeded, but the user did not open the app.
-    vi.advanceTimersByTime(61_000);
+    vi.advanceTimersByTime(601_000);
     const expired = await exchangeDesktopCode(post("/api/auth/desktop/exchange", {
       code, code_verifier: verifier,
     }), env);
@@ -105,6 +106,10 @@ describe("desktop authorization code lifecycle (real SQLite)", () => {
 
   it("preserves a still-valid code and its one-time PKCE exchange", async () => {
     const code = await issueThroughMagicConfirmation();
+    expect(db.prepare("SELECT expires_at FROM desktop_auth_codes").get()).toEqual({
+      expires_at: Math.floor(Date.now() / 1000) + 600,
+    });
+    vi.advanceTimersByTime(599_000);
     await scheduled();
     expect(count()).toBe(1);
     const exchange = () => exchangeDesktopCode(post("/api/auth/desktop/exchange", {
@@ -117,6 +122,7 @@ describe("desktop authorization code lifecycle (real SQLite)", () => {
 
   it("retains a handoff code after an incorrect PKCE verifier without accepting it", async () => {
     const code = await issueThroughMagicConfirmation();
+    vi.advanceTimersByTime(61_000);
     expect((await exchangeDesktopCode(post("/api/auth/desktop/exchange", {
       code, code_verifier: "w".repeat(43),
     }), env)).status).toBe(401);
@@ -129,7 +135,7 @@ describe("desktop authorization code lifecycle (real SQLite)", () => {
 
   it("matches the exchange expiry boundary instead of deleting a code one second early", async () => {
     const code = await issueThroughMagicConfirmation();
-    vi.advanceTimersByTime(60_000);
+    vi.advanceTimersByTime(600_000);
     await scheduled();
     expect(count()).toBe(1);
     expect((await exchangeDesktopCode(post("/api/auth/desktop/exchange", {
@@ -152,7 +158,7 @@ describe("desktop authorization code lifecycle (real SQLite)", () => {
 
   it("surfaces a failed cleanup and retries remaining rows at the next invocation", async () => {
     await issueThroughMagicConfirmation();
-    vi.advanceTimersByTime(61_000);
+    vi.advanceTimersByTime(601_000);
     db.exec(`CREATE TRIGGER fail_cleanup BEFORE DELETE ON desktop_auth_codes
       BEGIN SELECT RAISE(ABORT, 'injected cleanup failure'); END`);
     await expect(scheduled()).rejects.toThrow("injected cleanup failure");
