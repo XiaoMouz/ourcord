@@ -9,6 +9,12 @@ export default {
       return {
         bind(...values) { return wrap(statement.bind(...values)); },
         first(...args) { return statement.first(...args); },
+        async all(...args) {
+          const result = await statement.all(...args);
+          rowsRead += result.meta.rows_read;
+          rowsWritten += result.meta.rows_written;
+          return result;
+        },
         async run(...args) {
           const result = await statement.run(...args);
           rowsRead += result.meta.rows_read;

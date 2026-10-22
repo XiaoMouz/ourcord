@@ -259,7 +259,7 @@ describe("R2 budget and lifecycle (real SQLite)", () => {
     env.ENVIRONMENT = "development";
     const response = await worker.fetch(new Request("https://service.test/api/admin/init-db", { method: "POST" }), env, {} as ExecutionContext);
     expect(response.status).toBe(200);
-    expect(db.prepare("SELECT name FROM sqlite_master WHERE type = 'trigger'").all()).toHaveLength(4);
+    expect(db.prepare("SELECT name FROM sqlite_master WHERE type = 'trigger' AND name GLOB 'files_r2_*'").all()).toHaveLength(4);
   });
 
   it("migrates existing R2 reservations into usage and gives old pending rows a deadline", () => {
