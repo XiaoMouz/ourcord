@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash, createHmac } from "node:crypto";
+import { verifyInternalReplay } from "./cloudflare-internal-replay.mjs";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const require = createRequire(join(root, "control/package.json"));
@@ -64,7 +65,7 @@ try {
     workers: ["control", "service"].map((name) => ({
       name, modules: true, modulesRoot: join(output, name), scriptPath: join(output, name, "index.js"),
       compatibilityDate: "2024-01-01", compatibilityFlags: ["nodejs_compat"],
-      bindings: { ENVIRONMENT: "production", JWT_SECRET: secret, R2_MAX_BYTES: "10485760", R2_MAX_FILES: "2" },
+      bindings: { ENVIRONMENT: "production", JWT_SECRET: secret, SERVICE_INTERNAL_TOKEN: secret, R2_MAX_BYTES: "10485760", R2_MAX_FILES: "2" },
       d1Databases: { DB: `local-${name}` }, kvNamespaces: ["KV"], ratelimits: limits,
       ...(name === "control"
         ? { durableObjects: { SIGNAL: { className: "SignalDO", useSQLite: true } } }
@@ -80,6 +81,7 @@ try {
     db.prepare("INSERT INTO file_policies(lobby_id,max_temp_files,user_server_enabled,lobby_server_enabled) VALUES ('L1',0,0,0)"),
   ]);
   const service = await mf.getWorker("service");
+  await verifyInternalReplay({ service, db, secret });
   const call = (path, method = "GET", body) => service.fetch(`https://service.test${path}`, {
     method, headers: { Authorization: `Bearer ${jwt()}`, "Content-Type": "application/json" }, body,
   });
