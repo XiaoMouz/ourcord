@@ -201,7 +201,9 @@ export class SignalDO implements DurableObject {
       if (now - entry.cachedAt > REPLAY_WINDOW_MS) this.replayCache.delete(key);
     }
     this.state.storage.sql.exec("DELETE FROM signal_replay WHERE cached_at < ?", now - REPLAY_WINDOW_MS);
-    if (this.sessions.size > 0) {
+    // A final sweep must also retire persisted replay data after the last
+    // socket closes, otherwise a quiet object retains stale payloads forever.
+    if (this.sessions.size > 0 || this.replayCache.size > 0) {
       await this.state.storage.setAlarm(now + ALARM_INTERVAL_MS);
     }
   }

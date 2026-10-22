@@ -353,6 +353,22 @@ describe("SignalDO.fetch upgrade handshake", () => {
     await sig.fetch(new Request("https://do.example/?pk=bob", { headers: { Upgrade: "websocket" } }));
     expect((sig as any).replayCache.size).toBe(0);
   });
+
+  it("retires persisted replay data after the last socket leaves", async () => {
+    const state = makeState();
+    const { server } = installFakeWS();
+    const sig = new SignalDO(state);
+    await sig.fetch(new Request("https://do.example/?pk=alice", { headers: { Upgrade: "websocket" } }));
+    sig.webSocketMessage(server as unknown as WebSocket, JSON.stringify({ type: "offer", to: "bob" }));
+    sig.webSocketClose(server as unknown as WebSocket, 1000);
+    await sig.alarm();
+    expect(state.storage.setAlarm).toHaveBeenCalledTimes(2);
+    for (const entry of (sig as any).replayCache.values()) entry.cachedAt -= 31_000;
+    state.storage.sql.exec("UPDATE signal_replay SET cached_at = cached_at - 31000");
+    await sig.alarm();
+    expect([...state.storage.sql.exec("SELECT key FROM signal_replay")]).toEqual([]);
+    expect(state.storage.setAlarm).toHaveBeenCalledTimes(2);
+  });
 });
 
 // For the message-handling tests we drive SignalDO by manipulating its
