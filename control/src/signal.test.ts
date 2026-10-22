@@ -67,6 +67,7 @@ function makeEnv(overrides: Partial<Env> = {}): Env {
     } as unknown as DurableObjectNamespace,
     ENVIRONMENT: "production",
     JWT_SECRET: SECRET,
+    RATE_LIMIT_60: { limit: vi.fn(async () => ({ success: true })) },
     ...overrides,
   } as Env;
 }
@@ -158,8 +159,8 @@ describe("/api/signal route gate (W3)", () => {
     const env = makeEnv({
       KV: makeKV({ [`__seed`]: "" }),
     });
-    // Force the limit by stubbing KV.get to return a count >= the signal cap (60).
-    (env.KV.get as any) = vi.fn(async () => "999");
+    // Reject at the native binding before any authentication/storage work.
+    env.RATE_LIMIT_60 = { limit: vi.fn(async () => ({ success: false })) };
     const res = await worker.fetch(
       signalReq(ROOM_AB, { token: await tokenFor(), pk: PK_A }),
       env,

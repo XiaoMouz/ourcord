@@ -1,5 +1,7 @@
+import type { RateLimitBindings } from "./ratelimit";
+
 // Cloudflare Workers environment bindings for the control layer
-export interface Env {
+export interface Env extends RateLimitBindings {
   DB: D1Database;
   KV: KVNamespace;
   SIGNAL: DurableObjectNamespace;

@@ -48,6 +48,8 @@ export default {
         return verifyOTP(request, env);
       }
       if (method === "GET" && path.startsWith("/api/auth/oauth/")) {
+        const rl = await checkRateLimit(request, env, "oauth", 20, 60);
+        if (rl) return rl;
         const parts = path.split("/").filter(Boolean); // ["api","auth","oauth","google"]
         const provider = parts[3];
         if (parts[4] === "callback") return oauthCallback(request, env, provider);
@@ -68,6 +70,8 @@ export default {
         return exchangeDesktopCode(request, env);
       }
       if (method === "GET" && path.startsWith("/api/auth/desktop/oauth/")) {
+        const rl = await checkRateLimit(request, env, "oauth", 20, 60);
+        if (rl) return rl;
         const provider = path.split("/").filter(Boolean)[4];
         return oauthRedirect(request, env, provider);
       }
@@ -113,7 +117,11 @@ export default {
         if (rl) return rl;
         return reportPeerConnectivity(request, env);
       }
-      if (method === "GET" && path === "/api/peers/config") return getPeerConfig(request, env);
+      if (method === "GET" && path === "/api/peers/config") {
+        const rl = await checkRateLimit(request, env, "peers-config", 120, 60);
+        if (rl) return rl;
+        return getPeerConfig(request, env);
+      }
 
       // ── Hole-punching signal (WebSocket via Durable Object) ─────────────────
       if (path.startsWith("/api/signal/")) {
@@ -202,7 +210,11 @@ export default {
       if (method === "POST" && path === "/api/stun/servers") return addStunServer(request, env);
 
       // ── Relay ──────────────────────────────────────────────────────────────
-      if (method === "POST" && path === "/api/relay/register") return registerRelay(request, env);
+      if (method === "POST" && path === "/api/relay/register") {
+        const rl = await checkRateLimit(request, env, "relay-register", 120, 60);
+        if (rl) return rl;
+        return registerRelay(request, env);
+      }
       if (method === "GET" && path === "/api/relay/map") return getRelayMap(request, env);
       if (method === "GET" && path === "/api/relay/banned-keys") return getBannedKeys(request, env);
       // Per-relay denylist (relay owner only)
@@ -219,6 +231,8 @@ export default {
 
       // ── Control status ─────────────────────────────────────────────────────
       if (method === "GET" && path === "/api/control/status") {
+        const rl = await checkRateLimit(request, env, "control-status", 60, 60);
+        if (rl) return rl;
         const now = Math.floor(Date.now() / 1000);
         const [users, peers, relays, bans] = await Promise.all([
           env.DB.prepare("SELECT COUNT(*) AS c FROM users").first<{ c: number }>(),

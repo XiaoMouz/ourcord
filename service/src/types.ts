@@ -1,4 +1,6 @@
-export interface Env {
+import type { RateLimitBindings } from "./ratelimit";
+
+export interface Env extends RateLimitBindings {
   DB: D1Database;
   KV: KVNamespace;
   FILES: R2Bucket;
