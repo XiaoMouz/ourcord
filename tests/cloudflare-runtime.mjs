@@ -51,7 +51,11 @@ function jwt(sub = "u1") {
 
 try {
   for (const module of ["control", "service"]) {
-    execFileSync("pnpm", ["exec", "wrangler", "deploy", "--dry-run", "--outdir", join(output, module)], {
+    const moduleRequire = createRequire(join(root, module, "package.json"));
+    const manifestPath = moduleRequire.resolve("wrangler/package.json");
+    const manifest = moduleRequire("wrangler/package.json");
+    const cli = join(dirname(manifestPath), manifest.bin.wrangler);
+    execFileSync(process.execPath, [cli, "deploy", "--dry-run", "--outdir", join(output, module)], {
       cwd: join(root, module), stdio: "pipe", env: { ...process.env, WRANGLER_SEND_METRICS: "false" },
     });
   }
