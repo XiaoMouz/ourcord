@@ -62,7 +62,11 @@ export default {
       }
       if (path === "/api/auth/desktop/magic/confirm") {
         if (method === "GET") return confirmDesktopMagicPage(request);
-        if (method === "POST") return confirmDesktopMagic(request, env);
+        if (method === "POST") {
+          const rl = await checkRateLimit(request, env, "desktop-confirm", 20, 60);
+          if (rl) return rl;
+          return confirmDesktopMagic(request, env);
+        }
       }
       if (method === "POST" && path === "/api/auth/desktop/exchange") {
         const rl = await checkRateLimit(request, env, "desktop-exchange", 20, 60);

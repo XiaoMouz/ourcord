@@ -7,7 +7,7 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createHmac } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const require = createRequire(join(root, "control/package.json"));
@@ -222,6 +222,45 @@ try {
   const kv = await mf.getKVNamespace("KV", "control");
   assert.equal((await kv.list({ prefix: "ratelimit:" })).keys.length, 0);
   console.log("PASS workerd: native rate limiter returns 429 without KV writes");
+
+  const confirmationURL = "https://control.test/api/auth/desktop/magic/confirm";
+  const confirmationCall = (token, ip = "192.0.2.10") => control.fetch(confirmationURL, {
+    method: "POST", redirect: "manual", headers: { "CF-Connecting-IP": ip },
+    body: new URLSearchParams({ token }),
+  });
+  const confirmationStatuses = [];
+  for (let i = 0; i < 32; i++) {
+    confirmationStatuses.push((await confirmationCall(i.toString(16).padStart(64, "0"))).status);
+  }
+  assert(confirmationStatuses.includes(400));
+  assert(confirmationStatuses.includes(429), "random confirmation tokens must encounter the native storage gate");
+  const confirmationToken = "e".repeat(64);
+  const confirmationVerifier = "w".repeat(43);
+  const confirmationKey = `desktop_magic:${createHash("sha256").update(confirmationToken).digest("base64url")}`;
+  const pendingCapability = JSON.stringify({
+    email: "confirmation@example.test",
+    challenge: createHash("sha256").update(confirmationVerifier).digest("base64url"),
+  });
+  await kv.put(confirmationKey, pendingCapability, { expirationTtl: 600 });
+  const blockedConfirmation = await confirmationCall(confirmationToken);
+  assert.equal(blockedConfirmation.status, 429);
+  assert.equal(blockedConfirmation.headers.get("Retry-After"), "60");
+  assert.equal(await kv.get(confirmationKey), pendingCapability, "throttling must not consume a valid pending login");
+  const preview = await control.fetch(`${confirmationURL}?token=${confirmationToken}`, {
+    headers: { "CF-Connecting-IP": "192.0.2.10" },
+  });
+  assert.equal(preview.status, 200);
+  assert.equal(await kv.get(confirmationKey), pendingCapability);
+  const allowedConfirmation = await confirmationCall(confirmationToken, "192.0.2.11");
+  assert.equal(allowedConfirmation.status, 303);
+  assert.equal(await kv.get(confirmationKey), null);
+  const confirmedCode = new URL(allowedConfirmation.headers.get("Location")).searchParams.get("code");
+  const exchangedConfirmation = await control.fetch("https://control.test/api/auth/desktop/exchange", {
+    method: "POST", headers: { "Content-Type": "application/json", "CF-Connecting-IP": "192.0.2.11" },
+    body: JSON.stringify({ code: confirmedCode, code_verifier: confirmationVerifier }),
+  });
+  assert.equal(exchangedConfirmation.status, 200);
+  console.log("PASS workerd: confirmation probes limited, blocked token preserved, preview and valid PKCE login succeed");
 
   const namespace = await mf.getDurableObjectNamespace("SIGNAL", "control");
   const room = namespace.get(namespace.idFromName("runtime-smoke"));
