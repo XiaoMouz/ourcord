@@ -4,6 +4,8 @@ import { loadVoicePrefs, saveVoicePrefs, type VoiceMode } from "../prefs";
 import { ModalHeader } from "./ui";
 
 type DeviceLists = { capture: AudioDevice[]; playback: AudioDevice[] };
+// Keep in sync with control/src/profile.ts (JavaScript string length).
+const DISPLAY_NAME_MAX = 48;
 
 export default function SettingsModal({ snapshot, auth, close, refreshSnapshot, refreshAuth, logout, onError, onNotice, openDiagnostics }: {
   snapshot: Snapshot;
@@ -22,6 +24,8 @@ export default function SettingsModal({ snapshot, auth, close, refreshSnapshot, 
   const [captureID, setCaptureID] = useState("");
   const [playbackID, setPlaybackID] = useState("");
   const [name, setName] = useState(auth.profile?.user?.display_name ?? "");
+  const trimmedName = name.trim();
+  const nameTooLong = trimmedName.length > DISPLAY_NAME_MAX;
 
   useEffect(() => {
     let cancelled = false;
@@ -56,10 +60,9 @@ export default function SettingsModal({ snapshot, auth, close, refreshSnapshot, 
   }
 
   async function saveName() {
-    const trimmed = name.trim();
-    if (!trimmed) return;
+    if (!trimmedName || nameTooLong) return;
     try {
-      await bridge("profile.update", { display_name: trimmed });
+      await bridge("profile.update", { display_name: trimmedName });
       await refreshAuth();
       onNotice("显示名已更新");
     } catch (e) { onError(String(e)); }
@@ -118,9 +121,10 @@ export default function SettingsModal({ snapshot, auth, close, refreshSnapshot, 
         <section className="card card-border bg-base-200"><div className="card-body gap-4 p-5">
           <h3 className="card-title text-base">账号</h3>
           <fieldset className="fieldset"><legend className="fieldset-legend">显示名</legend>
-            <input className="input w-full" value={name} maxLength={64} onChange={(e) => setName(e.target.value)} />
+            <input className="input w-full" value={name} maxLength={DISPLAY_NAME_MAX} aria-invalid={nameTooLong || undefined} aria-describedby={nameTooLong ? "display-name-error" : undefined} onChange={(e) => setName(e.target.value)} />
+            {nameTooLong && <p id="display-name-error" role="alert" className="text-error">显示名过长，请缩短后保存。</p>}
           </fieldset>
-          <div className="card-actions justify-end"><button className="btn btn-sm" disabled={!name.trim() || name.trim() === auth.profile?.user?.display_name} onClick={() => void saveName()}>保存</button></div>
+          <div className="card-actions justify-end"><button className="btn btn-sm" disabled={!trimmedName || nameTooLong || trimmedName === auth.profile?.user?.display_name} onClick={() => void saveName()}>保存</button></div>
         </div></section>
 
         <section className="card card-border bg-base-200"><div className="card-body gap-4 p-5">
