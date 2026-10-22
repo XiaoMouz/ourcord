@@ -101,6 +101,17 @@ describe("R2 budget and lifecycle (real SQLite)", () => {
     expect(usage()).toMatchObject({ reserved_files: 1, reserved_bytes: 6 });
   });
 
+  it.each([512 * 1024 ** 2 + 1, 5 * 1024 ** 3])("allows self-hosted files of %s bytes when lobby policy permits", async (size) => {
+    db.exec(`UPDATE file_policies SET max_size_bytes=0, user_server_enabled=1;
+      INSERT INTO file_backends(id,owner_id,name,base_url,created_at)
+      VALUES ('large-backend','u1','files','https://files.example.test',1)`);
+    const response = await initiate("R1", size);
+    expect(response.status).toBe(201);
+    expect((await response.json<{ storage_location: string }>()).storage_location).toBe("user_server");
+    expect(db.prepare("SELECT size_bytes FROM files").get()).toEqual({ size_bytes: size });
+    expect(usage()).toMatchObject({ reserved_files: 0 });
+  });
+
   it("enforces file count independently of byte capacity and lobby policies", async () => {
     env.R2_MAX_FILES = "1";
     db.exec("UPDATE file_policies SET max_temp_files = 0");

@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -97,8 +98,8 @@ func TestSaveDownloadRemovesInterruptedTransfer(t *testing.T) {
 
 func TestSaveDownloadEnforcesLimitWithoutSilentTruncation(t *testing.T) {
 	b := &bridge{downloadDir: t.TempDir()}
-	// The production path uses 512 MiB; a small limit exercises the same
-	// streaming save and cleanup without writing half a GiB in every CI run.
+	// A small limit exercises the same streaming overflow and cleanup path
+	// without writing five GiB to test the production ceiling.
 	_, err := b.saveDownloadWithLimit("oversize.txt", "attachment", strings.NewReader("12345"), 4)
 	if err == nil {
 		t.Fatal("oversize download reported success with truncated bytes")
@@ -194,6 +195,53 @@ func TestDownloadExternalJSONAttachment(t *testing.T) {
 	path := assertDownloaded(t, result, content)
 	if filepath.Dir(path) != b.downloadDir {
 		t.Fatal("download escaped the destination directory")
+	}
+}
+
+type zeroDownloadReader struct{}
+
+func (zeroDownloadReader) Read(p []byte) (int, error) {
+	clear(p)
+	return len(p), nil
+}
+
+func TestDownloadExternalAttachmentAbove512MiB(t *testing.T) {
+	if testing.Short() {
+		t.Skip("streams a 512 MiB attachment to a temporary file")
+	}
+	const size int64 = (512 << 20) + 1
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "" {
+			t.Error("account token leaked to external backend")
+		}
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Header().Set("Content-Length", strconv.FormatInt(size, 10))
+		_, _ = io.CopyN(w, zeroDownloadReader{}, size)
+	}))
+	defer backend.Close()
+	service := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"url": backend.URL + "/file?cap=test", "storage_location": "user_server"})
+	}))
+	defer service.Close()
+	b := downloadTestBridge(t, service)
+	result, err := downloadAttachment(b, "large.bin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := result.(map[string]string)["saved_path"]
+	info, err := os.Stat(path)
+	if err != nil || info.Size() != size {
+		t.Fatalf("download size mismatch: info=%v error=%v", info, err)
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	var last [1]byte
+	if _, err := file.ReadAt(last[:], size-1); err != nil || last[0] != 0 {
+		t.Fatalf("last byte missing or corrupt: %v, %v", last, err)
 	}
 }
 
