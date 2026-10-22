@@ -38,7 +38,15 @@ export async function verifyMessageRevisions({ db, service, jwt }) {
   await db.prepare(`CREATE TRIGGER test_revision_failure BEFORE UPDATE ON rooms
     WHEN OLD.id='revision-room' BEGIN SELECT RAISE(ABORT,'injected revision failure'); END`).run();
   try {
-    await assert.rejects(remove("revision-1", "moderator"), /injected revision failure/);
+    // Check rollback with both the legacy rejected fetch and the router's
+    // sanitized JSON error response once async handlers are awaited.
+    await remove("revision-1", "moderator").then(
+      async (response) => {
+        assert.equal(response.status, 500);
+        assert.deepEqual(await response.json(), { error: "Internal server error" });
+      },
+      (error) => assert.match(String(error), /injected revision failure/),
+    );
     assert.notEqual(await db.prepare("SELECT 1 FROM messages WHERE id='revision-1'").first(), null);
     assert.equal((await read()).deletion_revision, 1);
   } finally { await db.prepare("DROP TRIGGER test_revision_failure").run(); }
