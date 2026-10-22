@@ -40,6 +40,21 @@ export async function verifyExternalUploadFinalization(db, call, service) {
       base_url: `http://127.0.0.1:${backend.address().port}`, upload_secret: "runtime-backend-secret",
     }));
     assert.equal(registered.status, 201);
+    for (const filename of ["a".repeat(251) + ".txt", "\u6587".repeat(83) + "ab.txt", "\u6587".repeat(84) + ".txt"]) {
+      const before = await db.prepare("SELECT COUNT(*) AS n FROM files WHERE room_id='Rexternal'").first();
+      const response = await call("/api/rooms/Rexternal/files", "POST", JSON.stringify({ filename, size_bytes: 5 }));
+      if (Buffer.byteLength(filename) > 255) {
+        assert.equal(response.status, 400, "reject unportable names before reserving an external upload");
+        assert.deepEqual(await db.prepare("SELECT COUNT(*) AS n FROM files WHERE room_id='Rexternal'").first(), before);
+      } else {
+        assert.equal(response.status, 201);
+        const file = await response.json();
+        assert.equal(decodeURIComponent(new URL(file.upload_url).pathname).split("/").at(-1), filename);
+        assert.equal((await fetch(file.upload_url, { method: "PUT", body: "hello" })).status, 200);
+        assert.equal((await call(file.complete_url, "POST", JSON.stringify({ upload_token: file.upload_token }))).status, 200);
+      }
+    }
+    console.log("PASS workerd: portable 255-byte filenames publish unchanged; larger UTF-8 names create no reservation");
     const initiate = async (room = "Rexternal") => {
       const response = await call(`/api/rooms/${room}/files`, "POST", JSON.stringify({
         filename: "file.txt", size_bytes: 5, mime_type: "text/plain",
