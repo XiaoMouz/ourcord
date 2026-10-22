@@ -564,8 +564,13 @@ func (d *daemon) startVoiceLocked(vpn4 netip.Addr) (*media.Engine, error) {
 	if hangover == 0 {
 		hangover = 300 * time.Millisecond
 	}
+	counters, err := media.ReserveCounters(d.stateDir, d.keyPair.Public)
+	if err != nil {
+		return nil, fmt.Errorf("reserve voice nonce counters: %w", err)
+	}
 	return media.Start(media.Config{
 		SelfKey:      d.keyPair.Private,
+		Counters:     counters,
 		VPN4:         vpn4,
 		NetworkID:    d.activeRoom,
 		Devices:      media.AudioSelection{CaptureID: d.voiceCaptureID, PlaybackID: d.voicePlaybackID},

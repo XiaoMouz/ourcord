@@ -79,13 +79,12 @@ func bytesLess(a, b []byte) bool {
 	return false
 }
 
-// sealer encrypts outgoing frames toward one peer with a monotonic counter.
+// sealer encrypts outgoing frames toward one peer using a reserved counter.
 type sealer struct {
 	aead interface {
 		Seal([]byte, []byte, []byte, []byte) []byte
 	}
-	ssrc    uint32
-	counter uint64
+	ssrc uint32
 }
 
 func newSealer(key []byte, ssrc uint32) (*sealer, error) {
@@ -96,17 +95,13 @@ func newSealer(key []byte, ssrc uint32) (*sealer, error) {
 	return &sealer{aead: aead, ssrc: ssrc}, nil
 }
 
-// seal encrypts payload, authenticating aad (the RTP header). Returns the
-// ciphertext and the nonce it used; the caller transmits both (the nonce's
-// counter also rides the RTP sequence, but we send it explicitly so decryption
-// never depends on RTP field widths).
-func (s *sealer) seal(payload, aad []byte) (ciphertext []byte, counter uint64) {
-	counter = s.counter
-	s.counter++
+// seal encrypts payload, authenticating aad (the RTP header). The caller must
+// supply a unique reserved counter, including its peer-direction prefix.
+func (s *sealer) seal(payload, aad []byte, counter uint64) []byte {
 	nonce := make([]byte, nonceSize)
 	binary.BigEndian.PutUint32(nonce, s.ssrc)
 	binary.BigEndian.PutUint64(nonce[4:], counter)
-	return s.aead.Seal(nil, nonce, payload, aad), counter
+	return s.aead.Seal(nil, nonce, payload, aad)
 }
 
 // opener decrypts incoming frames from one peer, rejecting replays with a

@@ -117,14 +117,14 @@ func TestTwoEnginesEndToEndVoice(t *testing.T) {
 	stop := make(chan struct{})
 	defer close(stop)
 
-	a, err := Start(Config{SelfKey: keyA, VPN4: addrA, NetworkID: "lobby-x-voice", Conn: fab.endpoint(addrA), CaptureSource: tone(stop)})
+	a, err := Start(Config{Counters: testCounters(keyA), SelfKey: keyA, VPN4: addrA, NetworkID: "lobby-x-voice", Conn: fab.endpoint(addrA), CaptureSource: tone(stop)})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer a.Stop()
 	// B is a receiver: an idle capture channel pins the null device (no real
 	// hardware) regardless of the build tag.
-	b, err := Start(Config{SelfKey: keyB, VPN4: addrB, NetworkID: "lobby-x-voice", Conn: fab.endpoint(addrB), CaptureSource: idleCapture()})
+	b, err := Start(Config{Counters: testCounters(keyB), SelfKey: keyB, VPN4: addrB, NetworkID: "lobby-x-voice", Conn: fab.endpoint(addrB), CaptureSource: idleCapture()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -163,7 +163,7 @@ func TestWrongKeyPeerCannotDecrypt(t *testing.T) {
 	stop := make(chan struct{})
 	defer close(stop)
 
-	a, err := Start(Config{SelfKey: keyA, VPN4: addrA, Conn: fab.endpoint(addrA), CaptureSource: tone(stop)})
+	a, err := Start(Config{Counters: testCounters(keyA), SelfKey: keyA, VPN4: addrA, Conn: fab.endpoint(addrA), CaptureSource: tone(stop)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -171,7 +171,7 @@ func TestWrongKeyPeerCannotDecrypt(t *testing.T) {
 	// Eve joins with her own key but claims to expect A. A is NOT told about Eve,
 	// so A never sends to her; even if she received A's packets (addressed to B),
 	// her opener derives pairKey(Eve,A) ≠ pairKey(A,B) and cannot decrypt.
-	eve, err := Start(Config{SelfKey: keyEve, VPN4: addrEve, Conn: fab.endpoint(addrEve), CaptureSource: idleCapture()})
+	eve, err := Start(Config{Counters: testCounters(keyEve), SelfKey: keyEve, VPN4: addrEve, Conn: fab.endpoint(addrEve), CaptureSource: idleCapture()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -256,4 +256,8 @@ func waitFor(t *testing.T, d time.Duration, cond func() bool) bool {
 		time.Sleep(5 * time.Millisecond)
 	}
 	return cond()
+}
+
+func testCounters(key wgtypes.Key) *Counters {
+	return &Counters{next: firstCounter, end: firstCounter + counterBlock, identity: key.PublicKey()}
 }
