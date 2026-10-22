@@ -14,6 +14,7 @@ import { verifyExternalUploadFinalization } from "./cloudflare-external-uploads.
 import { verifyRoomReorder } from "./cloudflare-room-reorder.mjs";
 import { verifyInternalReplay } from "./cloudflare-internal-replay.mjs";
 import { verifyFileListScan } from "./cloudflare-file-list.mjs";
+import { verifyConnectivityScope } from "./cloudflare-connectivity-scope.mjs";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const require = createRequire(join(root, "control/package.json"));
@@ -75,6 +76,8 @@ try {
     readFileSync(join(root, "tests/cloudflare-presence-index-worker.mjs"), "utf8"));
   writeFileSync(join(output, "service/file-list.mjs"),
     readFileSync(join(root, "tests/cloudflare-file-list-worker.mjs"), "utf8"));
+  writeFileSync(join(output, "control/control-under-test.mjs"), readFileSync(join(output, "control/index.js"), "utf8"));
+  writeFileSync(join(output, "control/connectivity-scope.mjs"), readFileSync(join(root, "tests/cloudflare-connectivity-scope-worker.mjs"), "utf8"));
   mf = new Miniflare({
     cf: false,
     workers: [...["control", "service"].map((name) => ({
@@ -86,6 +89,19 @@ try {
         ? { durableObjects: { SIGNAL: { className: "SignalDO", useSQLite: true } } }
         : { r2Buckets: ["FILES"] }),
     })), {
+      name: "control-connectivity", modules: true, modulesRoot: join(output, "control"),
+      scriptPath: join(output, "control/connectivity-scope.mjs"),
+      compatibilityDate: "2024-01-01", compatibilityFlags: ["nodejs_compat"],
+      bindings: { ENVIRONMENT: "production", JWT_SECRET: secret, SERVICE_URL: "https://service.scope.test", SERVICE_INTERNAL_TOKEN: secret },
+      d1Databases: { DB: "local-control-connectivity" }, ratelimits: limits,
+      outboundService: "service-connectivity",
+    }, {
+      name: "service-connectivity", modules: true, modulesRoot: join(output, "service"),
+      scriptPath: join(output, "service/index.js"),
+      compatibilityDate: "2024-01-01", compatibilityFlags: ["nodejs_compat"],
+      bindings: { ENVIRONMENT: "production", JWT_SECRET: secret, SERVICE_INTERNAL_TOKEN: secret },
+      d1Databases: { DB: "local-service-connectivity" },
+    }, {
       name: "service-file-list", modules: true, modulesRoot: join(output, "service"),
       scriptPath: join(output, "service/file-list.mjs"),
       compatibilityDate: "2024-01-01", compatibilityFlags: ["nodejs_compat"],
@@ -346,6 +362,10 @@ try {
   const controlDB = await mf.getD1Database("DB", "control");
   await migrate(controlDB, "control");
   const control = await mf.getWorker("control");
+  const scopeDB = await mf.getD1Database("DB", "control-connectivity");
+  const scopeServiceDB = await mf.getD1Database("DB", "service-connectivity");
+  await migrate(scopeDB, "control"); await migrate(scopeServiceDB, "service");
+  await verifyConnectivityScope({ control: await mf.getWorker("control-connectivity"), db: scopeDB, serviceDB: scopeServiceDB, jwt });
   const kv = await mf.getKVNamespace("KV", "control");
   const verifier = "v".repeat(43);
   const challenge = createHash("sha256").update(verifier).digest("base64url");
