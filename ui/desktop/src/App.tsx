@@ -29,6 +29,7 @@ export default function App() {
   const [auth, setAuth] = useState<AuthState>({ loading: true, authenticated: false });
   const [authError, setAuthError] = useState("");
   const authRequestRef = useRef(0);
+  const authCallbacks = useRef(new Set<string>());
   const [loginURLs, setLoginURLs] = useState<{ google_url: string; github_url: string }>();
   const [toast, setToast] = useState<ToastMessage | null>(null);
   const toastID = useRef(0);
@@ -174,9 +175,18 @@ export default function App() {
     const link = parseOurCordLink(raw);
     if (!link) { showError("链接无效"); return; }
     if (link.kind === "auth") {
+      if (authCallbacks.current.has(link.code)) return;
+      authCallbacks.current.add(link.code);
       setBusy(true);
-      try { await bridge("auth.exchange", { code: link.code }); await refreshAuth(); }
-      catch (e) { showError(String(e)); }
+      let exchanged = false;
+      try {
+        await bridge("auth.exchange", { code: link.code });
+        exchanged = true;
+        await refreshAuth();
+      } catch (e) {
+        if (!exchanged) authCallbacks.current.delete(link.code);
+        showError(String(e));
+      }
       finally { setBusy(false); }
       return;
     }
@@ -200,11 +210,19 @@ export default function App() {
     void applyInvite(pendingInvite);
   }, [auth.authenticated, pendingInvite, applyInvite]);
   useEffect(() => {
-    void getCurrent().then((urls) => urls?.forEach((url) => void handleDeepLink(url)));
+    let cancelled = false;
+    const handleURLs = (urls: string[] | null) => {
+      if (!cancelled) urls?.forEach((url) => void handleDeepLink(url));
+    };
+    const handleFailure = (error: unknown) => { if (!cancelled) showError(String(error)); };
+    void getCurrent().then(handleURLs).catch(handleFailure);
     let dispose: undefined | (() => void);
-    void onOpenUrl((urls) => urls.forEach((url) => void handleDeepLink(url))).then((fn) => { dispose = fn; });
-    return () => dispose?.();
-  }, [handleDeepLink]);
+    void onOpenUrl(handleURLs).then((fn) => {
+      if (cancelled) fn();
+      else dispose = fn;
+    }).catch(handleFailure);
+    return () => { cancelled = true; dispose?.(); };
+  }, [handleDeepLink, showError]);
   useEffect(() => {
     if (!auth.authenticated) return;
     let snapshotPolling = false;

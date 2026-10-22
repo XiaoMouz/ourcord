@@ -2,7 +2,7 @@
 import { act, StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { onOpenUrl } from "@tauri-apps/plugin-deep-link";
+import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import { bridge } from "./bridge";
 import { DialogProvider } from "./dialog";
 import App from "./App";
@@ -41,6 +41,8 @@ describe("App startup authentication recovery", () => {
   beforeEach(() => {
     Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
     vi.clearAllMocks();
+    vi.mocked(getCurrent).mockReset().mockResolvedValue(null);
+    vi.mocked(onOpenUrl).mockReset().mockResolvedValue(() => {});
     status = deferred();
     begin = deferred();
     vi.mocked(bridge).mockImplementation(async (method) => {
@@ -161,5 +163,53 @@ describe("App startup authentication recovery", () => {
     expect(calls("auth.begin")).toHaveLength(1);
     await act(async () => begin.resolve(loginURLs));
     expect(container.textContent).toContain("欢迎回来");
+  });
+
+  it("exchanges a one-time callback only once across startup and URL events", async () => {
+    const url = `ourcord://auth?code=${"b".repeat(64)}`;
+    vi.mocked(getCurrent).mockResolvedValue([url]);
+    status.resolve({ authenticated: true });
+    await mount(true);
+    const handler = vi.mocked(onOpenUrl).mock.calls.at(-1)![0];
+    await act(async () => handler([url, url]));
+    expect(calls("auth.exchange")).toHaveLength(1);
+  });
+
+  it("disposes a replaced subscription even when registration finishes after cleanup", async () => {
+    const firstRegistration = deferred<() => void>();
+    const disposeFirst = vi.fn();
+    vi.mocked(onOpenUrl).mockReturnValueOnce(firstRegistration.promise);
+    await mount(true);
+    await act(async () => firstRegistration.resolve(disposeFirst));
+    expect(disposeFirst).toHaveBeenCalledTimes(1);
+    const staleHandler = vi.mocked(onOpenUrl).mock.calls[0][0];
+    await act(async () => staleHandler([`ourcord://auth?code=${"c".repeat(64)}`]));
+    expect(calls("auth.exchange")).toHaveLength(0);
+  });
+
+  it("does not exchange a consumed code again when the subsequent status refresh fails", async () => {
+    await mount();
+    await act(async () => status.resolve({ authenticated: false }));
+    await act(async () => begin.resolve(loginURLs));
+    status = deferred();
+    await signInFromDeepLink();
+    await act(async () => status.reject(new Error("status unavailable")));
+    await signInFromDeepLink();
+    expect(calls("auth.exchange")).toHaveLength(1);
+    expect(container.textContent).toContain("status unavailable");
+  });
+
+  it("allows a callback retry after the exchange itself fails", async () => {
+    await mount();
+    await act(async () => status.resolve({ authenticated: false }));
+    await act(async () => begin.resolve(loginURLs));
+    vi.mocked(bridge).mockRejectedValueOnce(new Error("exchange unavailable"));
+    await signInFromDeepLink();
+    expect(container.textContent).toContain("exchange unavailable");
+    status = deferred();
+    status.resolve({ authenticated: true });
+    await signInFromDeepLink();
+    expect(calls("auth.exchange")).toHaveLength(2);
+    expect(container.textContent).toContain("选择一个房间");
   });
 });
