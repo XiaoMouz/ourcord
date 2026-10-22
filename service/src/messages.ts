@@ -43,11 +43,13 @@ export async function getMessages(request: Request, env: Env, roomId: string): P
       .prepare("SELECT * FROM messages WHERE room_id = ? AND (created_at, id) < (?, ?) ORDER BY created_at DESC, id DESC LIMIT ?")
       .bind(roomId, beforeCreatedAt, before, limit);
   } else if (before) {
+    // Keep the ID bound directly so SQLite can seek both cursor columns.
+    // A two-column scalar subquery only seeks created_at on the D1 planner.
     stmt = env.DB
       .prepare(
-        "SELECT * FROM messages WHERE room_id = ? AND (created_at, id) < (SELECT created_at, id FROM messages WHERE id = ? AND room_id = ?) ORDER BY created_at DESC, id DESC LIMIT ?"
+        "SELECT * FROM messages WHERE room_id = ? AND (created_at, id) < ((SELECT created_at FROM messages WHERE id = ? AND room_id = ?), ?) ORDER BY created_at DESC, id DESC LIMIT ?"
       )
-      .bind(roomId, before, roomId, limit);
+      .bind(roomId, before, roomId, before, limit);
   } else {
     stmt = env.DB
       .prepare("SELECT * FROM messages WHERE room_id = ? ORDER BY created_at DESC, id DESC LIMIT ?")
