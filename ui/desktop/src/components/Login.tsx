@@ -1,12 +1,12 @@
 import { useEffect, useState, type CSSProperties } from "react";
-import { openUrl } from "@tauri-apps/plugin-opener";
 import { InitialAvatar } from "./ui";
 
-export default function Login({ busy, cooldownSeconds, loginURLs, onMagic }: {
+export default function Login({ busy, cooldownSeconds, loginURLs, onMagic, onOAuth }: {
   busy: boolean;
   cooldownSeconds: number;
   loginURLs?: { google_url: string; github_url: string };
   onMagic: (email: string) => void;
+  onOAuth?: (provider: "google" | "github") => void;
 }) {
   const [email, setEmail] = useState("");
   const coolingDown = cooldownSeconds > 0;
@@ -45,8 +45,8 @@ export default function Login({ busy, cooldownSeconds, loginURLs, onMagic }: {
           </button>
           <div className="divider text-xs text-base-content/40">或</div>
           <div className="grid grid-cols-2 gap-3">
-            <button className="btn" disabled={!loginURLs} onClick={() => loginURLs && void openUrl(loginURLs.google_url)}>G&nbsp; Google</button>
-            <button className="btn" disabled={!loginURLs} onClick={() => loginURLs && void openUrl(loginURLs.github_url)}>⌁&nbsp; GitHub</button>
+            <button className="btn" disabled={busy || !loginURLs || !onOAuth} onClick={() => onOAuth?.("google")}>G&nbsp; Google</button>
+            <button className="btn" disabled={busy || !loginURLs || !onOAuth} onClick={() => onOAuth?.("github")}>⌁&nbsp; GitHub</button>
           </div>
         </div>
       </section>
