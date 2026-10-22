@@ -65,3 +65,85 @@ describe("expensive route gates", () => {
     expect(prepare).not.toHaveBeenCalled();
   });
 });
+
+describe("desktop magic confirmation storage gate", () => {
+  function confirmation(token = "a".repeat(64)) {
+    return new Request("https://control.test/api/auth/desktop/magic/confirm", {
+      method: "POST", headers: { "CF-Connecting-IP": "192.0.2.1" },
+      body: new URLSearchParams({ token }),
+    });
+  }
+  function confirmationEnv() {
+    let attempts = 0;
+    const limit = vi.fn(async () => ({ success: ++attempts <= 20 }));
+    const get = vi.fn(async (): Promise<string | null> => null);
+    const remove = vi.fn(async () => {});
+    const prepare = vi.fn();
+    const env = {
+      ENVIRONMENT: "production", RATE_LIMIT_20: { limit },
+      KV: { get, delete: remove }, DB: { prepare },
+    } as unknown as Env;
+    return { env, limit, get, remove, prepare };
+  }
+
+  it("bounds unauthenticated random-token probes before KV access", async () => {
+    const { env, limit, get, remove, prepare } = confirmationEnv();
+    const statuses = [];
+    for (let index = 0; index < 32; index++) {
+      statuses.push((await worker.fetch(
+        confirmation(index.toString(16).padStart(64, "0")), env, {} as ExecutionContext,
+      )).status);
+    }
+    expect({
+      invalid: statuses.filter((status) => status === 400).length,
+      throttled: statuses.filter((status) => status === 429).length,
+      kvReads: get.mock.calls.length,
+      kvDeletes: remove.mock.calls.length,
+    }).toEqual({ invalid: 20, throttled: 12, kvReads: 20, kvDeletes: 0 });
+    expect(limit).toHaveBeenCalledTimes(32);
+    expect(get).toHaveBeenCalledTimes(20);
+    expect(remove).not.toHaveBeenCalled();
+    expect(prepare).not.toHaveBeenCalled();
+  });
+
+  it("does not delete nonexistent or already-consumed capabilities", async () => {
+    const { env, get, remove } = confirmationEnv();
+    expect((await worker.fetch(confirmation(), env, {} as ExecutionContext)).status).toBe(400);
+    expect(get).toHaveBeenCalledTimes(1);
+    expect(remove).not.toHaveBeenCalled();
+  });
+
+  it("fails closed before storage access when the production limiter is missing", async () => {
+    const { env, get, remove } = confirmationEnv();
+    delete env.RATE_LIMIT_20;
+    expect((await worker.fetch(confirmation(), env, {} as ExecutionContext)).status).toBe(503);
+    expect(get).not.toHaveBeenCalled();
+    expect(remove).not.toHaveBeenCalled();
+  });
+
+  it("rejects an exhausted IP before parsing its form or consuming its valid token", async () => {
+    const { env, limit, get, remove } = confirmationEnv();
+    limit.mockResolvedValue({ success: false });
+    get.mockResolvedValue(JSON.stringify({ email: "alice@example.test", challenge: "A".repeat(43) }));
+    const request = confirmation();
+    const parse = vi.spyOn(request, "formData");
+    const response = await worker.fetch(request, env, {} as ExecutionContext);
+    expect(response.status).toBe(429);
+    expect(response.headers.get("Retry-After")).toBe("60");
+    expect(parse).not.toHaveBeenCalled();
+    expect(get).not.toHaveBeenCalled();
+    expect(remove).not.toHaveBeenCalled();
+  });
+
+  it("keeps GET previews free of token consumption and confirmation quota", async () => {
+    const { env, limit, get, remove } = confirmationEnv();
+    limit.mockResolvedValue({ success: false });
+    const response = await worker.fetch(new Request(
+      `https://control.test/api/auth/desktop/magic/confirm?token=${"a".repeat(64)}`,
+    ), env, {} as ExecutionContext);
+    expect(response.status).toBe(200);
+    expect(limit).not.toHaveBeenCalled();
+    expect(get).not.toHaveBeenCalled();
+    expect(remove).not.toHaveBeenCalled();
+  });
+});

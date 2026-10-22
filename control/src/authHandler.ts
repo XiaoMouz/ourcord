@@ -366,8 +366,8 @@ export async function confirmDesktopMagic(request: Request, env: Env): Promise<R
   if (!/^[a-f0-9]{64}$/.test(rawToken)) return json({ error: "Invalid or expired link" }, 400);
   const key = `desktop_magic:${await sha256Base64url(rawToken)}`;
   const storedRaw = await env.KV.get(key);
-  await env.KV.delete(key);
   if (!storedRaw) return json({ error: "Invalid or expired link" }, 400);
+  await env.KV.delete(key);
   let stored: { email: string; challenge: string };
   try { stored = JSON.parse(storedRaw); } catch { return json({ error: "Invalid link" }, 400); }
   if (!PKCE_CHALLENGE_RE.test(stored.challenge)) return json({ error: "Invalid link" }, 400);
