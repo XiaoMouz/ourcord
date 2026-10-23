@@ -110,19 +110,22 @@ export async function resolveFileBackend(
   // three sequential round-trips: each enabled tier is a UNION ALL branch tagged
   // with a priority (own=1, shared=2, lobby=3), and we take the lowest priority,
   // newest row. r2 stays a terminal fallback with no backend row.
+  // Anchor each tier to its caller scope. Without these access paths, D1
+  // can start at lobby_id IS NULL / active and scan unrelated registrations.
+  // CROSS JOIN keeps shares first, followed by primary-key backend lookups.
   const branches: string[] = [];
   const binds: unknown[] = [];
   if (policy.user_server_enabled === 1) {
     branches.push(
       `SELECT b.*, 1 AS __prio, b.created_at AS __sort
-       FROM file_backends b
+       FROM file_backends b INDEXED BY idx_file_backends_owner
        WHERE b.owner_id = ? AND b.lobby_id IS NULL AND b.active = 1 AND ${healthyB}`,
     );
     binds.push(uploaderId);
     branches.push(
       `SELECT b.*, 2 AS __prio, s.created_at AS __sort
-       FROM file_backends b
-       JOIN file_backend_shares s ON s.backend_id = b.id
+       FROM file_backend_shares s INDEXED BY idx_backend_shares_grantee
+       CROSS JOIN file_backends b ON b.id = s.backend_id
        WHERE s.grantee_id = ? AND b.lobby_id IS NULL AND b.active = 1 AND ${healthyB}`,
     );
     binds.push(uploaderId);
@@ -130,7 +133,7 @@ export async function resolveFileBackend(
   if (policy.lobby_server_enabled === 1) {
     branches.push(
       `SELECT b.*, 3 AS __prio, b.created_at AS __sort
-       FROM file_backends b
+       FROM file_backends b INDEXED BY idx_file_backends_lobby
        WHERE b.lobby_id = ? AND b.active = 1 AND ${healthyB}`,
     );
     binds.push(lobbyId);
@@ -313,17 +316,19 @@ export async function listBackends(request: Request, env: Env): Promise<Response
   const cols =
     "b.id, b.owner_id, b.lobby_id, b.name, b.base_url, b.active, b.created_at, " +
     "b.health_status, b.last_health_at, b.last_health_error";
+  // As in resolution, begin at the caller's ownership, shares or memberships
+  // rather than the global active-backend/NULL-lobby ranges.
   const rows = await env.DB
     .prepare(
-      `SELECT ${cols}, 'own' AS via FROM file_backends b
+      `SELECT ${cols}, 'own' AS via FROM file_backends b INDEXED BY idx_file_backends_owner
          WHERE b.owner_id = ? AND b.lobby_id IS NULL AND b.active = 1
        UNION ALL
-       SELECT ${cols}, 'shared' AS via FROM file_backends b
-         JOIN file_backend_shares s ON s.backend_id = b.id
+       SELECT ${cols}, 'shared' AS via FROM file_backend_shares s INDEXED BY idx_backend_shares_grantee
+         CROSS JOIN file_backends b ON b.id = s.backend_id
          WHERE s.grantee_id = ? AND b.lobby_id IS NULL AND b.active = 1
        UNION ALL
-       SELECT ${cols}, 'lobby' AS via FROM file_backends b
-         JOIN lobby_members m ON m.lobby_id = b.lobby_id
+       SELECT ${cols}, 'lobby' AS via FROM lobby_members m INDEXED BY idx_lobby_members_user
+         CROSS JOIN file_backends b INDEXED BY idx_file_backends_lobby ON b.lobby_id = m.lobby_id
          WHERE m.user_id = ? AND b.active = 1
        ORDER BY created_at DESC`,
     )
