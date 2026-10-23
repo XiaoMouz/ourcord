@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { verifyProfileBatches } from "./cloudflare-profile-batches.mjs";
 import { tmpdir } from "node:os";
 import { verifyPresenceIndex } from "./cloudflare-presence-index.mjs";
 import { dirname, join } from "node:path";
@@ -347,6 +348,7 @@ try {
   const controlDB = await mf.getD1Database("DB", "control");
   await migrate(controlDB, "control");
   const control = await mf.getWorker("control");
+  await verifyProfileBatches({ control, controlDB, service, db, jwt });
   await verifyProfileNameLimit({ control, controlDB, jwt });
   const kv = await mf.getKVNamespace("KV", "control");
   const verifier = "v".repeat(43);
