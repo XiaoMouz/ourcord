@@ -222,6 +222,7 @@ func (e *Engine) SetMute(muted bool) {
 	e.muted = muted
 	if muted {
 		e.transmitting, e.localSpeaking = false, false
+		e.preRoll = nil
 	}
 	e.mu.Unlock()
 }
@@ -252,6 +253,7 @@ func (e *Engine) SetPushToTalk(pressed bool) {
 	e.pttPressed = pressed
 	if !pressed && e.inputMode == InputModePushToTalk {
 		e.transmitting, e.localSpeaking = false, false
+		e.preRoll = nil
 	}
 	e.mu.Unlock()
 }
@@ -287,6 +289,12 @@ func (e *Engine) captureFrames(pcm []int16) [][]int16 {
 	level := pcmDBFS(pcm)
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	// Muting and a released PTT key are privacy boundaries. Never buffer
+	// their captured audio for a later activation's pre-roll.
+	if e.muted || (e.inputMode == InputModePushToTalk && !e.pttPressed) {
+		e.localSpeaking, e.transmitting = false, false
+		return nil
+	}
 	wasTransmitting := e.transmitting
 	active := level >= e.vadThreshold
 	if !wasTransmitting {
@@ -295,10 +303,6 @@ func (e *Engine) captureFrames(pcm []int16) [][]int16 {
 		if len(e.preRoll) > preRollFrames {
 			e.preRoll = e.preRoll[len(e.preRoll)-preRollFrames:]
 		}
-	}
-	if e.muted {
-		e.localSpeaking, e.transmitting = false, false
-		return nil
 	}
 	switch e.inputMode {
 	case InputModePushToTalk:
