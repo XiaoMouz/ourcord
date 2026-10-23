@@ -14,6 +14,7 @@ import { verifyExternalUploadFinalization } from "./cloudflare-external-uploads.
 import { verifyRoomReorder } from "./cloudflare-room-reorder.mjs";
 import { verifyInternalReplay } from "./cloudflare-internal-replay.mjs";
 import { verifyBackendHealthScan } from "./cloudflare-backend-health.mjs";
+import { verifyProfileNameLimit } from "./cloudflare-profile-limits.mjs";
 import { verifyFileListScan } from "./cloudflare-file-list.mjs";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -356,6 +357,7 @@ try {
   const controlDB = await mf.getD1Database("DB", "control");
   await migrate(controlDB, "control");
   const control = await mf.getWorker("control");
+  await verifyProfileNameLimit({ control, controlDB, jwt });
   const kv = await mf.getKVNamespace("KV", "control");
   const verifier = "v".repeat(43);
   const challenge = createHash("sha256").update(verifier).digest("base64url");
