@@ -768,7 +768,9 @@ func (c *cancelReadCloser) Close() error {
 
 // saveDownload writes a complete stream to a new file and returns its path.
 func (b *bridge) saveDownload(filename, fileID string, src io.Reader) (any, error) {
-	return b.saveDownloadWithLimit(filename, fileID, src, 512<<20)
+	// Match service initiateUpload's MAX_DECLARED_BYTES ceiling, including
+	// self-hosted files whose lobby policy permits more than the R2 limit.
+	return b.saveDownloadWithLimit(filename, fileID, src, 5<<30)
 }
 
 func (b *bridge) saveDownloadWithLimit(filename, fileID string, src io.Reader, limit int64) (any, error) {
