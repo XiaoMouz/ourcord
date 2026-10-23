@@ -15,6 +15,7 @@ import { verifyRoomReorder } from "./cloudflare-room-reorder.mjs";
 import { verifyInternalReplay } from "./cloudflare-internal-replay.mjs";
 import { verifyProfileNameLimit } from "./cloudflare-profile-limits.mjs";
 import { verifyFileListScan } from "./cloudflare-file-list.mjs";
+import { verifyUploadQuotaScans } from "./cloudflare-upload-quota.mjs";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const require = createRequire(join(root, "control/package.json"));
@@ -76,6 +77,8 @@ try {
     readFileSync(join(root, "tests/cloudflare-presence-index-worker.mjs"), "utf8"));
   writeFileSync(join(output, "service/file-list.mjs"),
     readFileSync(join(root, "tests/cloudflare-file-list-worker.mjs"), "utf8"));
+  writeFileSync(join(output, "service/upload-quota.mjs"),
+    readFileSync(join(root, "tests/cloudflare-upload-quota-worker.mjs"), "utf8"));
   mf = new Miniflare({
     cf: false,
     workers: [...["control", "service"].map((name) => ({
@@ -87,6 +90,12 @@ try {
         ? { durableObjects: { SIGNAL: { className: "SignalDO", useSQLite: true } } }
         : { r2Buckets: ["FILES"] }),
     })), {
+      name: "service-upload-quota", modules: true, modulesRoot: join(output, "service"),
+      scriptPath: join(output, "service/upload-quota.mjs"),
+      compatibilityDate: "2024-01-01", compatibilityFlags: ["nodejs_compat"],
+      bindings: { ENVIRONMENT: "production", JWT_SECRET: secret },
+      d1Databases: { DB: "local-upload-quota" }, ratelimits: limits,
+    }, {
       name: "service-file-list", modules: true, modulesRoot: join(output, "service"),
       scriptPath: join(output, "service/file-list.mjs"),
       compatibilityDate: "2024-01-01", compatibilityFlags: ["nodejs_compat"],
@@ -121,6 +130,9 @@ try {
     db.prepare("INSERT INTO file_policies(lobby_id,max_temp_files,user_server_enabled,lobby_server_enabled) VALUES ('L1',0,0,0)"),
   ]);
   const service = await mf.getWorker("service");
+  const quotaDB = await mf.getD1Database("DB", "service-upload-quota");
+  await migrate(quotaDB, "service");
+  await verifyUploadQuotaScans({ db: quotaDB, service: await mf.getWorker("service-upload-quota"), jwt });
   await verifyFileListScan({ db, service, metered: await mf.getWorker("service-file-list"), jwt });
   await verifyPresenceIndex({ db, service: await mf.getWorker("service-presence-index"), jwt });
   await verifyInternalReplay({ service, db, secret });

@@ -141,28 +141,21 @@ export async function initiateUpload(request: Request, env: Env, roomId: string)
   // forever) counts toward max_total_files; finite retention counts toward
   // max_temp_files. A 0 in either field means unlimited.
   const isTemp = policy.retain_days > 0;
-  if (isTemp && policy.max_temp_files > 0) {
+  const quota = isTemp ? policy.max_temp_files : policy.max_total_files;
+  // Only decide whether the quota is full. Stop after that many matches and
+  // seek the retention class directly in the room/expiry index.
+  const quotaCountSQL = `SELECT COUNT(*) AS n FROM (
+    SELECT 1 FROM rooms r JOIN files f ON f.room_id = r.id
+    WHERE r.lobby_id = ? AND f.expires_at IS ${isTemp ? "NOT NULL" : "NULL"}
+    LIMIT ?
+  )`;
+  if (quota > 0) {
     const count = await env.DB
-      .prepare(
-        `SELECT COUNT(*) AS n FROM files f JOIN rooms r ON f.room_id = r.id
-         WHERE r.lobby_id = ? AND f.expires_at IS NOT NULL`
-      )
-      .bind(room.lobby_id)
+      .prepare(quotaCountSQL)
+      .bind(room.lobby_id, quota)
       .first<{ n: number }>();
-    if ((count?.n ?? 0) >= policy.max_temp_files) {
-      return err(`Temporary file quota reached (${policy.max_temp_files})`, 409);
-    }
-  }
-  if (!isTemp && policy.max_total_files > 0) {
-    const count = await env.DB
-      .prepare(
-        `SELECT COUNT(*) AS n FROM files f JOIN rooms r ON f.room_id = r.id
-         WHERE r.lobby_id = ? AND f.expires_at IS NULL`
-      )
-      .bind(room.lobby_id)
-      .first<{ n: number }>();
-    if ((count?.n ?? 0) >= policy.max_total_files) {
-      return err(`Permanent file quota reached (${policy.max_total_files})`, 409);
+    if ((count?.n ?? 0) >= quota) {
+      return err(`${isTemp ? "Temporary" : "Permanent"} file quota reached (${quota})`, 409);
     }
   }
 
@@ -208,7 +201,6 @@ export async function initiateUpload(request: Request, env: Env, roomId: string)
 
   // Check and reserve within one SQLite statement: concurrent initiations
   // cannot all win the final slot. r2_usage includes queued deletion bytes.
-  const quota = isTemp ? policy.max_temp_files : policy.max_total_files;
   const inserted = await env.DB
     .prepare(
       `INSERT INTO files (
@@ -217,10 +209,7 @@ export async function initiateUpload(request: Request, env: Env, roomId: string)
          upload_status, upload_token_hash, upload_expires_at
        )
        SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?
-       WHERE (? = 0 OR (
-         SELECT COUNT(*) FROM files f JOIN rooms r ON f.room_id = r.id
-         WHERE r.lobby_id = ? AND (f.expires_at IS NOT NULL) = ?
-       ) < ?)
+       WHERE (? = 0 OR (${quotaCountSQL}) < ?)
        AND (? <> 'r2' OR EXISTS (
          SELECT 1 FROM r2_usage WHERE id = 1
          AND reserved_bytes <= ? - ? AND reserved_files < ?
@@ -229,7 +218,7 @@ export async function initiateUpload(request: Request, env: Env, roomId: string)
     .bind(id, roomId, auth.sub, body.filename, body.size_bytes, mimeType,
       storageLocation, storageKey, backend?.id ?? null, expiresAt, now,
       "pending", uploadTokenHash, uploadExpiresAt,
-      quota, room.lobby_id, isTemp ? 1 : 0, quota,
+      quota, room.lobby_id, quota, quota,
       storageLocation, budget.bytes, body.size_bytes, budget.files)
     .run();
   // D1 includes trigger writes in meta.changes (the usage reservation adds
