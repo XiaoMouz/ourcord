@@ -45,8 +45,9 @@ export default function SettingsModal({ snapshot, auth, close, refreshSnapshot, 
 
   async function applyVoice() {
     try {
-      saveVoicePrefs(prefs);
       await bridge("voice.input_mode", { mode: prefs.mode, threshold_dbfs: prefs.threshold_dbfs, hangover_ms: prefs.hangover_ms });
+      // Joining voice reuses these preferences; persist only an accepted mode.
+      saveVoicePrefs(prefs);
       await refreshSnapshot();
       onNotice("语音设置已应用");
     } catch (e) { onError(String(e)); }
