@@ -357,11 +357,21 @@ try {
   const confirmLogin = async () => {
     await kv.put(`desktop_magic:${createHash("sha256").update(magicToken).digest("base64url")}`,
       JSON.stringify({ email: "cleanup@example.test", challenge }), { expirationTtl: 600 });
+    const issuedAfter = Math.floor(Date.now() / 1000);
     const confirmed = await control.fetch("https://control.test/api/auth/desktop/magic/confirm", {
       method: "POST", redirect: "manual", body: new URLSearchParams({ token: magicToken }),
     });
-    assert.equal(confirmed.status, 303);
-    return new URL(confirmed.headers.get("Location")).searchParams.get("code");
+    assert.equal(confirmed.status, 200);
+    assert.equal(confirmed.headers.get("Location"), null);
+    const confirmationHTML = await confirmed.text();
+    assert.ok(confirmationHTML.includes("expires in 10 minutes"));
+    const handoff = confirmationHTML.match(/href="(ourcord:\/\/auth\?code=[a-f0-9]{64})"/);
+    assert.ok(handoff, "confirmation must preserve a clickable app handoff");
+    const code = new URL(handoff[1]).searchParams.get("code");
+    const expiresAt = await controlDB.prepare("SELECT expires_at FROM desktop_auth_codes WHERE code_hash = ?")
+      .bind(createHash("sha256").update(code).digest("base64url")).first("expires_at");
+    assert.ok(expiresAt >= issuedAfter + 600 && expiresAt <= Math.floor(Date.now() / 1000) + 600);
+    return code;
   };
   await confirmLogin();
   await controlDB.prepare("UPDATE desktop_auth_codes SET expires_at = 1").run();
@@ -425,9 +435,15 @@ try {
   assert.equal(preview.status, 200);
   assert.equal(await kv.get(confirmationKey), pendingCapability);
   const allowedConfirmation = await confirmationCall(confirmationToken, "192.0.2.11");
-  assert.equal(allowedConfirmation.status, 303);
+  assert.equal(allowedConfirmation.status, 200);
   assert.equal(await kv.get(confirmationKey), null);
-  const confirmedCode = new URL(allowedConfirmation.headers.get("Location")).searchParams.get("code");
+  const confirmationHTML = await allowedConfirmation.text();
+  assert.equal(allowedConfirmation.headers.get("Referrer-Policy"), "no-referrer");
+  assert.equal(allowedConfirmation.headers.get("Cache-Control"), "no-store");
+  assert.ok(!confirmationHTML.includes(confirmationToken));
+  const handoff = confirmationHTML.match(/href="(ourcord:\/\/auth\?code=[a-f0-9]{64})"/);
+  assert.ok(handoff);
+  const confirmedCode = new URL(handoff[1]).searchParams.get("code");
   const exchangedConfirmation = await control.fetch("https://control.test/api/auth/desktop/exchange", {
     method: "POST", headers: { "Content-Type": "application/json", "CF-Connecting-IP": "192.0.2.11" },
     body: JSON.stringify({ code: confirmedCode, code_verifier: confirmationVerifier }),

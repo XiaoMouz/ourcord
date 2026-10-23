@@ -457,8 +457,10 @@ export default function App() {
     <div className="avatar avatar-placeholder"><div className="h-16 w-16 rounded-box bg-neutral text-neutral-content"><span className="text-2xl font-semibold">O</span></div></div>
     {authError ? <>
       <div role="alert" className="alert max-w-lg">
-        <div><h1 className="font-semibold">暂时无法启动 OurCord</h1>
-          <p className="mt-1 text-sm">请检查网络连接后重试。如果问题持续，请重新打开应用。</p>
+        <div><h1 className="font-semibold">{startupCallbackFailed ? "登录未完成" : "暂时无法启动 OurCord"}</h1>
+          <p className="mt-1 text-sm">{startupCallbackFailed
+            ? "网络暂时异常时可重试当前链接；如果链接已过期或失效，请选择“重新开始登录”并使用新链接。"
+            : "请检查网络连接后重试。如果问题持续，请重新打开应用。"}</p>
           <p className="mt-2 break-all text-sm">{authError}</p>
         </div>
       </div>

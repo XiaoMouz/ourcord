@@ -10,7 +10,7 @@ import (
 	"github.com/zalando/go-keyring"
 )
 
-const pendingLoginTTL = 12 * time.Minute
+const pendingLoginTTL = 21 * time.Minute
 
 var pendingVerifierPattern = regexp.MustCompile(`^[A-Za-z0-9._~-]{43,128}$`)
 

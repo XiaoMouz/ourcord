@@ -14,8 +14,8 @@ Desktop login keeps one pending PKCE attempt in the credential store, scoped to
 the configured control URL. `auth.begin` resumes that attempt across restarts
 instead of replacing its verifier. `restart: true` explicitly starts a fresh
 attempt; successful exchange and logout clear it. The local attempt expires
-after 12 minutes of inactivity (the server's 10-minute email/OAuth flow plus
-60-second desktop code and one minute for delivery), without extending any
+after 21 minutes of inactivity (the server's 10-minute email/OAuth flow plus
+10-minute desktop code and one minute for delivery), without extending any
 server-issued token lifetime.
 Sending an email or clicking OAuth activates the attempt for that full window;
 OAuth URLs are refreshed on click rather than reusing an idle login page's URL.

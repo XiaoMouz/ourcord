@@ -16,7 +16,7 @@ const OAUTH_STATE_TTL = 10 * 60;
 // callback path so it never leaks to other endpoints.
 const OAUTH_CSRF_COOKIE = "oauth_state";
 const DESKTOP_MAGIC_TTL = 10 * 60;
-const DESKTOP_CODE_TTL = 60;
+const DESKTOP_CODE_TTL = 10 * 60;
 const PKCE_CHALLENGE_RE = /^[A-Za-z0-9_-]{43}$/;
 
 function desktopMagicResponse(retryAfter: number): Response {
@@ -355,7 +355,7 @@ export async function requestDesktopMagic(request: Request, env: Env): Promise<R
 export async function confirmDesktopMagicPage(request: Request): Promise<Response> {
   const token = new URL(request.url).searchParams.get("token") ?? "";
   const escaped = token.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/"/g, "&quot;");
-  return new Response(`<!doctype html><meta charset="utf-8"><title>Sign in to OurCord</title><style>body{font:16px system-ui;background:#111827;color:#f9fafb;display:grid;place-items:center;min-height:100vh}main{max-width:28rem;padding:2rem;background:#1f2937;border-radius:16px}button{padding:.8rem 1.2rem;border:0;border-radius:8px;background:#6366f1;color:white;font-weight:700}</style><main><h1>Sign in to OurCord</h1><p>Confirm this sign-in on the computer where you requested it.</p><form method="post"><input type="hidden" name="token" value="${escaped}"><button>Open OurCord</button></form></main>`, {
+  return new Response(`<!doctype html><meta charset="utf-8"><title>Sign in to OurCord</title><style>body{font:16px system-ui;background:#111827;color:#f9fafb;display:grid;place-items:center;min-height:100vh}main{max-width:28rem;padding:2rem;background:#1f2937;border-radius:16px}button{padding:.8rem 1.2rem;border:0;border-radius:8px;background:#6366f1;color:white;font-weight:700}</style><main><h1>Sign in to OurCord</h1><p>Confirm this sign-in on the computer where you requested it.</p><form method="post"><input type="hidden" name="token" value="${escaped}"><button>Confirm sign-in</button></form></main>`, {
     headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "Referrer-Policy": "no-referrer" },
   });
 }
@@ -363,10 +363,10 @@ export async function confirmDesktopMagicPage(request: Request): Promise<Respons
 export async function confirmDesktopMagic(request: Request, env: Env): Promise<Response> {
   const form = await request.formData();
   const rawToken = String(form.get("token") ?? "");
-  if (!/^[a-f0-9]{64}$/.test(rawToken)) return json({ error: "Invalid or expired link" }, 400);
+  if (!/^[a-f0-9]{64}$/.test(rawToken)) return invalidDesktopMagic(request);
   const key = `desktop_magic:${await sha256Base64url(rawToken)}`;
   const storedRaw = await env.KV.get(key);
-  if (!storedRaw) return json({ error: "Invalid or expired link" }, 400);
+  if (!storedRaw) return invalidDesktopMagic(request);
   await env.KV.delete(key);
   let stored: { email: string; challenge: string };
   try { stored = JSON.parse(storedRaw); } catch { return json({ error: "Invalid link" }, 400); }
@@ -374,7 +374,25 @@ export async function confirmDesktopMagic(request: Request, env: Env): Promise<R
   const user = await getOrCreateUser(env, stored.email);
   if (user.banned_at || await isUserBanned(user.id, env.DB)) return json({ error: "Account banned" }, 403);
   const code = await issueDesktopCode(env, user.id, user.email, stored.challenge);
-  return new Response(null, { status: 303, headers: { Location: `ourcord://auth?code=${encodeURIComponent(code)}`, "Cache-Control": "no-store" } });
+  return desktopMagicResultPage(`<h1>Finish signing in</h1><p>Your email is confirmed. Open OurCord on the computer where you requested this sign-in.</p><p><a href="ourcord://auth?code=${encodeURIComponent(code)}">Open OurCord</a></p><p>If the app did not open, try the button again. This authorization expires in ${DESKTOP_CODE_TTL / 60} minutes. After that, request a new email from OurCord.</p>`, 200);
+}
+
+function invalidDesktopMagic(request: Request): Response {
+  if (!(request.headers.get("Accept") ?? "").includes("text/html")) {
+    return json({ error: "Invalid or expired link" }, 400);
+  }
+  return desktopMagicResultPage("<h1>This sign-in link is no longer available</h1><p>The link may have expired or already been confirmed. If you still have the confirmation page open, use its Open OurCord button. Otherwise, return to OurCord and request a new sign-in email.</p>", 400);
+}
+
+function desktopMagicResultPage(content: string, status: number): Response {
+  return new Response(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Sign in to OurCord</title><style>body{font:16px system-ui;background:#111827;color:#f9fafb;display:grid;place-items:center;min-height:100vh;margin:0}main{max-width:28rem;margin:1rem;padding:2rem;background:#1f2937;border-radius:16px}a{display:inline-block;padding:.8rem 1.2rem;border-radius:8px;background:#6366f1;color:white;font-weight:700;text-decoration:none}a:focus-visible{outline:3px solid white;outline-offset:4px}</style></head><body><main>${content}</main></body></html>`, {
+    status,
+    headers: {
+      "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "Referrer-Policy": "no-referrer",
+      "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
+      "X-Content-Type-Options": "nosniff",
+    },
+  });
 }
 
 export async function exchangeDesktopCode(request: Request, env: Env): Promise<Response> {
