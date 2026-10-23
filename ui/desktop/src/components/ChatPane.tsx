@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { bridge, type FileRecord, type Message, type Room } from "../bridge";
 import { mergeMessages, senderIDs } from "../messages";
+import { indexMissingFiles } from "../files";
 import { formatBytes, parseAttachments } from "../format";
 import { ChatSkeleton, Spinner } from "./Skeleton";
 import ContextMenu, { type MenuItem } from "./ContextMenu";
@@ -85,11 +86,7 @@ export default function ChatPane({ room, myUserID, canModerate, getName, ensureN
       try {
         const data = await bridge<{ files: FileRecord[] }>("files.list", { room_id: room.id });
         if (cancelled) return;
-        setFiles((current) => {
-          const next = { ...current };
-          for (const file of data.files ?? []) next[file.id] = file;
-          return next;
-        });
+        setFiles((current) => indexMissingFiles(current, data.files ?? []));
       } catch { /* attachments render as generic chips until this succeeds */ }
     })();
     return () => { cancelled = true; };
