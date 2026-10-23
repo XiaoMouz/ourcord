@@ -64,8 +64,17 @@ describe("desktop authorization code lifecycle (real SQLite)", () => {
     const confirmed = await confirmDesktopMagic(new Request(link, {
       method: "POST", body: new URLSearchParams({ token: link.searchParams.get("token")! }),
     }), env);
-    expect(confirmed.status).toBe(303);
-    return new URL(confirmed.headers.get("Location")!).searchParams.get("code")!;
+    expect(confirmed.status).toBe(200);
+    expect(confirmed.headers.get("Location")).toBeNull();
+    expect(confirmed.headers.get("Cache-Control")).toBe("no-store");
+    expect(confirmed.headers.get("Referrer-Policy")).toBe("no-referrer");
+    const html = await confirmed.text();
+    expect(html).toContain("Open OurCord");
+    expect(html).not.toContain(link.searchParams.get("token")!);
+    expect(html).not.toContain("<form");
+    const callback = html.match(/href="(ourcord:\/\/auth\?code=[a-f0-9]{64})"/);
+    expect(callback, "confirmation must retain a clickable callback when app launch fails").not.toBeNull();
+    return new URL(callback![1]).searchParams.get("code")!;
   }
   function count() {
     return (db.prepare("SELECT COUNT(*) AS n FROM desktop_auth_codes").get() as { n: number }).n;
@@ -104,6 +113,18 @@ describe("desktop authorization code lifecycle (real SQLite)", () => {
     expect((await exchange()).status).toBe(200);
     expect(count()).toBe(0);
     expect((await exchange()).status).toBe(401);
+  });
+
+  it("retains a handoff code after an incorrect PKCE verifier without accepting it", async () => {
+    const code = await issueThroughMagicConfirmation();
+    expect((await exchangeDesktopCode(post("/api/auth/desktop/exchange", {
+      code, code_verifier: "w".repeat(43),
+    }), env)).status).toBe(401);
+    expect(count()).toBe(1);
+    expect((await exchangeDesktopCode(post("/api/auth/desktop/exchange", {
+      code, code_verifier: verifier,
+    }), env)).status).toBe(200);
+    expect(count()).toBe(0);
   });
 
   it("matches the exchange expiry boundary instead of deleting a code one second early", async () => {
