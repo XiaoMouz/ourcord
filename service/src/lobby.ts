@@ -49,7 +49,7 @@ export async function listLobbies(request: Request, env: Env): Promise<Response>
 
 // POST /api/lobbies — create a lobby
 export async function createLobby(request: Request, env: Env): Promise<Response> {
-  const tooBig = checkBodySize(request, 4 * 1024);
+  const tooBig = await checkBodySize(request, 4 * 1024);
   if (tooBig) return tooBig;
   const auth = await requireAuth(request, env);
   if (auth instanceof Response) return auth;
@@ -116,7 +116,7 @@ export async function getLobby(request: Request, env: Env, lobbyId: string): Pro
 // POST /api/lobbies/:id/join — requires an invite code (?code=XXX or { code }).
 // Owner/admin can grant invites via POST /api/lobbies/:id/invites.
 export async function joinLobby(request: Request, env: Env, lobbyId: string): Promise<Response> {
-  const tooBig = checkBodySize(request, 1024);
+  const tooBig = await checkBodySize(request, 1024);
   if (tooBig) return tooBig;
   const auth = await requireAuth(request, env);
   if (auth instanceof Response) return auth;
@@ -175,7 +175,7 @@ export async function joinLobby(request: Request, env: Env, lobbyId: string): Pr
 // POST /api/lobbies/:id/invites — owner/admin creates an invite code.
 // Body: { expires_in_seconds?, max_uses? } (default: 7d expiry, single use)
 export async function createInvite(request: Request, env: Env, lobbyId: string): Promise<Response> {
-  const tooBig = checkBodySize(request, 1024);
+  const tooBig = await checkBodySize(request, 1024);
   if (tooBig) return tooBig;
   const auth = await requireAuth(request, env);
   if (auth instanceof Response) return auth;
@@ -307,7 +307,7 @@ const ROOM_TYPES = new Set(["text", "voice", "video", "file"]);
 // vpn_namespace is auto-derived for voice/video/file so the daemon can
 // parse `lobby-{lobbyId}-{roomId}-{type}` without us threading more state.
 export async function createRoom(request: Request, env: Env, lobbyId: string): Promise<Response> {
-  const tooBig = checkBodySize(request, 4 * 1024);
+  const tooBig = await checkBodySize(request, 4 * 1024);
   if (tooBig) return tooBig;
   const auth = await requireAuth(request, env);
   if (auth instanceof Response) return auth;
@@ -372,7 +372,7 @@ export async function createRoom(request: Request, env: Env, lobbyId: string): P
 
 // PATCH /api/rooms/:roomId, or /:roomId/reorder for an atomic pair swap.
 export async function updateRoom(request: Request, env: Env, roomId: string, swapPositions = false): Promise<Response> {
-  const tooBig = checkBodySize(request, 4 * 1024);
+  const tooBig = await checkBodySize(request, 4 * 1024);
   if (tooBig) return tooBig;
   const auth = await requireAuth(request, env);
   if (auth instanceof Response) return auth;
@@ -500,7 +500,7 @@ export async function deleteRoom(request: Request, env: Env, roomId: string): Pr
 export async function updateMemberRole(
   request: Request, env: Env, lobbyId: string, targetUserId: string
 ): Promise<Response> {
-  const tooBig = checkBodySize(request, 256);
+  const tooBig = await checkBodySize(request, 256);
   if (tooBig) return tooBig;
   const auth = await requireAuth(request, env);
   if (auth instanceof Response) return auth;

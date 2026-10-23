@@ -8,7 +8,7 @@ export const MEMBER_PRESENCE_TTL_SECONDS = 90;
 // one of those lobbies. Presence is account scoped: no device names or device
 // identifiers are exposed to other members.
 export async function updatePresence(request: Request, env: Env): Promise<Response> {
-  const tooBig = checkBodySize(request, 4 * 1024);
+  const tooBig = await checkBodySize(request, 4 * 1024);
   if (tooBig) return tooBig;
   const auth = await requireAuth(request, env);
   if (auth instanceof Response) return auth;
