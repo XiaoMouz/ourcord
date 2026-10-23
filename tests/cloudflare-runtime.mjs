@@ -13,6 +13,7 @@ import { createHash, createHmac } from "node:crypto";
 import { verifyExternalUploadFinalization } from "./cloudflare-external-uploads.mjs";
 import { verifyRoomReorder } from "./cloudflare-room-reorder.mjs";
 import { verifyInternalReplay } from "./cloudflare-internal-replay.mjs";
+import { verifyProfileNameLimit } from "./cloudflare-profile-limits.mjs";
 import { verifyFileListScan } from "./cloudflare-file-list.mjs";
 import { verifyDeviceRevocation } from "./cloudflare-device-revoke.mjs";
 
@@ -356,6 +357,7 @@ try {
   await migrate(controlDB, "control");
   const control = await mf.getWorker("control");
   await verifyDeviceRevocation({ db: controlDB, control: await mf.getWorker("control-device-revoke"), jwt });
+  await verifyProfileNameLimit({ control, controlDB, jwt });
   const kv = await mf.getKVNamespace("KV", "control");
   const verifier = "v".repeat(43);
   const challenge = createHash("sha256").update(verifier).digest("base64url");
