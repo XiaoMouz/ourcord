@@ -62,6 +62,8 @@ func TestResolveRejectsTraversal(t *testing.T) {
 		"/files/../etc/passwd",
 		"/files/..",
 		"/files/a/../../etc/passwd",
+		"/files/F1/../F2/doc.bin",
+		"/files/F1\\..\\F2/doc.bin",
 		"/etc/passwd",
 		"/files",
 		"/",
