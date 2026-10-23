@@ -7,6 +7,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { verifyProfileBatches } from "./cloudflare-profile-batches.mjs";
 import { tmpdir } from "node:os";
+import { verifyPresenceIndex } from "./cloudflare-presence-index.mjs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash, createHmac } from "node:crypto";
@@ -70,6 +71,8 @@ try {
     readFileSync(join(root, "tests/cloudflare-presence-cost-worker.mjs"), "utf8"));
   writeFileSync(join(output, "service/service-under-test.mjs"),
     readFileSync(join(output, "service/index.js"), "utf8"));
+  writeFileSync(join(output, "service/presence-index.mjs"),
+    readFileSync(join(root, "tests/cloudflare-presence-index-worker.mjs"), "utf8"));
   mf = new Miniflare({
     cf: false,
     workers: [...["control", "service"].map((name) => ({
@@ -92,6 +95,12 @@ try {
       compatibilityDate: "2024-01-01", compatibilityFlags: ["nodejs_compat"],
       bindings: { ENVIRONMENT: "production", JWT_SECRET: secret },
       d1Databases: { DB: "local-service" }, ratelimits: limits,
+    }, {
+      name: "service-presence-index", modules: true, modulesRoot: join(output, "service"),
+      scriptPath: join(output, "service/presence-index.mjs"),
+      compatibilityDate: "2024-01-01", compatibilityFlags: ["nodejs_compat"],
+      bindings: { ENVIRONMENT: "production", JWT_SECRET: secret },
+      d1Databases: { DB: "local-service" }, ratelimits: limits,
     }],
   });
   const db = await mf.getD1Database("DB", "service");
@@ -103,6 +112,7 @@ try {
     db.prepare("INSERT INTO file_policies(lobby_id,max_temp_files,user_server_enabled,lobby_server_enabled) VALUES ('L1',0,0,0)"),
   ]);
   const service = await mf.getWorker("service");
+  await verifyPresenceIndex({ db, service: await mf.getWorker("service-presence-index"), jwt });
   await verifyInternalReplay({ service, db, secret });
   await verifyRoomReorder({ service, db, jwt });
   const call = (path, method = "GET", body) => service.fetch(`https://service.test${path}`, {

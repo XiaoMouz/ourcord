@@ -36,16 +36,28 @@ export async function updatePresence(request: Request, env: Env): Promise<Respon
   }
 
   const now = Math.floor(Date.now() / 1000);
-  await env.DB.prepare(
-    `INSERT INTO lobby_presence (lobby_id, user_id, last_seen, voice_room_id)
-     SELECT lm.lobby_id, lm.user_id, ?,
-            CASE WHEN lm.lobby_id = ? THEN ? ELSE NULL END
-       FROM lobby_members lm
-      WHERE lm.user_id = ?
-     ON CONFLICT(lobby_id, user_id) DO UPDATE SET
-       last_seen = excluded.last_seen,
-       voice_room_id = excluded.voice_room_id`,
-  ).bind(now, voiceLobbyID, voiceRoomID || null, auth.sub).run();
+  // Renew timestamps without rewriting the voice-room index on every heartbeat.
+  // Apply actual voice transitions in the same transaction so a failed change
+  // cannot publish a fresh timestamp with an obsolete room assignment.
+  await env.DB.batch([
+    env.DB.prepare(
+      `INSERT INTO lobby_presence (lobby_id, user_id, last_seen, voice_room_id)
+       SELECT lm.lobby_id, lm.user_id, ?,
+              CASE WHEN lm.lobby_id = ? THEN ? ELSE NULL END
+         FROM lobby_members lm
+        WHERE lm.user_id = ?
+       ON CONFLICT(lobby_id, user_id) DO UPDATE SET
+         last_seen = excluded.last_seen`,
+    ).bind(now, voiceLobbyID, voiceRoomID || null, auth.sub),
+    env.DB.prepare(
+      `UPDATE lobby_presence
+          SET voice_room_id = CASE WHEN lobby_id = ? THEN ? ELSE NULL END
+        WHERE (lobby_id, user_id) IN (
+          SELECT lobby_id, user_id FROM lobby_members WHERE user_id = ?
+        )
+          AND voice_room_id IS NOT CASE WHEN lobby_id = ? THEN ? ELSE NULL END`,
+    ).bind(voiceLobbyID, voiceRoomID || null, auth.sub, voiceLobbyID, voiceRoomID || null),
+  ]);
 
   return json({ online: true, expires_in: MEMBER_PRESENCE_TTL_SECONDS });
 }
