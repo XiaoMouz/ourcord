@@ -112,10 +112,10 @@ export async function initiateUpload(request: Request, env: Env, roomId: string)
   if (
     typeof body.filename !== "string" ||
     body.filename.length < 1 ||
-    body.filename.length > 255 ||
+    new TextEncoder().encode(body.filename).byteLength > 255 ||
     /[\x00-\x1f\x7f"\\]|^\.\.?$|\//.test(body.filename)
   ) {
-    return err("filename contains invalid characters or has invalid length");
+    return err("filename contains invalid characters or has invalid length (max 255 UTF-8 bytes)");
   }
   // J6: positive-integer size_bytes. The previous `!body.size_bytes` check
   // accepted negative values (truthy in JS) which then sailed past the
