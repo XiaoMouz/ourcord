@@ -70,6 +70,7 @@ describe("display name updates through real settings controls", () => {
       }
       if (method === "profile.update") {
         if (saveFails) throw new Error("name save failed");
+        if (String(args?.display_name).length > 48) throw new Error("display_name too long (max 48)");
         serverName = String(args?.display_name);
         return {};
       }
@@ -96,18 +97,55 @@ describe("display name updates through real settings controls", () => {
   const memberNames = () => [...container.querySelectorAll("aside li.list-row > span")].map((row) => row.textContent);
   const lookups = () => vi.mocked(bridge).mock.calls.filter(([method]) => method === "profiles.lookup").length;
 
-  async function saveName() {
+  async function editName(value: string) {
     await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="设置"]')!.click());
     const input = container.querySelector<HTMLInputElement>(".modal input.input")!;
     expect(input).not.toBeNull();
     await act(async () => {
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "New name");
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, value);
       input.dispatchEvent(new Event("input", { bubbles: true }));
     });
     const save = [...container.querySelectorAll<HTMLButtonElement>(".modal button")].find((button) => button.textContent === "保存");
+    return { input, save: save! };
+  }
+  async function saveName() {
+    const { save } = await editName("New name");
     expect(save?.disabled).toBe(false);
     await act(async () => save!.click());
   }
+
+  it.each([49, 64])("does not send an overlong %i-unit name from settings", async (length) => {
+    await mountChat();
+    const { input, save } = await editName("n".repeat(length));
+    await act(async () => save.click());
+    expect(bridge).not.toHaveBeenCalledWith("profile.update", expect.anything());
+    expect(input.maxLength).toBe(48);
+    expect(save.disabled).toBe(true);
+    expect(input.getAttribute("aria-invalid")).toBe("true");
+    expect(container.textContent).toContain("显示名过长");
+  });
+
+  it.each(["n".repeat(48), "名".repeat(48), "😀".repeat(24)])("saves a boundary-length name: %s", async (value) => {
+    await mountChat();
+    const { save } = await editName(value);
+    expect(save.disabled).toBe(false);
+    await act(async () => save.click());
+    expect(serverName).toBe(value);
+    expect(sender("me")).toBe(value);
+  });
+
+  it("preserves an existing overlong name until the user corrects it", async () => {
+    serverName = "old".repeat(20);
+    await mountChat();
+    const { input, save } = await editName(serverName);
+    expect(input.value).toBe(serverName);
+    expect(input.getAttribute("aria-invalid")).toBe("true");
+    expect(save.disabled).toBe(true);
+    const corrected = await editName("shorter name");
+    await act(async () => corrected.save.click());
+    expect(serverName).toBe("shorter name");
+    expect(container.textContent).not.toContain("显示名过长");
+  });
 
   it("updates cached self names in messages and members after saving without another profile lookup", async () => {
     await mountChat();
