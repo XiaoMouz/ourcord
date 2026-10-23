@@ -49,6 +49,9 @@ type Config struct {
 	InputMode     InputMode
 	VADThreshold  float64
 	VADHangover   time.Duration
+	// Apply privacy controls before capture and playback loops start.
+	Muted    bool
+	Deafened bool
 }
 
 // Engine is one voice session. It captures locally, encodes+encrypts once per
@@ -146,6 +149,8 @@ func Start(cfg Config) (*Engine, error) {
 		inputMode:    mode,
 		vadThreshold: threshold,
 		vadHangover:  hangover,
+		muted:        cfg.Muted,
+		deafened:     cfg.Deafened,
 	}
 	e.wg.Add(2)
 	go e.sendLoop(ctx)
