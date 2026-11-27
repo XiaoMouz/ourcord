@@ -2,7 +2,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { bridge, type LobbyEntry, type Snapshot } from "./bridge";
+import { bridge, type LobbyEntry, type Message, type Snapshot } from "./bridge";
 import { DialogProvider } from "./dialog";
 import App from "./App";
 
@@ -39,6 +39,8 @@ describe("App presence writes through voice controls", () => {
   let root: Root;
   let snapshot: Snapshot;
   let serverPresence: string;
+  let messages: Message[];
+  let nextSend: ReturnType<typeof deferred> | undefined;
   let nextWrite: ReturnType<typeof deferred> | undefined;
   let writes: string[];
   let activeWrites: number;
@@ -58,6 +60,8 @@ describe("App presence writes through voice controls", () => {
     vi.clearAllMocks();
     voice("");
     serverPresence = "";
+    messages = [];
+    nextSend = undefined;
     nextWrite = undefined;
     writes = [];
     activeWrites = maxActiveWrites = 0;
@@ -65,8 +69,12 @@ describe("App presence writes through voice controls", () => {
       if (method === "auth.status") return { authenticated: true };
       if (method === "lobbies.list") return { lobbies: [lobby] };
       if (method === "lobbies.members") return { members: [] };
-      if (method === "messages.list") return { messages: [] };
-      if (method === "messages.send") return {};
+      if (method === "messages.list") return { messages: messages.filter((message) => message.room_id === args?.room_id) };
+      if (method === "messages.send") {
+        await nextSend?.promise;
+        messages.push({ id: "sent", room_id: String(args?.room_id), content: String(args?.content), user_id: "me", created_at: 1 });
+        return {};
+      }
       if (method === "daemon.snapshot") return snapshot;
       if (method === "presence.update") {
         const room = String(args?.voice_room_id ?? "");
@@ -145,6 +153,27 @@ describe("App presence writes through voice controls", () => {
     expect(container.querySelector(".room-heading h1")?.textContent).toBe("Voice A");
     expect(container.querySelector('[aria-label="语音频道聊天"]')).not.toBeNull();
     expect(vi.mocked(bridge).mock.calls.filter(([method]) => method === "voice.join_network")).toHaveLength(0);
+  });
+
+  it.each([true, false])("refreshes acknowledged sends only in the visible room (returned=%s)", async (returned) => {
+    voice("A");
+    await mount();
+    const pending = nextSend = deferred();
+    const input = container.querySelector<HTMLTextAreaElement>(".channel-chat textarea")!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(input, "Voice room note");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => container.querySelector<HTMLButtonElement>(".channel-chat [type=submit]")!.click());
+    await act(async () => container.querySelector<HTMLElement>('[title="Chat"]')!.click());
+    if (returned) await act(async () => container.querySelector<HTMLButtonElement>('button[title="返回 Voice A"]')!.click());
+    const readCount = () => vi.mocked(bridge).mock.calls.filter(([method, args]) => method === "messages.list" && args?.room_id === "A").length;
+    const previous = readCount();
+    await act(async () => pending.resolve());
+    expect(readCount() - previous).toBe(returned ? 1 : 0);
+    if (returned) expect(container.querySelector(".channel-chat article")?.textContent).toContain("Voice room note");
+    else expect(container.querySelector("article")).toBeNull();
+    expect(bridge).not.toHaveBeenCalledWith("voice.join_network", expect.anything());
   });
 
   it.each([["", "A"], ["A", "B"], ["A", ""]])(

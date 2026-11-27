@@ -1,8 +1,8 @@
-type ComposerState = { text: string; revision: number; pending: "send" | "upload" | null };
+type ComposerState = { text: string; revision: number; sentCount: number; pending: "send" | "upload" | null };
 
 // The room owns its draft and pending operation even while a voice stage is open.
 export class RoomComposer {
-  private state: ComposerState = { text: "", revision: 0, pending: null };
+  private state: ComposerState = { text: "", revision: 0, sentCount: 0, pending: null };
   private listeners = new Set<() => void>();
 
   subscribe = (listener: () => void) => {
@@ -28,7 +28,9 @@ export class RoomComposer {
   }
 
   sent(revision: number) {
-    if (revision === this.state.revision) this.edit("");
+    const state = this.state;
+    const draft = revision === state.revision ? { text: "", revision: revision + 1 } : {};
+    this.update({ ...state, ...draft, sentCount: state.sentCount + 1 });
   }
 
   finish() {

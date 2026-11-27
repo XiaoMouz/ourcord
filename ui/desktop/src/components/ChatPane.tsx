@@ -41,7 +41,8 @@ export default function ChatPane({ room, composers, myUserID, canModerate, getNa
     composers?.set(room.id, created);
     return created;
   });
-  const { text: draft, pending } = useSyncExternalStore(composer.subscribe, composer.snapshot, composer.snapshot);
+  const { text: draft, pending, sentCount } = useSyncExternalStore(composer.subscribe, composer.snapshot, composer.snapshot);
+  const lastSentCount = useRef(sentCount);
   const sending = pending === "send";
   const uploading = pending === "upload";
   const [loadingOlder, setLoadingOlder] = useState(false);
@@ -97,6 +98,15 @@ export default function ChatPane({ room, composers, myUserID, canModerate, getNa
       setLoaded(true);
     }
   }, [room.id, ensureNames, acceptRevision]);
+
+  // A send can finish after this room has been closed and reopened. Refresh
+  // the currently mounted view, which also owns its pending history reads.
+  useEffect(() => {
+    if (lastSentCount.current === sentCount) return;
+    lastSentCount.current = sentCount;
+    stickToBottom.current = true;
+    void poll();
+  }, [sentCount, poll]);
 
   useEffect(() => {
     let active = true;
@@ -195,8 +205,6 @@ export default function ChatPane({ room, composers, myUserID, canModerate, getNa
     try {
       await bridge("messages.send", { room_id: room.id, content });
       composer.sent(attempt.revision);
-      stickToBottom.current = true;
-      await poll();
     } catch (e) { onError(String(e)); } finally { composer.finish(); }
   }
 
@@ -210,8 +218,6 @@ export default function ChatPane({ room, composers, myUserID, canModerate, getNa
       // The message carries the attachment; content is optional (a bare caption).
       await bridge("messages.send", { room_id: room.id, content: draft.trim(), attachments: [uploaded.file_id] });
       composer.sent(attempt.revision);
-      stickToBottom.current = true;
-      await poll();
       onNotice(`已发送附件 ${uploaded.filename}`);
     } catch (e) { onError(String(e)); } finally { composer.finish(); }
   }
