@@ -2,6 +2,8 @@ package media
 
 import (
 	"context"
+	"errors"
+	"log"
 	"math"
 	"net/netip"
 	"sync"
@@ -42,6 +44,7 @@ type Config struct {
 	SelfKey   wgtypes.Key // this daemon's WireGuard private key
 	VPN4      netip.Addr  // this daemon's VPN IPv4 (voice binds here)
 	NetworkID string
+	Counters  *Counters // required: durably reserved for SelfKey's identity
 
 	Conn          packetConn     // nil ⇒ bind VoicePort on VPN4
 	CaptureSource <-chan []int16 // nil ⇒ build default device's capture
@@ -49,6 +52,9 @@ type Config struct {
 	InputMode     InputMode
 	VADThreshold  float64
 	VADHangover   time.Duration
+	// Apply privacy controls before capture and playback loops start.
+	Muted    bool
+	Deafened bool
 }
 
 // Engine is one voice session. It captures locally, encodes+encrypts once per
@@ -78,6 +84,7 @@ type Engine struct {
 	pttPressed    bool
 	localSpeaking bool
 	transmitting  bool
+	counterFailed bool
 	preRoll       [][]int16
 	seq           uint16
 	ts            uint32
@@ -90,14 +97,26 @@ type peerState struct {
 	decoder Decoder // per-peer: codec decode state is per-stream
 	jitter  *jitterBuffer
 
-	txPackets uint64
-	rxPackets uint64
-	lastRx    time.Time
-	secure    bool
+	txPackets     uint64
+	rxPackets     uint64
+	lastRx        time.Time
+	secure        bool
+	counterPrefix uint64
+	recvRange     uint64
+	hasRecvRange  bool
 }
 
 // Start builds the codec/device/socket and launches the send and receive loops.
 func Start(cfg Config) (*Engine, error) {
+	if cfg.Counters == nil {
+		return nil, errors.New("media: reserved nonce counters required")
+	}
+	if cfg.Counters.identity != cfg.SelfKey.PublicKey() {
+		return nil, errors.New("media: nonce reservation belongs to another identity")
+	}
+	if err := cfg.Counters.claim(); err != nil {
+		return nil, err
+	}
 	codec, err := newDefaultCodec()
 	if err != nil {
 		return nil, err
@@ -146,6 +165,8 @@ func Start(cfg Config) (*Engine, error) {
 		inputMode:    mode,
 		vadThreshold: threshold,
 		vadHangover:  hangover,
+		muted:        cfg.Muted,
+		deafened:     cfg.Deafened,
 	}
 	e.wg.Add(2)
 	go e.sendLoop(ctx)
@@ -194,6 +215,10 @@ func (e *Engine) UpdatePeers(peers []PeerInfo) {
 
 func (e *Engine) newPeerLocked(p PeerInfo) *peerState {
 	st := &peerState{info: p, jitter: newJitterBuffer(defaultJitterDepth)}
+	ourPublic := e.cfg.SelfKey.PublicKey()
+	if !bytesLess(ourPublic[:], p.PublicKey[:]) {
+		st.counterPrefix = 1 << 63
+	}
 	dec, err := e.codec.NewDecoder()
 	if err != nil {
 		return st // can't decode this peer; leaves it insecure/silent
@@ -222,6 +247,7 @@ func (e *Engine) SetMute(muted bool) {
 	e.muted = muted
 	if muted {
 		e.transmitting, e.localSpeaking = false, false
+		e.preRoll = nil
 	}
 	e.mu.Unlock()
 }
@@ -252,6 +278,7 @@ func (e *Engine) SetPushToTalk(pressed bool) {
 	e.pttPressed = pressed
 	if !pressed && e.inputMode == InputModePushToTalk {
 		e.transmitting, e.localSpeaking = false, false
+		e.preRoll = nil
 	}
 	e.mu.Unlock()
 }
@@ -287,6 +314,12 @@ func (e *Engine) captureFrames(pcm []int16) [][]int16 {
 	level := pcmDBFS(pcm)
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	// Muting and a released PTT key are privacy boundaries. Never buffer
+	// their captured audio for a later activation's pre-roll.
+	if e.muted || (e.inputMode == InputModePushToTalk && !e.pttPressed) {
+		e.localSpeaking, e.transmitting = false, false
+		return nil
+	}
 	wasTransmitting := e.transmitting
 	active := level >= e.vadThreshold
 	if !wasTransmitting {
@@ -295,10 +328,6 @@ func (e *Engine) captureFrames(pcm []int16) [][]int16 {
 		if len(e.preRoll) > preRollFrames {
 			e.preRoll = e.preRoll[len(e.preRoll)-preRollFrames:]
 		}
-	}
-	if e.muted {
-		e.localSpeaking, e.transmitting = false, false
-		return nil
 	}
 	switch e.inputMode {
 	case InputModePushToTalk:
@@ -352,6 +381,16 @@ func (e *Engine) broadcast(pcm []int16) {
 		e.mu.Unlock()
 		return
 	}
+	counter, err := e.cfg.Counters.take()
+	if err != nil {
+		if !e.counterFailed {
+			log.Printf("voice: nonce range exhausted; audio transmission stopped")
+			e.counterFailed = true
+		}
+		e.transmitting, e.localSpeaking = false, false
+		e.mu.Unlock()
+		return
+	}
 	seq, ts := e.seq, e.ts
 	e.seq++
 	e.ts += FrameSamples
@@ -374,9 +413,10 @@ func (e *Engine) broadcast(pcm []int16) {
 			continue
 		}
 		e.mu.Lock()
-		ct, counter := t.st.sealer.seal(payload, aad)
+		peerCounter := counter | t.st.counterPrefix
+		ct := t.st.sealer.seal(payload, aad, peerCounter)
 		e.mu.Unlock()
-		datagram := assemble(aad, ct, counter)
+		datagram := assemble(aad, ct, peerCounter)
 		if _, err := e.conn.WriteToUDPAddrPort(datagram, t.addr); err == nil {
 			e.mu.Lock()
 			t.st.txPackets++
@@ -424,6 +464,20 @@ func (e *Engine) handleDatagram(datagram []byte, from netip.Addr) {
 		e.mu.Unlock()
 		return // replay, tamper, or wrong key
 	}
+	// A new authenticated reservation identifies a restarted encoder. Its RTP
+	// sequence starts again, so discard old jitter/codec state only after AEAD
+	// verification. The replay window still rejects packets from older ranges.
+	rangeID := pkt.counter / counterBlock
+	if st.hasRecvRange && rangeID != st.recvRange {
+		decoder, err := e.codec.NewDecoder()
+		if err != nil {
+			e.mu.Unlock()
+			return
+		}
+		st.decoder = decoder
+		st.jitter = newJitterBuffer(defaultJitterDepth)
+	}
+	st.recvRange, st.hasRecvRange = rangeID, true
 	pcm, err := st.decoder.Decode(plain)
 	if err != nil {
 		e.mu.Unlock()

@@ -73,8 +73,9 @@ func (t *Table) Remove(publicKey wgtypes.Key) {
 // Replace swaps the full peer route set while preserving table-level settings
 // such as listenPort. The control plane is the source of truth for the current
 // mesh scope, so peers removed from a room/user config must disappear instead
-// of lingering from a previous fetch.
-func (t *Table) Replace(routes []*PeerRoute) {
+// of lingering from a previous fetch. It returns the newly admitted peer keys.
+func (t *Table) Replace(routes []*PeerRoute) []wgtypes.Key {
+	var added []wgtypes.Key
 	t.mu.Lock()
 	next := make(map[string]*PeerRoute, len(routes))
 	for _, r := range routes {
@@ -106,11 +107,14 @@ func (t *Table) Replace(routes []*PeerRoute) {
 					r.DirectAddr = &ap
 				}
 			}
+		} else {
+			added = append(added, r.PublicKey)
 		}
 		next[r.PublicKey.String()] = r
 	}
 	t.routes = next
 	t.mu.Unlock()
+	return added
 }
 
 // SetICEReady marks a peer as having a live ICE transport.

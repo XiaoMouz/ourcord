@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { register, unregister } from "@tauri-apps/plugin-global-shortcut";
 import { bridge, type AuthState, type LobbyEntry, type Member, type Profile, type Room, type Snapshot } from "./bridge";
 import { parseOurCordLink, type OurCordLink } from "./deepLink";
@@ -67,7 +68,13 @@ export default function App() {
   const ensureNames = useCallback(async (ids: string[]) => {
     if (await names.ensure(ids)) setNameTick((tick) => tick + 1);
   }, [names]);
-  const getName = useCallback((id: string) => displayName(names, id), [names]);
+  const ownProfile = auth.profile?.user;
+  const getName = useCallback((id: string) => {
+    // Saving a name refreshes the account profile; cached/late lookups may
+    // still carry its previous value.
+    if (ownProfile?.id === id && ownProfile.display_name) return ownProfile.display_name;
+    return displayName(names, id);
+  }, [names, ownProfile]);
 
   const authRef = useRef(auth);
   authRef.current = auth;
@@ -83,7 +90,7 @@ export default function App() {
     ? lobbies.flatMap((entry) => entry.rooms).find((room) => room.vpn_namespace === snapshot.status?.network_id)?.id ?? ""
     : "";
 
-  const refreshAuth = useCallback(async () => {
+  const refreshAuth = useCallback(async (restart = false) => {
     const requestID = ++authRequestRef.current;
     setAuthError("");
     try {
@@ -91,7 +98,7 @@ export default function App() {
       if (requestID !== authRequestRef.current) return;
       // Login actions need the persisted PKCE verifier, so publish the login
       // screen only after setup succeeds. Newer auth checks supersede this one.
-      const urls = state.authenticated ? undefined : await bridge<{ google_url: string; github_url: string }>("auth.begin");
+      const urls = state.authenticated ? undefined : await bridge<{ google_url: string; github_url: string }>("auth.begin", { restart });
       if (requestID !== authRequestRef.current) return;
       setLoginURLs(urls);
       setAuth({ ...state, loading: false });
@@ -330,6 +337,17 @@ export default function App() {
     } catch (e) { showError(String(e)); } finally { setBusy(false); }
   }
 
+  async function beginOAuth(provider: "google" | "github") {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const urls = await bridge<{ google_url: string; github_url: string }>("auth.begin", { activate: true });
+      setLoginURLs(urls);
+      await openUrl(provider === "google" ? urls.google_url : urls.github_url);
+    } catch (error) { showError(String(error)); }
+    finally { setBusy(false); }
+  }
+
   const copyText = useCallback(async (text: string, label: string) => {
     try { await navigator.clipboard.writeText(text); showNotice(`${label}已复制`); }
     catch { showError("复制失败"); }
@@ -413,8 +431,7 @@ export default function App() {
     } catch (e) { showError(String(e)); }
   }
 
-  // reorderRoom swaps a room with its same-type neighbor by writing the
-  // neighbor's position onto it (service orders rooms by position).
+  // Swap both positions in one request; stale snapshots are rejected by service.
   async function reorderRoom(room: Room, direction: -1 | 1) {
     if (!selectedLobby) return;
     const siblings = selectedLobby.rooms.filter((r) => r.type === room.type).sort((a, b) => a.position - b.position);
@@ -422,10 +439,14 @@ export default function App() {
     const target = siblings[index + direction];
     if (!target) return;
     try {
-      await bridge("rooms.update", { room_id: room.id, position: target.position });
-      await bridge("rooms.update", { room_id: target.id, position: room.position });
-      await refreshLobbies();
+      await bridge("rooms.update", {
+        room_id: room.id, position: target.position,
+        expected_position: room.position, swap_with: target.id,
+      });
     } catch (e) { showError(String(e)); }
+    // A lost response may still have committed; reconcile without rolling back
+    // another client's changes or automatically repeating the mutation.
+    try { await refreshLobbies(); } catch (e) { showError(String(e)); }
   }
 
   const titleBar = <TitleBar update={updater}
@@ -446,12 +467,12 @@ export default function App() {
         startupRequestRef.current += 1;
         startupAuthFailure.current = null;
         setStartupCallbackFailed(false);
-        void refreshAuth().catch(() => {});
+        void refreshAuth(true).catch(() => {});
       }}>重新开始登录</button>}
     </> : <Spinner label="正在启动 OurCord" />}
   </div></div></div>;
   if (!auth.authenticated) return <div className="flex h-screen min-w-[920px] flex-col bg-base-200 text-base-content">{titleBar}<div className="min-h-0 flex-1">
-    <Login busy={busy} cooldownSeconds={magicCooldownSeconds} loginURLs={loginURLs} onMagic={(email) => void sendMagic(email)} />
+    <Login busy={busy} cooldownSeconds={magicCooldownSeconds} loginURLs={loginURLs} onMagic={(email) => void sendMagic(email)} onOAuth={(provider) => void beginOAuth(provider)} />
     <ToastHost toast={toast} onDismiss={dismissToast} />
   </div></div>;
 

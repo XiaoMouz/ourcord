@@ -24,6 +24,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/ourcord/ourcord/daemon/pkg/client"
 	"github.com/ourcord/ourcord/daemon/pkg/ipc"
@@ -66,12 +67,15 @@ type bridge struct {
 	stateDir    string
 	downloadDir string // optional destination override; defaults to the OS downloads directory
 	credentials credentialStore
+	clock       func() time.Time // defaults to time.Now
 
-	daemonMu    sync.Mutex
-	daemon      *client.Client
-	authMu      sync.Mutex
-	authRefresh singleflight.Group
-	sessionMu   sync.RWMutex
+	daemonMu        sync.Mutex
+	daemon          *client.Client
+	authMu          sync.Mutex
+	authRefresh     singleflight.Group
+	refreshCooldown *deviceRefreshCooldown // guarded by authMu
+	sessionMu       sync.RWMutex
+	pendingLoginMu  sync.Mutex
 }
 
 func main() {
@@ -167,14 +171,17 @@ func (b *bridge) dispatch(method string, raw json.RawMessage) (any, error) {
 		}
 	}
 	switch method {
+	case "auth.begin", "auth.magic", "auth.exchange":
+		b.pendingLoginMu.Lock()
+		defer b.pendingLoginMu.Unlock()
+	}
+	switch method {
 	case "auth.begin":
-		verifier, challenge, err := newPKCE()
+		pending, err := b.beginPendingLogin(boolParam(params, "restart"), boolParam(params, "activate"), b.now())
 		if err != nil {
 			return nil, err
 		}
-		if err := b.credentialStore().Set(credentialService, pkceCredential, verifier); err != nil {
-			return nil, fmt.Errorf("store login state: %w", err)
-		}
+		challenge := pkceChallenge(pending.Verifier)
 		return map[string]string{
 			"google_url": b.controlURL + "/api/auth/desktop/oauth/google?code_challenge=" + challenge,
 			"github_url": b.controlURL + "/api/auth/desktop/oauth/github?code_challenge=" + challenge,
@@ -184,11 +191,11 @@ func (b *bridge) dispatch(method string, raw json.RawMessage) (any, error) {
 		if email == "" {
 			return nil, errors.New("email required")
 		}
-		verifier, err := b.credentialStore().Get(credentialService, pkceCredential)
+		pending, err := b.beginPendingLogin(false, true, b.now())
 		if err != nil {
-			return nil, errors.New("start login again")
+			return nil, err
 		}
-		challenge := pkceChallenge(verifier)
+		challenge := pkceChallenge(pending.Verifier)
 		data, err := b.api(http.MethodPost, b.controlURL, "/api/auth/desktop/magic", "", map[string]string{"email": email, "code_challenge": challenge})
 		if err != nil {
 			return nil, err
@@ -196,11 +203,11 @@ func (b *bridge) dispatch(method string, raw json.RawMessage) (any, error) {
 		return decodeMagicResponse(data)
 	case "auth.exchange":
 		code := stringParam(params, "code")
-		verifier, err := b.credentialStore().Get(credentialService, pkceCredential)
-		if err != nil {
+		pending, err := b.readPendingLogin(b.now())
+		if err != nil || pending.ControlURL != b.controlURL || pending.ExpiresAt <= b.now().Unix() {
 			return nil, errors.New("login session expired")
 		}
-		data, err := b.api(http.MethodPost, b.controlURL, "/api/auth/desktop/exchange", "", map[string]string{"code": code, "code_verifier": verifier})
+		data, err := b.api(http.MethodPost, b.controlURL, "/api/auth/desktop/exchange", "", map[string]string{"code": code, "code_verifier": pending.Verifier})
 		if err != nil {
 			return nil, err
 		}
@@ -303,6 +310,18 @@ func (b *bridge) dispatch(method string, raw json.RawMessage) (any, error) {
 		}
 		if _, ok := params["position"]; ok {
 			payload["position"] = int(numberParam(params, "position", 0))
+		}
+		// Preserve the complete compare-and-swap contract, including zero.
+		for _, key := range []string{"swap_with", "expected_position"} {
+			if value, ok := params[key]; ok {
+				payload[key] = value
+			}
+		}
+		// Older services must reject the swap, not silently apply half of it.
+		_, hasSwap := params["swap_with"]
+		_, hasExpectedPosition := params["expected_position"]
+		if hasSwap || hasExpectedPosition {
+			path += "/reorder"
 		}
 		return b.authedJSON(http.MethodPatch, b.serviceURL, path, payload)
 	case "rooms.delete":
@@ -750,7 +769,9 @@ func (c *cancelReadCloser) Close() error {
 
 // saveDownload writes a complete stream to a new file and returns its path.
 func (b *bridge) saveDownload(filename, fileID string, src io.Reader) (any, error) {
-	return b.saveDownloadWithLimit(filename, fileID, src, 512<<20)
+	// Match service initiateUpload's MAX_DECLARED_BYTES ceiling, including
+	// self-hosted files whose lobby policy permits more than the R2 limit.
+	return b.saveDownloadWithLimit(filename, fileID, src, 5<<30)
 }
 
 func (b *bridge) saveDownloadWithLimit(filename, fileID string, src io.Reader, limit int64) (any, error) {
@@ -822,7 +843,13 @@ func safeFilename(name string) string {
 	name = strings.NewReplacer("/", "_", "\\", "_", "\x00", "").Replace(name)
 	name = strings.TrimLeft(name, ".")
 	if len(name) > 180 {
-		name = name[len(name)-180:]
+		// Keep the suffix/extension within the byte budget without splitting
+		// a UTF-8 character or changing the path during JSON serialization.
+		start := len(name) - 180
+		for start < len(name) && !utf8.RuneStart(name[start]) {
+			start++
+		}
+		name = name[start:]
 	}
 	return name
 }
@@ -863,6 +890,7 @@ func (b *bridge) authedJSON(method, base, path string, body any) (any, error) {
 type httpStatusError struct {
 	status  int
 	message string
+	retryAt time.Time
 }
 
 func (e *httpStatusError) Error() string { return e.message }
@@ -933,7 +961,10 @@ func (b *bridge) api(method, base, path, token string, body any) ([]byte, error)
 		if failure.Error == "" {
 			failure.Error = http.StatusText(resp.StatusCode)
 		}
-		return nil, &httpStatusError{status: resp.StatusCode, message: failure.Error}
+		return nil, &httpStatusError{
+			status: resp.StatusCode, message: failure.Error,
+			retryAt: parseRetryAfter(resp.Header.Get("Retry-After"), b.now()),
+		}
 	}
 	return data, nil
 }
@@ -1050,7 +1081,7 @@ func (b *bridge) fetchProfile(token string) (any, error) {
 
 func (b *bridge) exchangeStoredDeviceCredential(staleToken string) (string, error) {
 	// Share failures as well as successful refreshes with overlapping callers.
-	// Completed failures are not cached: a later request can retry immediately.
+	// Only an explicit server Retry-After delays later requests.
 	value, err, _ := b.authRefresh.Do(staleToken, func() (any, error) {
 		return b.refreshStoredDeviceCredential(staleToken)
 	})
@@ -1085,8 +1116,23 @@ func (b *bridge) refreshStoredDeviceCredential(staleToken string) (string, error
 	if !strings.HasPrefix(deviceToken, "dt_") {
 		return "", keyring.ErrNotFound
 	}
+	fingerprint := sha256.Sum256([]byte(deviceToken))
+	if cooldown := b.refreshCooldown; cooldown != nil &&
+		cooldown.baseURL == b.controlURL && cooldown.credential == fingerprint &&
+		b.now().Before(cooldown.until) {
+		return "", cooldown.err
+	}
+	b.refreshCooldown = nil
 	data, err := b.api(http.MethodPost, b.controlURL, "/api/auth/device", "", map[string]string{"device_token": deviceToken})
 	if err != nil {
+		var responseErr *httpStatusError
+		if errors.As(err, &responseErr) &&
+			(responseErr.status == http.StatusTooManyRequests || responseErr.status == http.StatusServiceUnavailable) &&
+			responseErr.retryAt.After(b.now()) {
+			b.refreshCooldown = &deviceRefreshCooldown{
+				baseURL: b.controlURL, credential: fingerprint, until: responseErr.retryAt, err: err,
+			}
+		}
 		return "", err
 	}
 	var exchanged struct {

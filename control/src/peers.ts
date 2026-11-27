@@ -19,7 +19,7 @@ export const NETWORK_PRESENCE_TTL_SECONDS = 90;
 // POST /api/peers/register — register a new device/peer
 // Body: { public_key: string, name: string, platform: string }
 export async function registerPeer(request: Request, env: Env): Promise<Response> {
-  const tooBig = checkBodySize(request, 4 * 1024);
+  const tooBig = await checkBodySize(request, 4 * 1024);
   if (tooBig) return tooBig;
   const authResult = await requireAuth(request, env);
   if (authResult instanceof Response) return authResult;
@@ -194,6 +194,7 @@ export async function getPeerConfig(request: Request, env: Env): Promise<Respons
 
   let memberIds: string[] = [userId];
   let scopeWarning: string | null = null;
+  let roomMembershipVerified = false;
 
   if (roomId) {
     if (roomId.startsWith("pair:")) {
@@ -233,11 +234,15 @@ export async function getPeerConfig(request: Request, env: Env): Promise<Respons
           scopeWarning = `service returned ${resp.status} for room ${roomId}`;
         } else {
           const body = await resp.json<{ user_ids: string[] }>();
+          if (!Array.isArray(body.user_ids) || !body.user_ids.every((id) => typeof id === "string")) {
+            throw new Error("invalid room member list");
+          }
           // Caller must be a member; otherwise return empty mesh.
           if (!body.user_ids?.includes(userId)) {
             return json({ peers: [], relays: [], note: "not a member of this room" });
           }
           memberIds = body.user_ids;
+          roomMembershipVerified = true;
         }
       } catch (e) {
         // L2: never leak the underlying error message (which may include
@@ -259,7 +264,9 @@ export async function getPeerConfig(request: Request, env: Env): Promise<Respons
   // the lobby does not put every historical device into a voice call. The
   // primary key also makes switching rooms an atomic overwrite. Pair networks
   // remain explicitly key-scoped and do not participate in lobby presence.
-  if (pubKey && roomId && !roomId.startsWith("pair:")) {
+  // A fallback response may keep own-device reads available, but must not
+  // grant a room lease when the service did not confirm membership.
+  if (pubKey && roomId && roomMembershipVerified) {
     await env.DB
       .prepare(
         `INSERT INTO peer_presence (public_key, network_id, last_seen) VALUES (?,?,?)
@@ -335,9 +342,9 @@ export async function getPeerConfig(request: Request, env: Env): Promise<Respons
   const relayMap = await buildRelayMap(env, null, userId);
   const relays = relayMap.relays;
 
-  const headers: HeadersInit = { "Content-Type": "application/json" };
-  if (scopeWarning) headers["X-Scope-Warning"] = scopeWarning;
-  return new Response(JSON.stringify({ peers: publicPeerRows, relays }), { headers });
+  const response = json({ peers: publicPeerRows, relays });
+  if (scopeWarning) response.headers.set("X-Scope-Warning", scopeWarning);
+  return response;
 }
 
 // POST /api/peers/connectivity — daemon reports per-peer link capabilities in
@@ -347,7 +354,7 @@ export async function getPeerConfig(request: Request, env: Env): Promise<Respons
 // DERP is the most expensive baseline, and one-hop relay is selected only when
 // it improves on the direct edge or the direct edge is unavailable.
 export async function reportPeerConnectivity(request: Request, env: Env): Promise<Response> {
-  const tooBig = checkBodySize(request, 4 * 1024);
+  const tooBig = await checkBodySize(request, 4 * 1024);
   if (tooBig) return tooBig;
   const authResult = await requireAuth(request, env);
   if (authResult instanceof Response) return authResult;
@@ -435,6 +442,22 @@ export async function reportPeerConnectivity(request: Request, env: Env): Promis
   const quality = connectivityQuality(iceDirect, wgReachable, transport, reason, source);
   const now = Math.floor(Date.now() / 1000);
 
+  // Room leases are issued only after a successful membership lookup during
+  // config refresh. Check keyed rows here, without an extra service request
+  // (and nonce write) for every observation. Pairs retain exact-key semantics.
+  const scopeSQL = pair
+    ? `SELECT 1 FROM peers src JOIN peers dst ON dst.public_key = ?
+        WHERE src.public_key = ? AND src.user_id = ?`
+    : `SELECT 1 FROM peers src
+         JOIN peer_presence sp ON sp.public_key = src.public_key
+         JOIN peer_presence dp ON dp.public_key = ?
+         JOIN peers dst ON dst.public_key = dp.public_key
+        WHERE src.public_key = ? AND src.user_id = ?
+          AND sp.network_id = ? AND dp.network_id = ?
+          AND sp.last_seen >= ? AND dp.last_seen >= ?`;
+  const scopeParams: Array<string | number> = [peerKey, selfKey, userId];
+  if (!pair) scopeParams.push(networkID, networkID, now - NETWORK_PRESENCE_TTL_SECONDS, now - NETWORK_PRESENCE_TTL_SECONDS);
+
   // A connectivity observation belongs only to its reporting endpoint:
   // self → peer. Do not synthesize peer → self from it. UDP NAT, host firewall,
   // and relay reachability can be asymmetric, and a mirrored write turns a
@@ -445,7 +468,8 @@ export async function reportPeerConnectivity(request: Request, env: Env): Promis
       `INSERT INTO peer_connectivity
          (network_id, src_public_key, dst_public_key, direct, ice_direct, wg_reachable, transport, rtt_ms, reason,
           source, quality, reporter_public_key, reporter_epoch, seq, observed_at, reported_at, flap_count, flapping)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+       SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?
+        WHERE EXISTS (${scopeSQL})
        ON CONFLICT(network_id, src_public_key, dst_public_key)
        DO UPDATE SET direct = excluded.direct, ice_direct = excluded.ice_direct,
                      wg_reachable = excluded.wg_reachable, transport = excluded.transport, rtt_ms = excluded.rtt_ms,
@@ -457,9 +481,15 @@ export async function reportPeerConnectivity(request: Request, env: Env): Promis
     ).bind(
       networkID, selfKey, peerKey, iceDirect ? 1 : 0, iceDirect ? 1 : 0, wgReachable ? 1 : 0,
       transport, rttMs, reason, source, quality, selfKey, reporterEpoch, seq, observedAt, now, flapCount, flapping,
+      ...scopeParams,
     );
   try {
-    await edgeUpsert.run();
+    const result = await edgeUpsert.run();
+    // Both scope rejection and sequence arbitration can skip a write. Keep
+    // obsolete-but-authorized reports idempotent while explaining lost scope.
+    if ((result.meta?.changes ?? 0) === 0 && !(await env.DB.prepare(scopeSQL).bind(...scopeParams).first())) {
+      return json({ error: "peers are not active in this network" }, 403);
+    }
   } catch (e) {
     log({ event: "peers.connectivity_write_failed", level: "error", network_id: networkID, error: String(e) });
     return json({ error: "connectivity table unavailable" }, 503);
@@ -719,7 +749,7 @@ interface RelayEntry {
 // Users with no registered peers are omitted from the map (callers
 // shouldn't need to distinguish "absent" from "empty array").
 export async function lookupPeers(request: Request, env: Env): Promise<Response> {
-  const tooBig = checkBodySize(request, 16 * 1024);
+  const tooBig = await checkBodySize(request, 16 * 1024);
   if (tooBig) return tooBig;
   const authResult = await requireAuth(request, env);
   if (authResult instanceof Response) return authResult;

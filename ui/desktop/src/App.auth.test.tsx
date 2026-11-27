@@ -3,11 +3,13 @@ import { act, StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { bridge } from "./bridge";
 import { DialogProvider } from "./dialog";
 import App from "./App";
 
 vi.mock("./bridge", () => ({ bridge: vi.fn() }));
+vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: vi.fn(async () => {}) }));
 vi.mock("@tauri-apps/plugin-deep-link", () => ({
   getCurrent: vi.fn(async () => null), onOpenUrl: vi.fn(async () => () => {}),
 }));
@@ -327,6 +329,7 @@ describe("App startup authentication recovery", () => {
     expect(restart).toBeDefined();
     await act(async () => restart!.click());
     expect(calls("auth.begin")).toHaveLength(1);
+    expect(calls("auth.begin")[0][1]).toEqual({ restart: true });
     expect(container.textContent).toContain("欢迎回来");
   });
 
@@ -376,5 +379,35 @@ describe("App startup authentication recovery", () => {
     await signInFromDeepLink();
     expect(calls("auth.exchange")).toHaveLength(2);
     expect(container.textContent).toContain("选择一个房间");
+  });
+
+  it.each(["Google", "GitHub"])("refreshes the pending OAuth attempt before opening %s", async (provider) => {
+    await mount();
+    await act(async () => status.resolve({ authenticated: false }));
+    await act(async () => begin.resolve(loginURLs));
+    begin = deferred();
+    const button = [...container.querySelectorAll("button")].find((item) => item.textContent?.includes(provider));
+    expect(button).toBeDefined();
+    await act(async () => button!.click());
+    expect(calls("auth.begin").at(-1)?.[1]).toEqual({ activate: true });
+    expect(vi.mocked(openUrl)).not.toHaveBeenCalled();
+    expect(button!.disabled).toBe(true);
+    const refreshedURLs = { google_url: "https://control.test/google-fresh", github_url: "https://control.test/github-fresh" };
+    await act(async () => begin.resolve(refreshedURLs));
+    expect(vi.mocked(openUrl)).toHaveBeenCalledWith(provider === "Google" ? refreshedURLs.google_url : refreshedURLs.github_url);
+    expect(button!.disabled).toBe(false);
+  });
+
+  it("does not open a stale OAuth URL when activation fails", async () => {
+    await mount();
+    await act(async () => status.resolve({ authenticated: false }));
+    await act(async () => begin.resolve(loginURLs));
+    begin = deferred();
+    const button = [...container.querySelectorAll("button")].find((item) => item.textContent?.includes("Google"));
+    await act(async () => button!.click());
+    await act(async () => begin.reject(new Error("credential store locked")));
+    expect(vi.mocked(openUrl)).not.toHaveBeenCalled();
+    expect(container.textContent).toContain("credential store locked");
+    expect(button!.disabled).toBe(false);
   });
 });
