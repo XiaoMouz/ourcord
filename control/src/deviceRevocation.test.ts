@@ -105,17 +105,19 @@ describe("device revocation ownership (real SQLite)", () => {
     expect(db.prepare("SELECT revoked_at FROM device_tokens WHERE id=?").get(device.id)).toEqual({ revoked_at: null });
   });
 
-  it("rolls back credential and topology changes when peer deletion fails", async () => {
+  it.each(["DELETE ON peers", "UPDATE ON device_tokens"])("rolls back the whole revocation when %s fails", async (operation) => {
     const device = await enroll("alice");
     const before = edges();
-    db.exec("CREATE TRIGGER fail_peer_delete BEFORE DELETE ON peers BEGIN SELECT RAISE(ABORT,'injected deletion failure'); END");
+    db.exec(`CREATE TRIGGER fail_revocation BEFORE ${operation} BEGIN SELECT RAISE(ABORT,'injected deletion failure'); END`);
     // The route's async error-boundary fix may return JSON 500 instead of rejecting.
     try {
       expect((await call("alice", `/api/devices/${device.id}`, "DELETE")).status).toBe(500);
     } catch (error) { expect(String(error)).toContain("injected deletion failure"); }
     expect(edges()).toEqual(before);
     expect(db.prepare("SELECT revoked_at FROM device_tokens WHERE id=?").get(device.id)).toEqual({ revoked_at: null });
-    db.exec("DROP TRIGGER fail_peer_delete");
+    expect(db.prepare("SELECT id FROM peers WHERE user_id='alice'").get()).toBeDefined();
+    expect(db.prepare("SELECT public_key FROM peer_presence").all()).toEqual([{ public_key: aliceKey }]);
+    db.exec("DROP TRIGGER fail_revocation");
     expect((await call("alice", `/api/devices/${device.id}`, "DELETE")).status).toBe(200);
   });
 

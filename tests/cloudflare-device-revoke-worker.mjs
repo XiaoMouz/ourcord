@@ -13,6 +13,7 @@ export default {
     const DB = {
       prepare(sql) { return wrap(env.DB.prepare(sql), sql); },
       async batch(statements) {
+        if (request.headers.has("X-Test-Pause-Revoke")) await fetch("https://revoke-gate.test/");
         const results = await env.DB.batch(statements.map((statement) => statement.raw));
         statements.forEach((statement, i) => {
           if (/DELETE FROM peer_connectivity/.test(statement.sql)) reads += results[i].meta.rows_read;
