@@ -19,6 +19,7 @@ import { verifyBackendHealthScan } from "./cloudflare-backend-health.mjs";
 import { verifyProfileNameLimit } from "./cloudflare-profile-limits.mjs";
 import { verifyFileListScan } from "./cloudflare-file-list.mjs";
 import { verifyUploadQuotaScans } from "./cloudflare-upload-quota.mjs";
+import { verifyBackendResolutionScans } from "./cloudflare-backend-resolution.mjs";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const require = createRequire(join(root, "control/package.json"));
@@ -84,6 +85,8 @@ try {
     readFileSync(join(root, "tests/cloudflare-file-list-worker.mjs"), "utf8"));
   writeFileSync(join(output, "service/upload-quota.mjs"),
     readFileSync(join(root, "tests/cloudflare-upload-quota-worker.mjs"), "utf8"));
+  writeFileSync(join(output, "service/backend-resolution.mjs"),
+    readFileSync(join(root, "tests/cloudflare-backend-resolution-worker.mjs"), "utf8"));
   mf = new Miniflare({
     cf: false,
     workers: [...["control", "service"].map((name) => ({
@@ -100,6 +103,12 @@ try {
       compatibilityDate: "2024-01-01", compatibilityFlags: ["nodejs_compat"],
       bindings: { ENVIRONMENT: "production", JWT_SECRET: secret },
       d1Databases: { DB: "local-upload-quota" }, ratelimits: limits,
+    }, {
+      name: "service-backend-resolution", modules: true, modulesRoot: join(output, "service"),
+      scriptPath: join(output, "service/backend-resolution.mjs"),
+      compatibilityDate: "2024-01-01", compatibilityFlags: ["nodejs_compat"],
+      bindings: { ENVIRONMENT: "development", JWT_SECRET: secret },
+      d1Databases: { DB: "local-service" }, r2Buckets: ["FILES"],
     }, {
       name: "service-backend-health", modules: true, modulesRoot: join(output, "service"),
       scriptPath: join(output, "service/backend-health.mjs"),
@@ -145,6 +154,7 @@ try {
   const quotaDB = await mf.getD1Database("DB", "service-upload-quota");
   await migrate(quotaDB, "service");
   await verifyUploadQuotaScans({ db: quotaDB, service: await mf.getWorker("service-upload-quota"), jwt });
+  await verifyBackendResolutionScans({ db, service: await mf.getWorker("service-backend-resolution"), jwt });
   await verifyJSONBodyLimits({ mf, db, jwt });
   await verifyFileListScan({ db, service, metered: await mf.getWorker("service-file-list"), jwt });
   await verifyPresenceIndex({ db, service: await mf.getWorker("service-presence-index"), jwt });
