@@ -29,7 +29,7 @@ function desktopMagicResponse(retryAfter: number): Response {
 
 // POST /api/auth/otp/request — send OTP to email
 export async function requestOTP(request: Request, env: Env): Promise<Response> {
-  const tooBig = checkBodySize(request, 1024);
+  const tooBig = await checkBodySize(request, 1024);
   if (tooBig) return tooBig;
   const body = await request.json<{ email: string }>();
   if (!body.email || !body.email.includes("@")) {
@@ -71,7 +71,7 @@ export async function requestOTP(request: Request, env: Env): Promise<Response> 
 
 // POST /api/auth/otp/verify — verify OTP and issue token
 export async function verifyOTP(request: Request, env: Env): Promise<Response> {
-  const tooBig = checkBodySize(request, 1024);
+  const tooBig = await checkBodySize(request, 1024);
   if (tooBig) return tooBig;
   const body = await request.json<{ email: string; otp: string }>();
   if (!body.email || !body.otp) return json({ error: "email and otp required" }, 400);
@@ -307,7 +307,7 @@ export async function oauthCallback(request: Request, env: Env, provider: string
 // POST /api/auth/desktop/magic — send a browser confirmation link bound to
 // the requesting desktop instance's PKCE challenge.
 export async function requestDesktopMagic(request: Request, env: Env): Promise<Response> {
-  const tooBig = checkBodySize(request, 2048);
+  const tooBig = await checkBodySize(request, 2048);
   if (tooBig) return tooBig;
   let body: { email?: unknown; code_challenge?: unknown };
   try { body = await request.json(); } catch { return json({ error: "invalid JSON body" }, 400); }
@@ -361,6 +361,8 @@ export async function confirmDesktopMagicPage(request: Request): Promise<Respons
 }
 
 export async function confirmDesktopMagic(request: Request, env: Env): Promise<Response> {
+  const tooBig = await checkBodySize(request, 2048);
+  if (tooBig) return tooBig;
   const form = await request.formData();
   const rawToken = String(form.get("token") ?? "");
   if (!/^[a-f0-9]{64}$/.test(rawToken)) return json({ error: "Invalid or expired link" }, 400);
@@ -378,7 +380,7 @@ export async function confirmDesktopMagic(request: Request, env: Env): Promise<R
 }
 
 export async function exchangeDesktopCode(request: Request, env: Env): Promise<Response> {
-  const tooBig = checkBodySize(request, 2048);
+  const tooBig = await checkBodySize(request, 2048);
   if (tooBig) return tooBig;
   let body: { code?: unknown; code_verifier?: unknown };
   try { body = await request.json(); } catch { return json({ error: "invalid JSON body" }, 400); }
