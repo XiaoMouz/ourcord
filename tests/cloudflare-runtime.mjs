@@ -2,6 +2,7 @@
 // Uses the Miniflare version already installed with control's pinned Wrangler.
 import { verifyPresenceRetirement } from "./cloudflare-presence-cost.mjs";
 import assert from "node:assert/strict";
+import { verifyErrorBoundaries } from "./cloudflare-error-boundaries.mjs";
 import { verifyJSONBodyLimits } from "./cloudflare-json-limits.mjs";
 import { createRequire } from "node:module";
 import { execFileSync } from "node:child_process";
@@ -393,6 +394,7 @@ try {
   const controlDB = await mf.getD1Database("DB", "control");
   await migrate(controlDB, "control");
   const control = await mf.getWorker("control");
+  await verifyErrorBoundaries({ mf, service, db, controlDB, jwt });
   const statusCountDB = await mf.getD1Database("DB", "control-status-count");
   await migrate(statusCountDB, "control");
   await verifyStatusCounts({ db: statusCountDB, control: await mf.getWorker("control-status-count"), jwt });
