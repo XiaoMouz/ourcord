@@ -163,7 +163,7 @@ describe("App startup authentication recovery", () => {
     begin = deferred();
     await retry();
     await act(async () => begin.resolve(loginURLs));
-    expect(container.textContent).toContain("欢迎回来");
+    expect(container.querySelector("#login-email")).not.toBeNull();
     const oauthButtons = [...container.querySelectorAll("button")].filter((button) => /Google|GitHub/.test(button.textContent ?? ""));
     expect(oauthButtons).toHaveLength(2);
     expect(oauthButtons.every((button) => !button.disabled)).toBe(true);
@@ -208,7 +208,7 @@ describe("App startup authentication recovery", () => {
     await signInFromDeepLink();
     await act(async () => begin.resolve(loginURLs));
     expect(container.textContent).toContain("加入你的第一个大厅");
-    expect(container.textContent).not.toContain("欢迎回来");
+    expect(container.querySelector("#login-email")).toBeNull();
   });
 
   it("does not start PKCE setup from a stale status while a callback is exchanging", async () => {
@@ -235,7 +235,7 @@ describe("App startup authentication recovery", () => {
     await act(async () => status.resolve({ authenticated: false }));
     expect(calls("auth.begin")).toHaveLength(1);
     await act(async () => begin.resolve(loginURLs));
-    expect(container.textContent).toContain("欢迎回来");
+    expect(container.querySelector("#login-email")).not.toBeNull();
   });
 
   it("recovers a failed startup URL event using the same verifier when getCurrent is empty", async () => {
@@ -280,7 +280,7 @@ describe("App startup authentication recovery", () => {
     await retry();
     expect(vi.mocked(getCurrent)).toHaveBeenCalledTimes(2);
     expect(calls("auth.begin")).toHaveLength(1);
-    expect(container.textContent).toContain("欢迎回来");
+    expect(container.querySelector("#login-email")).not.toBeNull();
   });
 
   it("preserves the original verifier when a cold-start exchange fails transiently", async () => {
@@ -330,7 +330,7 @@ describe("App startup authentication recovery", () => {
     await act(async () => restart!.click());
     expect(calls("auth.begin")).toHaveLength(1);
     expect(calls("auth.begin")[0][1]).toEqual({ restart: true });
-    expect(container.textContent).toContain("欢迎回来");
+    expect(container.querySelector("#login-email")).not.toBeNull();
   });
 
   it("exchanges a one-time callback only once across startup and URL events", async () => {

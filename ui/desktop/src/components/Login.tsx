@@ -1,8 +1,5 @@
 import { useEffect, useState, type CSSProperties } from "react";
 
-
-import { SignalMark } from "./ui";
-
 export default function Login({ busy, cooldownSeconds, loginURLs, onMagic, onOAuth }: {
   busy: boolean;
   cooldownSeconds: number;
@@ -31,8 +28,7 @@ export default function Login({ busy, cooldownSeconds, loginURLs, onMagic, onOAu
       event.preventDefault();
       if (canSend) onMagic(address);
     }}>
-      <div className="login-brand"><SignalMark />OurCord</div>
-      <h1>欢迎回来</h1>
+      <h1>登录</h1>
       <label htmlFor="login-email">邮箱地址</label>
       <input id="login-email" className="input w-full" type="email" required autoComplete="email"
         value={email} onChange={(event) => setEmail(event.target.value)} placeholder="name@example.com" />

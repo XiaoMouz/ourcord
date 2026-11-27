@@ -74,7 +74,7 @@ export default function DiagnosticsModal({ snapshot, close, onError }: {
         </Tooltip></div>
 
         <section className="card card-border bg-base-200"><div className="card-body gap-3 p-5">
-          <h3 className="card-title text-base">Peer <span className="badge badge-ghost badge-sm">{peers.length}</span></h3>
+          <h3 className="card-title text-base">Peer {peers.length > 0 && <span className="badge badge-ghost badge-sm">{peers.length}</span>}</h3>
           {peers.length === 0 && <div className="py-4 text-sm text-base-content/45">暂无已连接 Peer</div>}
           <ul className="list rounded-box bg-base-100">
           {peers.map((peer) => <li key={peer.public_key} className="list-row items-center gap-3">
@@ -120,7 +120,7 @@ export default function DiagnosticsModal({ snapshot, close, onError }: {
               <strong className="flex items-center gap-2 truncate">{device.name || shortKey(device.public_key)}
                 {device.public_key === profile?.public_key && <span className="badge badge-primary badge-soft badge-xs">本机</span>}
               </strong>
-              <small className="block truncate font-mono text-base-content/45">{shortKey(device.public_key)} · {relativeTime(device.last_used)}</small>
+              <small className="block truncate font-mono text-base-content/45">{device.name && `${shortKey(device.public_key)} · `}{relativeTime(device.last_used)}</small>
             </div>
             <button className="btn btn-error btn-soft btn-sm" disabled={device.public_key === profile?.public_key} onClick={() => void revoke(device)}>吊销</button>
           </li>)}

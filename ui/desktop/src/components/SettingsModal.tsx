@@ -85,9 +85,8 @@ export default function SettingsModal({ snapshot, auth, close, refreshSnapshot, 
         <nav aria-label="设置分类">{(["语音", "账号", "网络"] as const).map((item) =>
           <button key={item} type="button" aria-current={section === item ? "true" : undefined} onClick={() => setSection(item)}>{item}</button>)}
         </nav>
-        <div className="settings-content" key={section}>
+        <section className="settings-content" aria-label={section} key={section}>
           {section === "语音" && <><section className="settings-group">
-            <h3>语音</h3>
           <fieldset className="fieldset">
             <legend className="fieldset-legend">输入模式</legend>
             <select className="select w-full" aria-label="输入模式" value={prefs.mode} onChange={(e) => setPrefs({ ...prefs, mode: e.target.value as VoiceMode })}>
@@ -123,7 +122,6 @@ export default function SettingsModal({ snapshot, auth, close, refreshSnapshot, 
           </section></>}
 
           {section === "账号" && <section className="settings-group">
-            <h3>账号</h3>
             <fieldset className="fieldset"><legend className="fieldset-legend">显示名</legend>
               <input className="input w-full" aria-label="显示名" value={name} maxLength={DISPLAY_NAME_MAX} aria-invalid={nameTooLong || undefined} aria-describedby={nameTooLong ? "display-name-error" : undefined} onChange={(e) => setName(e.target.value)} />
               {nameTooLong && <p id="display-name-error" role="alert" className="text-error">显示名过长，请缩短后保存。</p>}
@@ -133,7 +131,6 @@ export default function SettingsModal({ snapshot, auth, close, refreshSnapshot, 
           </section>}
 
           {section === "网络" && <section className="settings-group">
-            <h3>网络</h3>
             {!snapshot.daemon_available && <div role="alert" className="alert alert-warning"><span>后台服务不可用，正在重试。</span></div>}
             <div className="stats stats-vertical bg-base-100 shadow-sm sm:stats-horizontal">
               <div className="stat px-4 py-3"><div className="stat-title text-xs">后台服务</div><div className="stat-value text-base">{snapshot.daemon_available ? "在线" : "离线"}</div></div>
@@ -146,7 +143,7 @@ export default function SettingsModal({ snapshot, auth, close, refreshSnapshot, 
               {snapshot.status?.vpn_active && <button className="btn btn-sm" onClick={() => void disconnectVPN()}>断开 VPN</button>}
             </div>
           </section>}
-        </div>
+        </section>
       </div>
   </ModalFrame>;
 }

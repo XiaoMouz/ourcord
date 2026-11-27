@@ -36,13 +36,7 @@ export default function MemberPanel({ members, loading, getName, onCopy }: {
     </li>;
   }
 
-  return <aside className="member-directory flex min-w-0 flex-col border-l border-base-300 bg-base-100">
-    <header className="navbar min-h-16 shrink-0 border-b border-base-300 px-4">
-      <div className="min-w-0 flex-1">
-        <h2 className="font-semibold">成员{loading ? "" : ` · ${members.length}`}</h2>
-        {!loading && <p className="mt-0.5 text-xs text-base-content/45">{onlineMembers.length} 人在线</p>}
-      </div>
-    </header>
+  return <aside aria-label="成员" aria-busy={loading} className="member-directory flex min-w-0 flex-col border-l border-base-300 bg-base-100">
     <div className="min-h-0 flex-1 overflow-y-auto p-2">
       {loading && members.length === 0
         ? <ul className="list">{[0, 1, 2].map((index) => <li key={index} className="list-row items-center px-2 py-2">
@@ -50,6 +44,7 @@ export default function MemberPanel({ members, loading, getName, onCopy }: {
             <div className="skeleton h-3" style={{ width: `${42 + index * 12}%` }} />
           </li>)}</ul>
         : <>
+          {members.length === 0 && <p className="px-2 py-3 text-sm">暂无成员</p>}
           {onlineMembers.length > 0 && <section>
             <h3 className="px-2 pb-1 pt-2 text-xs font-medium text-base-content/45">在线 — {onlineMembers.length}</h3>
             <ul className="list">{onlineMembers.map((member) => memberRow(member, true))}</ul>
