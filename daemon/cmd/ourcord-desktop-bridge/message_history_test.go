@@ -54,3 +54,43 @@ func TestMessageHistoryRejectsInvalidCursorPosition(t *testing.T) {
 		t.Errorf("invalid cursors made %d service requests", got)
 	}
 }
+
+func TestMessageHistoryPreservesDeletionRevision(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		body string
+		want *int64
+	}{
+		{name: "initial", body: `{"messages":[],"deletion_revision":0}`, want: new(int64(0))},
+		{name: "deleted", body: `{"messages":[],"deletion_revision":7}`, want: new(int64(7))},
+		{name: "legacy", body: `{"messages":[]}`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, tt.body)
+			}))
+			defer server.Close()
+			b := refreshTestBridge(t, server)
+			result, err := b.dispatch("messages.list", json.RawMessage(`{"room_id":"room"}`))
+			if err != nil {
+				t.Fatal(err)
+			}
+			encoded, err := json.Marshal(result)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var page struct {
+				Messages         []json.RawMessage `json:"messages"`
+				DeletionRevision *int64            `json:"deletion_revision"`
+			}
+			if err := json.Unmarshal(encoded, &page); err != nil {
+				t.Fatal(err)
+			}
+			if page.Messages == nil || (page.DeletionRevision == nil) != (tt.want == nil) ||
+				tt.want != nil && *page.DeletionRevision != *tt.want {
+				t.Fatalf("message page metadata changed in bridge: %s", encoded)
+			}
+		})
+	}
+}
