@@ -272,6 +272,8 @@ netsh advfirewall firewall add rule name="OurCord daemon" dir=in action=allow pr
 | 出站 | TCP/443 → DERP 节点 | 中继兜底（打洞失败时） |
 | 入站 | UDP（`--wg-listen-port` 或临时端口） | 打洞返程；走 hairpin/对称 NAT 时尤其重要 |
 
+自建 STUN 时，在控制层 `/api/stun/servers` 登记支持标准 Binding 请求的服务。随 `ourcord-relay --stun` 启动的 Tailscale 监听器要求专用客户端标识，OurCord daemon 的 Pion ICE 客户端从该端口收集到的反射候选数为零。未配置自建服务时，控制层返回内置公共 STUN 列表。
+
 中继链场景（A-B-C，B 当中继）对网络无额外要求——routing 通过 WireGuard `AllowedIPs` 实现，对操作系统透明。详细策略见 `daemon/AGENTS.md` §「TUN 路由」与 `daemon/pkg/routing`。
 
 ---

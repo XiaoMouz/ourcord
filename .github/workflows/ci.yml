@@ -199,6 +199,8 @@ jobs:
       - run: go build ./...
       - run: go vet ./pkg/tun/...
       - run: go test ./pkg/tun/... ./cmd/ourcordd/... ./pkg/media/...
+      - name: ICE gathering with local STUN servers
+        run: go test ./pkg/ice/...
       # Real Wintun adapter smoke: driver load + address assign + /32 route
       # round-trip. Needs wintun.dll on the DLL search path; the runner account
       # is a local admin so adapter creation and the System32 copy succeed.
@@ -217,6 +219,8 @@ jobs:
         env:
           OURCORD_WINTUN_SMOKE: "1"
         run: go test -run TestWintunAdapterSmoke -v ./pkg/tun/
+      - name: Verify private client output permissions
+        run: go test -run '^(TestEnrollDevicePersistsCredentialWithoutReturningIt|TestWriteDiagnosticsArchiveRedactsLogCredentials|TestFailedDiagnosticsExportPreservesExistingArchive|TestDiagnosticsZIPPropagatesFlushError)$' ./pkg/client
 
   desktop-web:
     name: Desktop (React)

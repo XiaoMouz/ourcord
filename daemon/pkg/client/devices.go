@@ -131,14 +131,11 @@ func writePrivateFile(path string, data []byte) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	f, err := openPrivateOutput(path)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
-	if err := f.Chmod(0o600); err != nil {
-		return err
-	}
 	_, err = f.Write(data)
 	return err
 }

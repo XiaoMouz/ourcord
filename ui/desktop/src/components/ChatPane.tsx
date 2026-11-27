@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { bridge, type FileRecord, type Message, type Room } from "../bridge";
 import { mergeMessages, senderIDs } from "../messages";
+import { indexMissingFiles } from "../files";
 import { formatBytes, parseAttachments } from "../format";
 import { ChatSkeleton, Spinner } from "./Skeleton";
 import ContextMenu, { type MenuItem } from "./ContextMenu";
@@ -35,11 +36,14 @@ export default function ChatPane({ room, myUserID, canModerate, getName, ensureN
   const [messages, setMessages] = useState<Message[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [draft, setDraft] = useState("");
+  const draftRevision = useRef(0);
+  const composerBusy = useRef(false);
   const [sending, setSending] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [reachedStart, setReachedStart] = useState(false);
   const [menu, setMenu] = useState<{ x: number; y: number; items: MenuItem[] } | null>(null);
   const [files, setFiles] = useState<Record<string, FileRecord>>({});
+  const fileLookup = useRef({ pending: false, retryAt: 0, delay: POLL_MS, missing: new Set<string>() });
   const [downloading, setDownloading] = useState("");
   const [uploading, setUploading] = useState(false);
   const listRef = useRef<HTMLDivElement>(null);
@@ -109,25 +113,36 @@ export default function ChatPane({ room, myUserID, canModerate, getName, ensureN
     };
   }, [poll]);
 
-  // Resolve attachment ids to file metadata lazily: only hit files.list when a
-  // message references an id we have not indexed yet.
+  useEffect(() => () => {
+    fileLookup.current = { pending: false, retryAt: 0, delay: POLL_MS, missing: new Set() };
+  }, [room.id]);
+
   useEffect(() => {
+    const lookup = fileLookup.current;
+    if (lookup.pending) return;
     const needed = new Set<string>();
     for (const message of messages) for (const id of parseAttachments(message.attachments)) if (!files[id]) needed.add(id);
     if (needed.size === 0) return;
-    let cancelled = false;
+    if (Date.now() < lookup.retryAt && [...needed].every((id) => lookup.missing.has(id))) return;
+    lookup.pending = true;
     void (async () => {
       try {
         const data = await bridge<{ files: FileRecord[] }>("files.list", { room_id: room.id });
-        if (cancelled) return;
-        setFiles((current) => {
-          const next = { ...current };
-          for (const file of data.files ?? []) next[file.id] = file;
-          return next;
-        });
+        if (fileLookup.current !== lookup) return;
+        const incoming = data.files ?? [];
+        setFiles((current) => indexMissingFiles(current, incoming));
+        if (incoming.some((file) => needed.has(file.id))) {
+          lookup.delay = POLL_MS;
+          lookup.retryAt = 0;
+          return;
+        }
       } catch { /* attachments render as generic chips until this succeeds */ }
+      finally { lookup.pending = false; }
+      // Retry on an existing message poll; a missing file creates no timer of its own.
+      lookup.missing = needed;
+      lookup.retryAt = Date.now() + lookup.delay;
+      lookup.delay = Math.min(lookup.delay * 2, MAX_POLL_RETRY_MS);
     })();
-    return () => { cancelled = true; };
   }, [messages, files, room.id]);
 
   async function download(fileID: string, filename: string) {
@@ -182,32 +197,34 @@ export default function ChatPane({ room, myUserID, canModerate, getName, ensureN
 
   async function send() {
     const content = draft.trim();
-    if (!content || sending) return;
+    if (!content || composerBusy.current) return;
+    composerBusy.current = true;
+    const submittedRevision = draftRevision.current;
     setSending(true);
     try {
       await bridge("messages.send", { room_id: room.id, content });
-      setDraft("");
+      if (draftRevision.current === submittedRevision) setDraft("");
       stickToBottom.current = true;
       await poll();
-    } catch (e) { onError(String(e)); } finally { setSending(false); }
+    } catch (e) { onError(String(e)); } finally { composerBusy.current = false; setSending(false); }
   }
 
   async function attach() {
-    if (uploading) return;
-    let path: string | null;
-    try { path = (await open({ multiple: false, directory: false })) as string | null; }
-    catch (e) { onError(String(e)); return; }
-    if (!path) return;
+    if (composerBusy.current) return;
+    composerBusy.current = true;
+    const submittedRevision = draftRevision.current;
     setUploading(true);
     try {
+      const path = (await open({ multiple: false, directory: false })) as string | null;
+      if (!path) return;
       const uploaded = await bridge<{ file_id: string; filename: string }>("files.upload", { room_id: room.id, path });
       // The message carries the attachment; content is optional (a bare caption).
       await bridge("messages.send", { room_id: room.id, content: draft.trim(), attachments: [uploaded.file_id] });
-      setDraft("");
+      if (draftRevision.current === submittedRevision) setDraft("");
       stickToBottom.current = true;
       await poll();
       onNotice(`已发送附件 ${uploaded.filename}`);
-    } catch (e) { onError(String(e)); } finally { setUploading(false); }
+    } catch (e) { onError(String(e)); } finally { composerBusy.current = false; setUploading(false); }
   }
 
   async function remove(message: Message) {
@@ -271,10 +288,10 @@ export default function ChatPane({ room, myUserID, canModerate, getName, ensureN
       </article>)}
     </div>
     <form className="flex shrink-0 items-center gap-2 border-t border-base-300 bg-base-100 p-4" onSubmit={(e) => { e.preventDefault(); void send(); }}>
-      <IconButton label="上传附件" className="btn-md" disabled={uploading} onClick={() => void attach()}>
+      <IconButton label="上传附件" className="btn-md" disabled={uploading || sending} onClick={() => void attach()}>
         {uploading ? <Spinner /> : "＋"}
       </IconButton>
-      <input className="input min-w-0 flex-1" value={draft} onChange={(e) => setDraft(e.target.value)}
+      <input className="input min-w-0 flex-1" value={draft} onChange={(e) => { draftRevision.current += 1; setDraft(e.target.value); }}
         placeholder={uploading ? "上传中…" : `发送到 #${room.name}`} maxLength={4000} disabled={uploading} />
       <button className="btn btn-primary" type="submit" disabled={sending || uploading || !draft.trim()}>
         {sending && <Spinner />}发送

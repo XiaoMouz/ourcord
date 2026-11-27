@@ -244,6 +244,8 @@ build_bins() {
   [[ -n "$GO_BIN" ]] || fail "go is required"
   (cd "$ROOT/daemon" && "$GO_BIN" build -o "$WORKDIR/ourcordd" ./cmd/ourcordd)
   (cd "$ROOT/daemon" && "$GO_BIN" build -o "$WORKDIR/ourcord-cli" ./cmd/ourcord-cli)
+  (cd "$ROOT/daemon" && "$GO_BIN" build -o "$WORKDIR/stun-server" github.com/pion/turn/v5/examples/stun-only-server)
+  (cd "$ROOT/daemon" && "$GO_BIN" build -o "$WORKDIR/check-stun" "$ROOT/tests/e2e/check_stun.go")
   (cd "$ROOT/relay" && "$GO_BIN" build -o "$WORKDIR/ourcord-relay" ./cmd/ourcord-relay)
 }
 
@@ -291,11 +293,28 @@ start_relay() {
     --addr ":$RELAY_PORT" \
     --mode lobby \
     --region netns \
-    --stun \
-    --stun-port "$STUN_PORT" \
+    --stun=false \
     --state-dir "$WORKDIR/relay-state"
   wait_http "http://127.0.0.1:$RELAY_PORT/health" relay
   wait_file_text "$WORKDIR/relay.log" "registered as relay|Resuming as relay" relay
+}
+
+start_local_stun() {
+  # The relay's Tailscale STUN listener expects a different client. Run a
+  # standards-compatible server inside B's private network namespace.
+  local host=${IPS[1]} token payload
+  token="$(jwt u1)"
+  run_bg stun sudo ip netns exec ocabc-b "$WORKDIR/stun-server" --public-ip "$host" --port "$STUN_PORT"
+  payload="$(python3 -c 'import json,sys; print(json.dumps({"host":sys.argv[1],"port":int(sys.argv[2])}))' "$host" "$STUN_PORT")"
+  api_json POST "$CONTROL_LOCAL/api/stun/servers" "$token" "$payload" >/dev/null
+  api_json GET "$CONTROL_LOCAL/api/stun/servers" "$token" | python3 -c '
+import json, sys
+data = json.load(sys.stdin)
+expected = [(sys.argv[1], int(sys.argv[2]))]
+if data["source"] != "db" or [(s["host"], s["port"]) for s in data["servers"]] != expected:
+    sys.exit("expected only the local STUN server in control discovery")
+' "$host" "$STUN_PORT"
+  sudo ip netns exec ocabc-a "$WORKDIR/check-stun" "stun:$host:$STUN_PORT"
 }
 
 create_product_room() {
@@ -509,6 +528,7 @@ main() {
   check_netns_underlay
   start_workers
   start_relay
+  start_local_stun
   create_product_room
   start_daemons
   connect_all
