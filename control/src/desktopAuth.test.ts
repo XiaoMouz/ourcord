@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { requestDesktopMagic } from "./authHandler";
+import { confirmDesktopMagic, requestDesktopMagic } from "./authHandler";
 import type { Env } from "./types";
 
 function kvStub() {
@@ -19,6 +19,28 @@ afterEach(() => {
 });
 
 describe("desktop magic login", () => {
+  it("gives browsers a recovery page for consumed links without echoing the token", async () => {
+    const token = "e".repeat(64);
+    const env = { KV: kvStub().api } as Env;
+    const response = await confirmDesktopMagic(new Request("https://control.example/api/auth/desktop/magic/confirm", {
+      method: "POST", headers: { Accept: "text/html" }, body: new URLSearchParams({ token }),
+    }), env);
+    expect(response.status).toBe(400);
+    expect(response.headers.get("Content-Type")).toContain("text/html");
+    expect(response.headers.get("Cache-Control")).toBe("no-store");
+    const html = await response.text();
+    expect(html).toContain("request a new sign-in email");
+    expect(html).not.toContain(token);
+  });
+
+  it("retains structured errors for non-browser confirmation callers", async () => {
+    const response = await confirmDesktopMagic(new Request("https://control.example/api/auth/desktop/magic/confirm", {
+      method: "POST", body: new URLSearchParams({ token: "invalid" }),
+    }), {} as Env);
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: "Invalid or expired link" });
+  });
+
   it("stores only a hash of the link token and applies recipient cooldown", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-10-22T00:00:00Z"));
