@@ -99,6 +99,39 @@ describe("ChatPane background polling under slow responses", () => {
     expect(onError).not.toHaveBeenCalled();
   });
 
+  it("backs off consecutive failures, caps the interval and restores normal polling on recovery", async () => {
+    let offline = true;
+    vi.mocked(bridge).mockImplementation(async () => {
+      if (offline) throw new Error("service unavailable");
+      return { messages: [] };
+    });
+    await mount();
+    let expectedReads = 1;
+    for (const delay of [3000, 6000, 12000, 24000, 48000, 60000, 60000]) {
+      await tick(delay - 1);
+      expect(reads()).toBe(expectedReads);
+      await tick(1);
+      expect(reads()).toBe(++expectedReads);
+    }
+    offline = false;
+    await tick(60000);
+    expect(reads()).toBe(++expectedReads);
+    await tick(3000);
+    expect(reads()).toBe(++expectedReads);
+    await act(async () => root.render(null));
+    await tick(60000);
+    expect(reads()).toBe(expectedReads);
+  });
+
+  it("does not schedule another poll when an in-flight read settles after unmount", async () => {
+    const pending = nextRead = deferred<{ messages: Message[] }>();
+    await mount();
+    await act(async () => root.render(null));
+    await act(async () => pending.reject(new Error("service unavailable")));
+    await tick(60000);
+    expect(reads()).toBe(1);
+  });
+
   it("refreshes immediately after sending while a background read is pending", async () => {
     await mount();
     const pending = nextRead = deferred<{ messages: Message[] }>();

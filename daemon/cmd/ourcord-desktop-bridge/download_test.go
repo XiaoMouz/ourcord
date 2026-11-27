@@ -8,10 +8,12 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"unicode/utf8"
 )
 
 func downloadTestBridge(t *testing.T, server *httptest.Server) *bridge {
@@ -97,8 +99,8 @@ func TestSaveDownloadRemovesInterruptedTransfer(t *testing.T) {
 
 func TestSaveDownloadEnforcesLimitWithoutSilentTruncation(t *testing.T) {
 	b := &bridge{downloadDir: t.TempDir()}
-	// The production path uses 512 MiB; a small limit exercises the same
-	// streaming save and cleanup without writing half a GiB in every CI run.
+	// A small limit exercises the same streaming overflow and cleanup path
+	// without writing five GiB to test the production ceiling.
 	_, err := b.saveDownloadWithLimit("oversize.txt", "attachment", strings.NewReader("12345"), 4)
 	if err == nil {
 		t.Fatal("oversize download reported success with truncated bytes")
@@ -194,6 +196,104 @@ func TestDownloadExternalJSONAttachment(t *testing.T) {
 	path := assertDownloaded(t, result, content)
 	if filepath.Dir(path) != b.downloadDir {
 		t.Fatal("download escaped the destination directory")
+	}
+}
+
+func TestDownloadUnicodeFilenameSurvivesBridgeJSON(t *testing.T) {
+	for _, tc := range []struct{ name, filename string }{
+		{"CJK", strings.Repeat("\u6587", 61) + ".txt"},
+		{"emoji", strings.Repeat("\U0001f680", 45) + "x.txt"},
+		{"two-byte characters", strings.Repeat("\u00e9", 91) + "x.txt"},
+		{"short Unicode", "\u6587\u4ef6.txt"},
+		{"ASCII", strings.Repeat("a", 200) + ".txt"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/api/rooms/room/files/attachment/download" {
+					t.Errorf("unexpected request: %s", r.URL.Path)
+				}
+				w.Header().Set("Content-Type", "text/plain")
+				w.Header().Set("Content-Disposition", "attachment")
+				_, _ = io.WriteString(w, "downloaded bytes")
+			}))
+			defer server.Close()
+			b := downloadTestBridge(t, server)
+			paths := make(map[string]bool)
+			for range 3 {
+				result, err := downloadAttachment(b, tc.filename)
+				if err != nil {
+					t.Fatal(err)
+				}
+				wire, err := json.Marshal(response{ID: "download", Result: result})
+				if err != nil {
+					t.Fatal(err)
+				}
+				var decoded struct {
+					Result map[string]string `json:"result"`
+				}
+				if err := json.Unmarshal(wire, &decoded); err != nil {
+					t.Fatal(err)
+				}
+				path := decoded.Result["saved_path"]
+				// This is the path the React client receives and asks the OS to
+				// reveal. JSON replaces invalid UTF-8, potentially changing it.
+				if !utf8.ValidString(result.(map[string]string)["saved_path"]) || path != result.(map[string]string)["saved_path"] {
+					t.Fatal("saved path changed while encoding the bridge response")
+				}
+				assertDownloaded(t, decoded.Result, "downloaded bytes")
+				if filepath.Dir(path) != b.downloadDir || filepath.Ext(path) != ".txt" || paths[path] {
+					t.Fatalf("invalid or repeated download path: %q", path)
+				}
+				paths[path] = true
+			}
+		})
+	}
+}
+
+type zeroDownloadReader struct{}
+
+func (zeroDownloadReader) Read(p []byte) (int, error) {
+	clear(p)
+	return len(p), nil
+}
+
+func TestDownloadExternalAttachmentAbove512MiB(t *testing.T) {
+	if testing.Short() {
+		t.Skip("streams a 512 MiB attachment to a temporary file")
+	}
+	const size int64 = (512 << 20) + 1
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "" {
+			t.Error("account token leaked to external backend")
+		}
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Header().Set("Content-Length", strconv.FormatInt(size, 10))
+		_, _ = io.CopyN(w, zeroDownloadReader{}, size)
+	}))
+	defer backend.Close()
+	service := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"url": backend.URL + "/file?cap=test", "storage_location": "user_server"})
+	}))
+	defer service.Close()
+	b := downloadTestBridge(t, service)
+	result, err := downloadAttachment(b, "large.bin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := result.(map[string]string)["saved_path"]
+	info, err := os.Stat(path)
+	if err != nil || info.Size() != size {
+		t.Fatalf("download size mismatch: info=%v error=%v", info, err)
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	var last [1]byte
+	if _, err := file.ReadAt(last[:], size-1); err != nil || last[0] != 0 {
+		t.Fatalf("last byte missing or corrupt: %v, %v", last, err)
 	}
 }
 

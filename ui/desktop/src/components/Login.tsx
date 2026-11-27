@@ -7,8 +7,8 @@ export default function Login({ busy, cooldownSeconds, loginURLs, onMagic, onOAu
   onMagic: (email: string) => void;
   onOAuth?: (provider: "google" | "github") => void;
 }) {
-  const [email, setEmail] = useState("");
   const coolingDown = cooldownSeconds > 0;
+  const sendUnavailable = busy || coolingDown;
   const [animateCooldown, setAnimateCooldown] = useState(false);
 
   useEffect(() => {
@@ -20,29 +20,29 @@ export default function Login({ busy, cooldownSeconds, loginURLs, onMagic, onOAu
     return () => cancelAnimationFrame(frame);
   }, [coolingDown]);
 
-  const address = email.trim();
-  const canSend = !busy && !coolingDown && address.includes("@");
   return <main className="login-layout">
-
-    <form className="login-form" onSubmit={(event) => {
-      event.preventDefault();
-      if (canSend) onMagic(address);
-    }}>
+    <section className="login-form">
       <h1>登录</h1>
-      <label htmlFor="login-email">邮箱地址</label>
-      <input id="login-email" className="input w-full" type="email" required autoComplete="email"
-        value={email} onChange={(event) => setEmail(event.target.value)} placeholder="name@example.com" />
-      <button className="btn btn-primary w-full" type="submit" disabled={!canSend}>
-        {busy && <span className="loading loading-spinner loading-sm" />}
-        {coolingDown ? <span aria-live="polite">
-          <span className={`countdown font-mono${animateCooldown ? "" : " countdown-initial"}`}>
-            <span style={{ "--value": cooldownSeconds } as CSSProperties} aria-label={String(cooldownSeconds)}>{cooldownSeconds}</span>
-          </span> 秒后可重新发送
-        </span> : "发送登录链接"}
-      </button>
+      <form className="grid gap-3" onSubmit={(event) => {
+        event.preventDefault();
+        const email = new FormData(event.currentTarget).get("email");
+        if (!sendUnavailable && typeof email === "string") onMagic(email);
+      }}>
+        <label htmlFor="login-email">邮箱地址</label>
+        <input id="login-email" className="input w-full" type="email" name="email" required
+          autoComplete="email" placeholder="name@example.com" />
+        <button className="btn btn-primary w-full" type="submit" disabled={sendUnavailable}>
+          {busy && <span className="loading loading-spinner loading-sm" />}
+          {coolingDown ? <span aria-live="polite">
+            <span className={`countdown font-mono${animateCooldown ? "" : " countdown-initial"}`}>
+              <span style={{ "--value": cooldownSeconds } as CSSProperties} aria-label={String(cooldownSeconds)}>{cooldownSeconds}</span>
+            </span> 秒后可重新发送
+          </span> : "发送登录链接"}
+        </button>
+      </form>
       <div className="divider text-xs">或</div>
       <button type="button" className="btn w-full" disabled={busy || !loginURLs || !onOAuth} onClick={() => onOAuth?.("google")}>使用 Google 登录</button>
       <button type="button" className="btn w-full" disabled={busy || !loginURLs || !onOAuth} onClick={() => onOAuth?.("github")}>使用 GitHub 登录</button>
-    </form>
+    </section>
   </main>;
 }

@@ -12,6 +12,8 @@ import { EmptyState, IconButton, InitialAvatar, Tooltip } from "./ui";
 
 const PAGE_SIZE = 50;
 const POLL_MS = 3000;
+const MAX_POLL_RETRY_MS = 60_000;
+type MessagePage = { messages: Message[]; deletion_revision?: number };
 
 function formatTime(createdAt: number): string {
   const date = new Date(createdAt * 1000);
@@ -52,33 +54,66 @@ export default function ChatPane({ room, composers, myUserID, canModerate, getNa
   // Track deletions only for reads already in flight; each read releases its
   // exclusions on completion instead of retaining an ever-growing tombstone set.
   const pendingMessageReads = useRef(new Set<Set<string>>());
+  const revisionState = useRef<{ revision?: number; versioned: boolean; epoch: number }>({ versioned: false, epoch: 0 });
+  const acceptRevision = useCallback((revision: number | undefined, readEpoch: number) => {
+    const state = revisionState.current;
+    if (revision === undefined) {
+      // Old in-flight replies cannot undo a versioned refresh. A fresh reply
+      // after a service rollback can resume legacy behavior after a reset.
+      if (readEpoch !== state.epoch) return "stale";
+      if (!state.versioned) return "same";
+      state.versioned = false;
+      state.epoch++;
+      return "changed";
+    }
+    if (state.revision !== undefined && revision < state.revision) return "stale";
+    if (!state.versioned && readEpoch !== state.epoch) return "stale";
+    const changed = !state.versioned || revision !== state.revision;
+    state.revision = revision;
+    state.versioned = true;
+    if (changed) state.epoch++;
+    return changed ? "changed" : "same";
+  }, []);
 
   const poll = useCallback(async () => {
+    const readEpoch = revisionState.current.epoch;
     const deleted = new Set<string>();
     pendingMessageReads.current.add(deleted);
     try {
-      const data = await bridge<{ messages: Message[] }>("messages.list", { room_id: room.id, limit: PAGE_SIZE });
+      const data = await bridge<MessagePage>("messages.list", { room_id: room.id, limit: PAGE_SIZE });
+      const revision = acceptRevision(data.deletion_revision, readEpoch);
+      if (revision === "stale") return true;
       const incoming = (data.messages ?? []).filter((message) => !deleted.has(message.id));
-      setMessages((current) => mergeMessages(current, incoming));
+      if (revision === "changed") {
+        setReachedStart(false);
+        stickToBottom.current = true;
+      }
+      setMessages((current) => mergeMessages(revision === "changed" ? [] : current, incoming));
       void ensureNames(senderIDs(incoming));
-    } catch { /* transient poll failure; the next tick retries */ }
+      return true;
+    } catch { return false; }
     finally {
       pendingMessageReads.current.delete(deleted);
       setLoaded(true);
     }
-  }, [room.id, ensureNames]);
+  }, [room.id, ensureNames, acceptRevision]);
 
   useEffect(() => {
-    let polling = false;
+    let active = true;
+    let retryDelay = POLL_MS;
+    let timer: number;
     const pollBackground = async () => {
-      if (polling) return;
-      polling = true;
-      try { await poll(); }
-      finally { polling = false; }
+      const succeeded = await poll();
+      if (!active) return;
+      const delay = succeeded ? POLL_MS : retryDelay;
+      retryDelay = succeeded ? POLL_MS : Math.min(delay * 2, MAX_POLL_RETRY_MS);
+      timer = window.setTimeout(() => void pollBackground(), delay);
     };
     void pollBackground();
-    const timer = window.setInterval(() => void pollBackground(), POLL_MS);
-    return () => clearInterval(timer);
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+    };
   }, [poll]);
 
   // Resolve attachment ids to file metadata lazily: only hit files.list when a
@@ -124,13 +159,24 @@ export default function ChatPane({ room, composers, myUserID, canModerate, getNa
   async function loadOlder() {
     if (messages.length === 0 || loadingOlder) return;
     const boundary = messages[0];
+    const readEpoch = revisionState.current.epoch;
     setLoadingOlder(true);
     const deleted = new Set<string>();
     pendingMessageReads.current.add(deleted);
     try {
-      const data = await bridge<{ messages: Message[] }>("messages.list", {
+      const data = await bridge<MessagePage>("messages.list", {
         room_id: room.id, before: boundary.id, before_created_at: boundary.created_at, limit: PAGE_SIZE,
       });
+      const revision = acceptRevision(data.deletion_revision, readEpoch);
+      if (revision === "stale") return;
+      if (revision === "changed") {
+        // The deletion may be in any cached page, not just this response.
+        setMessages([]);
+        setReachedStart(false);
+        stickToBottom.current = true;
+        await poll();
+        return;
+      }
       if ((data.messages ?? []).length === 0) setReachedStart(true);
       const older = (data.messages ?? []).filter((message) => !deleted.has(message.id));
       setMessages((current) => mergeMessages(current, older));
