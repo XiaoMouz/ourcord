@@ -24,6 +24,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/ourcord/ourcord/daemon/pkg/client"
 	"github.com/ourcord/ourcord/daemon/pkg/ipc"
@@ -840,7 +841,13 @@ func safeFilename(name string) string {
 	name = strings.NewReplacer("/", "_", "\\", "_", "\x00", "").Replace(name)
 	name = strings.TrimLeft(name, ".")
 	if len(name) > 180 {
-		name = name[len(name)-180:]
+		// Keep the suffix/extension within the byte budget without splitting
+		// a UTF-8 character or changing the path during JSON serialization.
+		start := len(name) - 180
+		for start < len(name) && !utf8.RuneStart(name[start]) {
+			start++
+		}
+		name = name[start:]
 	}
 	return name
 }
