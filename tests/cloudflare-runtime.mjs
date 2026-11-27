@@ -2,9 +2,11 @@
 // Uses the Miniflare version already installed with control's pinned Wrangler.
 import { verifyPresenceRetirement } from "./cloudflare-presence-cost.mjs";
 import assert from "node:assert/strict";
+import { verifyJSONBodyLimits } from "./cloudflare-json-limits.mjs";
 import { createRequire } from "node:module";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { verifyProfileBatches } from "./cloudflare-profile-batches.mjs";
 import { tmpdir } from "node:os";
 import { verifyPresenceIndex } from "./cloudflare-presence-index.mjs";
 import { dirname, join } from "node:path";
@@ -13,8 +15,12 @@ import { createHash, createHmac } from "node:crypto";
 import { verifyExternalUploadFinalization } from "./cloudflare-external-uploads.mjs";
 import { verifyRoomReorder } from "./cloudflare-room-reorder.mjs";
 import { verifyInternalReplay } from "./cloudflare-internal-replay.mjs";
+import { verifyMessageRevisions } from "./cloudflare-message-revisions.mjs";
+import { verifyBackendHealthScan } from "./cloudflare-backend-health.mjs";
+import { verifyProfileNameLimit } from "./cloudflare-profile-limits.mjs";
 import { verifyFileListScan } from "./cloudflare-file-list.mjs";
 import { verifyStatusCounts } from "./cloudflare-status-count.mjs";
+import { verifyBackendResolutionScans } from "./cloudflare-backend-resolution.mjs";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const require = createRequire(join(root, "control/package.json"));
@@ -72,12 +78,16 @@ try {
     readFileSync(join(root, "tests/cloudflare-presence-cost-worker.mjs"), "utf8"));
   writeFileSync(join(output, "service/service-under-test.mjs"),
     readFileSync(join(output, "service/index.js"), "utf8"));
+  writeFileSync(join(output, "service/backend-health.mjs"),
+    readFileSync(join(root, "tests/cloudflare-backend-health-worker.mjs"), "utf8"));
   writeFileSync(join(output, "service/presence-index.mjs"),
     readFileSync(join(root, "tests/cloudflare-presence-index-worker.mjs"), "utf8"));
   writeFileSync(join(output, "service/file-list.mjs"),
     readFileSync(join(root, "tests/cloudflare-file-list-worker.mjs"), "utf8"));
   writeFileSync(join(output, "control/control-under-test.mjs"), readFileSync(join(output, "control/index.js"), "utf8"));
   writeFileSync(join(output, "control/status-count.mjs"), readFileSync(join(root, "tests/cloudflare-status-count-worker.mjs"), "utf8"));
+  writeFileSync(join(output, "service/backend-resolution.mjs"),
+    readFileSync(join(root, "tests/cloudflare-backend-resolution-worker.mjs"), "utf8"));
   mf = new Miniflare({
     cf: false,
     workers: [...["control", "service"].map((name) => ({
@@ -87,13 +97,25 @@ try {
       d1Databases: { DB: `local-${name}` }, kvNamespaces: ["KV"], ratelimits: limits,
       ...(name === "control"
         ? { durableObjects: { SIGNAL: { className: "SignalDO", useSQLite: true } } }
-        : { r2Buckets: ["FILES"] }),
+        : { r2Buckets: ["FILES"], unsafeDirectSockets: [{ host: "127.0.0.1", port: 0 }] }),
     })), {
       name: "control-status-count", modules: true, modulesRoot: join(output, "control"),
       scriptPath: join(output, "control/status-count.mjs"),
       compatibilityDate: "2024-01-01", compatibilityFlags: ["nodejs_compat"],
       bindings: { ENVIRONMENT: "production", JWT_SECRET: secret, ADMIN_USER_IDS: "status-operator" },
       d1Databases: { DB: "local-control-status-count" }, ratelimits: limits,
+    }, {
+      name: "service-backend-resolution", modules: true, modulesRoot: join(output, "service"),
+      scriptPath: join(output, "service/backend-resolution.mjs"),
+      compatibilityDate: "2024-01-01", compatibilityFlags: ["nodejs_compat"],
+      bindings: { ENVIRONMENT: "development", JWT_SECRET: secret },
+      d1Databases: { DB: "local-service" }, r2Buckets: ["FILES"],
+    }, {
+      name: "service-backend-health", modules: true, modulesRoot: join(output, "service"),
+      scriptPath: join(output, "service/backend-health.mjs"),
+      compatibilityDate: "2024-01-01", compatibilityFlags: ["nodejs_compat"],
+      d1Databases: { DB: "local-service" }, r2Buckets: ["FILES"],
+      outboundService: () => new Response(null, { status: 200 }),
     }, {
       name: "service-file-list", modules: true, modulesRoot: join(output, "service"),
       scriptPath: join(output, "service/file-list.mjs"),
@@ -122,6 +144,7 @@ try {
   });
   const db = await mf.getD1Database("DB", "service");
   await migrate(db, "service");
+  await verifyBackendHealthScan({ db, worker: await mf.getWorker("service-backend-health") });
   await db.batch([
     db.prepare("INSERT INTO lobbies VALUES ('L1','test','u1',NULL,1)"),
     db.prepare("INSERT INTO rooms(id,lobby_id,name) VALUES ('R1','L1','files'), ('R2','L1','general')"),
@@ -129,6 +152,9 @@ try {
     db.prepare("INSERT INTO file_policies(lobby_id,max_temp_files,user_server_enabled,lobby_server_enabled) VALUES ('L1',0,0,0)"),
   ]);
   const service = await mf.getWorker("service");
+  await verifyMessageRevisions({ db, service: await mf.getWorker("service-presence-cost"), jwt });
+  await verifyBackendResolutionScans({ db, service: await mf.getWorker("service-backend-resolution"), jwt });
+  await verifyJSONBodyLimits({ mf, db, jwt });
   await verifyFileListScan({ db, service, metered: await mf.getWorker("service-file-list"), jwt });
   await verifyPresenceIndex({ db, service: await mf.getWorker("service-presence-index"), jwt });
   await verifyInternalReplay({ service, db, secret });
@@ -358,6 +384,8 @@ try {
   const statusCountDB = await mf.getD1Database("DB", "control-status-count");
   await migrate(statusCountDB, "control");
   await verifyStatusCounts({ db: statusCountDB, control: await mf.getWorker("control-status-count"), jwt });
+  await verifyProfileBatches({ control, controlDB, service, db, jwt });
+  await verifyProfileNameLimit({ control, controlDB, jwt });
   const kv = await mf.getKVNamespace("KV", "control");
   const verifier = "v".repeat(43);
   const challenge = createHash("sha256").update(verifier).digest("base64url");
