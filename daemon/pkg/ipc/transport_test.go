@@ -30,14 +30,14 @@ func tempSocket(t *testing.T) (string, []byte) {
 }
 
 func TestListenAuthenticatedDoesNotReplaceLiveSocket(t *testing.T) {
-	sock, _ := tempSocket(t)
-	first, err := ListenAuthenticated(sock, nil)
+	sock, secret := tempSocket(t)
+	first, err := ListenAuthenticated(sock, secret)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = first.Close() })
 
-	if second, err := ListenAuthenticated(sock, nil); err == nil {
+	if second, err := ListenAuthenticated(sock, secret); err == nil {
 		second.Close()
 		t.Fatalf("second listener error = %v, want already running", err)
 	}
@@ -52,7 +52,9 @@ func TestListenAuthenticatedDoesNotReplaceLiveSocket(t *testing.T) {
 	}()
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	conn, err := DialAuthenticated(ctx, sock, nil)
+	// The Unix duplicate-listener probe also connects and immediately closes.
+	// A completed handshake pairs this dial with the original listener's Accept.
+	conn, err := DialAuthenticated(ctx, sock, secret)
 	if err != nil {
 		t.Fatalf("original listener was replaced: %v", err)
 	}
