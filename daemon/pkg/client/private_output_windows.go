@@ -1,8 +1,10 @@
 package client
 
 import (
+	"crypto/rand"
 	"errors"
 	"os"
+	"path/filepath"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -12,6 +14,15 @@ import (
 // file it verifies the owner and restricts the same open handle before
 // truncating, so the new contents are never written under an inherited ACL.
 func openPrivateOutput(path string) (*os.File, error) {
+	return openWindowsPrivateOutput(path, windows.OPEN_ALWAYS)
+}
+
+func createPrivateTempOutput(dir string) (*os.File, error) {
+	path := filepath.Join(dir, ".ourcord-diagnostics-"+rand.Text())
+	return openWindowsPrivateOutput(path, windows.CREATE_NEW)
+}
+
+func openWindowsPrivateOutput(path string, disposition uint32) (_ *os.File, err error) {
 	user, err := windows.GetCurrentProcessToken().GetTokenUser()
 	if err != nil {
 		return nil, err
@@ -27,23 +38,40 @@ func openPrivateOutput(path string) (*os.File, error) {
 	sa := windows.SecurityAttributes{SecurityDescriptor: sd}
 	sa.Length = uint32(unsafe.Sizeof(sa))
 	handle, err := windows.CreateFile(name, windows.GENERIC_WRITE|windows.READ_CONTROL|windows.WRITE_DAC,
-		0, &sa, windows.OPEN_ALWAYS, windows.FILE_FLAG_OPEN_REPARSE_POINT, 0)
+		0, &sa, disposition, windows.FILE_FLAG_OPEN_REPARSE_POINT, 0)
 	if err != nil {
 		return nil, &os.PathError{Op: "open private output", Path: path, Err: err}
 	}
 	file := os.NewFile(uintptr(handle), path)
-	if err := restrictPrivateOutput(handle, user.User.Sid, sd); err != nil {
-		file.Close()
+	defer func() {
+		if err != nil {
+			err = errors.Join(err, file.Close())
+			if disposition == windows.CREATE_NEW {
+				err = errors.Join(err, os.Remove(path))
+			}
+		}
+	}()
+	if err := securePrivateOutput(handle, user.User.Sid, sd); err != nil {
 		return nil, &os.PathError{Op: "secure private output", Path: path, Err: err}
 	}
 	if err := file.Truncate(0); err != nil {
-		file.Close()
 		return nil, err
 	}
 	return file, nil
 }
 
-func restrictPrivateOutput(handle windows.Handle, user *windows.SID, sd *windows.SECURITY_DESCRIPTOR) error {
+func securePrivateOutput(handle windows.Handle, user *windows.SID, sd *windows.SECURITY_DESCRIPTOR) error {
+	if err := checkPrivateOutput(handle, user); err != nil {
+		return err
+	}
+	acl, _, err := sd.DACL()
+	if err != nil {
+		return err
+	}
+	return windows.SetSecurityInfo(handle, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION, nil, nil, acl, nil)
+}
+
+func checkPrivateOutput(handle windows.Handle, user *windows.SID) error {
 	var info windows.ByHandleFileInformation
 	if err := windows.GetFileInformationByHandle(handle, &info); err != nil {
 		return err
@@ -62,9 +90,35 @@ func restrictPrivateOutput(handle windows.Handle, user *windows.SID, sd *windows
 	if owner == nil || !(owner.Equals(user) || owner.IsWellKnown(windows.WinLocalSystemSid) || owner.IsWellKnown(windows.WinBuiltinAdministratorsSid)) {
 		return errors.New("unexpected file owner")
 	}
-	acl, _, err := sd.DACL()
+	return nil
+}
+
+// Validate an existing destination without changing its contents or ACL.
+// The rename replaces the directory entry with our completed private file.
+func replaceDiagnosticsOutput(tempPath, destPath string) error {
+	name, err := windows.UTF16PtrFromString(destPath)
 	if err != nil {
 		return err
 	}
-	return windows.SetSecurityInfo(handle, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION, nil, nil, acl, nil)
+	handle, err := windows.CreateFile(name, windows.GENERIC_WRITE|windows.READ_CONTROL|windows.WRITE_DAC,
+		0, nil, windows.OPEN_EXISTING, windows.FILE_FLAG_OPEN_REPARSE_POINT, 0)
+	if errors.Is(err, windows.ERROR_FILE_NOT_FOUND) {
+		// Publish only if the destination is still absent.
+		from, err := windows.UTF16PtrFromString(tempPath)
+		if err != nil {
+			return err
+		}
+		return windows.MoveFileEx(from, name, 0)
+	}
+	if err != nil {
+		return err
+	}
+	user, err := windows.GetCurrentProcessToken().GetTokenUser()
+	if err == nil {
+		err = checkPrivateOutput(handle, user.User.Sid)
+	}
+	if err := errors.Join(err, windows.CloseHandle(handle)); err != nil {
+		return err
+	}
+	return os.Rename(tempPath, destPath)
 }
