@@ -1,22 +1,474 @@
 <!doctype html>
 <html lang="zh-CN">
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>OurCord · 桌面设计稿</title>
-<style>
-*{box-sizing:border-box}body{margin:0;font:15px "Segoe UI","Microsoft YaHei UI",sans-serif;background:#dfdfd6;color:#19372f}section{width:1200px;height:750px;margin:0 auto 40px;display:grid;grid-template-rows:42px 66px 1fr 70px;background:#faf8f1;overflow:hidden}header,nav,footer,.row,.head,.person{display:flex;align-items:center;gap:14px}header{background:#173c34;color:#fff;padding:0 25px;font-size:15px;font-weight:700;letter-spacing:.02em}.mark{display:inline-flex;align-items:center;gap:3px;height:30px}.mark i{display:block;width:5px;height:14px;border-radius:3px;background:#ffc799}.mark i:nth-child(2){height:25px}.mark i:nth-child(3){height:19px}.spacer{flex:1}.system{font:15px monospace;color:#d4e1d7;letter-spacing:9px}nav{border-bottom:1px solid #c8cec3;padding:0 24px;background:#fffdf7}.label{font-weight:700}.tab,.tag,.btn{display:inline-flex;align-items:center;justify-content:center;padding:8px 14px;border-radius:8px}.tab.sel,.btn{background:#215647;color:white}.tag{background:#e1eade;color:#225742;font-size:13px}.workspace{display:grid;grid-template-columns:248px 1fr 200px;min-height:0}aside{background:#e9eee3;padding:27px 18px}h1,h2,h3,p{margin:0}h1{font-size:35px;letter-spacing:-.035em}h2{font-size:23px;letter-spacing:-.025em}h3{font-size:14px;margin:25px 0 10px}.small,time{font-size:12px;color:#57675d}.channel{padding:10px 12px;margin:3px 0;border-radius:7px}.channel.sel{background:#cadccb;font-weight:700}.channel b{display:inline-block;width:25px;color:#536b59}.conversation{display:flex;flex-direction:column;min-width:0}.head{padding:24px 32px;border-bottom:1px solid #d4d7cc}.thread{padding:18px 32px;flex:1}.date{display:flex;gap:12px;align-items:center;color:#637164;font-size:12px}.date:before,.date:after{content:"";height:1px;background:#d3d7cb;flex:1}.person{align-items:flex-start;margin-top:24px}.avatar{width:36px;height:36px;border-radius:12px;display:grid;place-items:center;background:#edd4b4;font-weight:700;color:#483d2c;flex:none}.avatar.alt{background:#c8d9d4;color:#23443e}time{margin-left:10px}.person p{margin-top:5px;line-height:1.65}.composer{border:1px solid #aebbad;background:white;margin:12px 32px 24px;padding:10px;border-radius:12px;display:flex;gap:12px;align-items:center;color:#5e695f}.members{padding:24px 16px;background:#f1f2e9;border-left:1px solid #d4d7cc}.members .row{margin-top:18px}.members .avatar{width:30px;height:30px;border-radius:10px}.dot{width:8px;height:8px;display:inline-block;background:#6cde9e;border-radius:100%}footer{padding:0 24px;background:#193f36;color:white}.controls{display:flex;gap:8px}.key{padding:8px 15px;border:1px solid #739287;border-radius:7px}.leave{background:#ffd2b5;color:#532c1c;border-color:transparent}
-#login{grid-template-rows:42px 1fr}.entry{display:grid;grid-template-columns:43% 1fr}.poster{position:relative;background:#244d41;color:#fff4de;overflow:hidden;display:flex;align-items:flex-end;padding:56px;font-size:62px;font-weight:700;letter-spacing:-.055em}.waves{position:absolute;top:80px;left:-100px;width:470px;height:470px;border:3px solid #ffc799;border-radius:50%;box-shadow:0 0 0 30px #244d41,0 0 0 33px #ffc799,0 0 0 63px #244d41,0 0 0 66px #ffc799,0 0 0 96px #244d41,0 0 0 99px #ffc799}.form{width:370px;align-self:center;justify-self:center}.form h1{margin-bottom:30px}.field{background:#fffdf9;border:1px solid #aebbad;padding:12px;border-radius:7px;color:#58675d;margin:8px 0 12px}.form .btn{display:flex}.secondary{border:1px solid #aebbad;padding:12px;border-radius:7px;text-align:center;margin:10px 0}.stage{display:grid;grid-template-columns:repeat(2,1fr);gap:16px;padding:28px}.seat{display:grid;align-content:center;justify-items:center;gap:12px;background:#e5ecdf;min-height:175px;border-radius:14px}.seat.talking{outline:2px solid #337453}.seat .avatar{width:56px;height:56px;font-size:23px;border-radius:18px}.seat small{color:#4f6052}
-</style>
-<body>
-<section id="conversation">
-<header><span class="mark"><i></i><i></i><i></i></span>OurCord<span class="spacer"></span><span class="system">− □ ×</span></header>
-<nav><b>大厅</b><span class="tab sel">周末俱乐部</span><span class="tab">深夜电台</span><span>＋</span></nav>
-<div class="workspace">
-<aside><h2>周末俱乐部</h2><h3>文字房间</h3><div class="channel sel"><b>#</b> 放映室</div><div class="channel"><b>#</b> 分享</div><h3>语音房间</h3><div class="channel"><b>◖</b> 听音室</div></aside>
-<main class="conversation"><div class="head"><h1>放映室</h1><span class="spacer"></span><span class="tag">成员</span></div><div class="thread"><div class="date">今天</div><div class="person"><span class="avatar">林</span><div><b>林野</b><time>20:15</time><p>今晚听哪张？我把上次聊到的现场录音找到了。</p></div></div><div class="person"><span class="avatar alt">岑</span><div><b>小岑</b><time>20:16</time><p>我在听音室，发过来一起听。</p></div></div></div><div class="composer">＋　发消息到 放映室<span class="spacer"></span><span class="btn">发送</span></div></main>
-<div class="members"><b>成员</b><div class="row"><span class="avatar">林</span>林野</div><div class="row"><span class="avatar alt">岑</span>小岑</div></div>
-</div><footer><span class="dot"></span><div><b>听音室</b><br><small>语音已连接</small></div><span class="spacer"></span><div class="controls"><span class="key">静音</span><span class="key">耳聋</span><span class="key leave">断开</span></div></footer>
-</section>
-<section id="login"><header><span class="mark"><i></i><i></i><i></i></span>OurCord</header><div class="entry"><div class="poster"><span class="waves"></span>OurCord</div><div class="form"><h1>登录 OurCord</h1><b>邮箱</b><div class="field">name@example.com</div><span class="btn">发送登录链接</span><div class="secondary">使用 GitHub 登录</div><div class="secondary">使用 Google 登录</div></div></div></section>
-<section id="voice"><header><span class="mark"><i></i><i></i><i></i></span>OurCord</header><nav><b>大厅</b><span class="tab sel">周末俱乐部</span><span class="tab">深夜电台</span><span>＋</span></nav><div class="workspace"><aside><h2>周末俱乐部</h2><h3>文字房间</h3><div class="channel">#　放映室</div><h3>语音房间</h3><div class="channel sel">◖　听音室</div></aside><main><div class="head"><h1>听音室</h1></div><div class="stage"><div class="seat talking"><span class="avatar">林</span><b>林野</b><small>正在说话</small></div><div class="seat"><span class="avatar alt">岑</span><b>小岑</b><small>已连接</small></div></div></main><div class="members"><b>成员</b><div class="row">林野</div><div class="row">小岑</div></div></div><footer><span class="dot"></span><b>听音室</b>　语音已连接<span class="spacer"></span><span class="key">静音</span><span class="key">耳聋</span><span class="key leave">断开</span></footer></section>
-</body></html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>OurCord · 桌面设计稿</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        font:
+          15px "Segoe UI",
+          "Microsoft YaHei UI",
+          sans-serif;
+        background: #dfdfd6;
+        color: #19372f;
+      }
+      section {
+        width: 1200px;
+        height: 750px;
+        margin: 0 auto 40px;
+        display: grid;
+        grid-template-rows: 42px 66px 1fr 70px;
+        background: #faf8f1;
+        overflow: hidden;
+      }
+      header,
+      nav,
+      footer,
+      .row,
+      .head,
+      .person {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+      }
+      header {
+        background: #173c34;
+        color: #fff;
+        padding: 0 25px;
+        font-size: 15px;
+        font-weight: 700;
+        letter-spacing: 0.02em;
+      }
+      .mark {
+        display: inline-flex;
+        align-items: center;
+        gap: 3px;
+        height: 30px;
+      }
+      .mark i {
+        display: block;
+        width: 5px;
+        height: 14px;
+        border-radius: 3px;
+        background: #ffc799;
+      }
+      .mark i:nth-child(2) {
+        height: 25px;
+      }
+      .mark i:nth-child(3) {
+        height: 19px;
+      }
+      .spacer {
+        flex: 1;
+      }
+      .system {
+        font: 15px monospace;
+        color: #d4e1d7;
+        letter-spacing: 9px;
+      }
+      nav {
+        border-bottom: 1px solid #c8cec3;
+        padding: 0 24px;
+        background: #fffdf7;
+      }
+      .label {
+        font-weight: 700;
+      }
+      .tab,
+      .tag,
+      .btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 8px 14px;
+        border-radius: 8px;
+      }
+      .tab.sel,
+      .btn {
+        background: #215647;
+        color: white;
+      }
+      .tag {
+        background: #e1eade;
+        color: #225742;
+        font-size: 13px;
+      }
+      .workspace {
+        display: grid;
+        grid-template-columns: 248px 1fr 200px;
+        min-height: 0;
+      }
+      aside {
+        background: #e9eee3;
+        padding: 27px 18px;
+      }
+      h1,
+      h2,
+      h3,
+      p {
+        margin: 0;
+      }
+      h1 {
+        font-size: 35px;
+        letter-spacing: -0.035em;
+      }
+      h2 {
+        font-size: 23px;
+        letter-spacing: -0.025em;
+      }
+      h3 {
+        font-size: 14px;
+        margin: 25px 0 10px;
+      }
+      .small,
+      time {
+        font-size: 12px;
+        color: #57675d;
+      }
+      .channel {
+        padding: 10px 12px;
+        margin: 3px 0;
+        border-radius: 7px;
+      }
+      .channel.sel {
+        background: #cadccb;
+        font-weight: 700;
+      }
+      .channel b {
+        display: inline-block;
+        width: 25px;
+        color: #536b59;
+      }
+      .conversation {
+        display: flex;
+        flex-direction: column;
+        min-width: 0;
+      }
+      .head {
+        padding: 24px 32px;
+        border-bottom: 1px solid #d4d7cc;
+      }
+      .thread {
+        padding: 18px 32px;
+        flex: 1;
+      }
+      .date {
+        display: flex;
+        gap: 12px;
+        align-items: center;
+        color: #637164;
+        font-size: 12px;
+      }
+      .date:before,
+      .date:after {
+        content: "";
+        height: 1px;
+        background: #d3d7cb;
+        flex: 1;
+      }
+      .person {
+        align-items: flex-start;
+        margin-top: 24px;
+      }
+      .avatar {
+        width: 36px;
+        height: 36px;
+        border-radius: 12px;
+        display: grid;
+        place-items: center;
+        background: #edd4b4;
+        font-weight: 700;
+        color: #483d2c;
+        flex: none;
+      }
+      .avatar.alt {
+        background: #c8d9d4;
+        color: #23443e;
+      }
+      time {
+        margin-left: 10px;
+      }
+      .person p {
+        margin-top: 5px;
+        line-height: 1.65;
+      }
+      .composer {
+        border: 1px solid #aebbad;
+        background: white;
+        margin: 12px 32px 24px;
+        padding: 10px;
+        border-radius: 12px;
+        display: flex;
+        gap: 12px;
+        align-items: center;
+        color: #5e695f;
+      }
+      .members {
+        padding: 24px 16px;
+        background: #f1f2e9;
+        border-left: 1px solid #d4d7cc;
+      }
+      .members .row {
+        margin-top: 18px;
+      }
+      .members .avatar {
+        width: 30px;
+        height: 30px;
+        border-radius: 10px;
+      }
+      .dot {
+        width: 8px;
+        height: 8px;
+        display: inline-block;
+        background: #6cde9e;
+        border-radius: 100%;
+      }
+      footer {
+        padding: 0 24px;
+        background: #193f36;
+        color: white;
+      }
+      .controls {
+        display: flex;
+        gap: 8px;
+      }
+      .key {
+        padding: 8px 15px;
+        border: 1px solid #739287;
+        border-radius: 7px;
+      }
+      .leave {
+        background: #ffd2b5;
+        color: #532c1c;
+        border-color: transparent;
+      }
+      #login {
+        grid-template-rows: 42px 1fr;
+      }
+      .entry {
+        display: grid;
+        grid-template-columns: 43% 1fr;
+      }
+      .poster {
+        position: relative;
+        background: #244d41;
+        color: #fff4de;
+        overflow: hidden;
+        display: flex;
+        align-items: flex-end;
+        padding: 56px;
+        font-size: 62px;
+        font-weight: 700;
+        letter-spacing: -0.055em;
+      }
+      .waves {
+        position: absolute;
+        top: 80px;
+        left: -100px;
+        width: 470px;
+        height: 470px;
+        border: 3px solid #ffc799;
+        border-radius: 50%;
+        box-shadow:
+          0 0 0 30px #244d41,
+          0 0 0 33px #ffc799,
+          0 0 0 63px #244d41,
+          0 0 0 66px #ffc799,
+          0 0 0 96px #244d41,
+          0 0 0 99px #ffc799;
+      }
+      .form {
+        width: 370px;
+        align-self: center;
+        justify-self: center;
+      }
+      .form h1 {
+        margin-bottom: 30px;
+      }
+      .field {
+        background: #fffdf9;
+        border: 1px solid #aebbad;
+        padding: 12px;
+        border-radius: 7px;
+        color: #58675d;
+        margin: 8px 0 12px;
+      }
+      .form .btn {
+        display: flex;
+      }
+      .secondary {
+        border: 1px solid #aebbad;
+        padding: 12px;
+        border-radius: 7px;
+        text-align: center;
+        margin: 10px 0;
+      }
+      .stage {
+        display: grid;
+        grid-template-columns: repeat(2, 1fr);
+        gap: 16px;
+        padding: 28px;
+      }
+      .seat {
+        display: grid;
+        align-content: center;
+        justify-items: center;
+        gap: 12px;
+        background: #e5ecdf;
+        min-height: 175px;
+        border-radius: 14px;
+      }
+      .seat.talking {
+        outline: 2px solid #337453;
+      }
+      .seat .avatar {
+        width: 56px;
+        height: 56px;
+        font-size: 23px;
+        border-radius: 18px;
+      }
+      .seat small {
+        color: #4f6052;
+      }
+    </style>
+  </head>
+  <body>
+    <section id="conversation">
+      <header>
+        <span class="mark"><i></i><i></i><i></i></span>
+        OurCord
+        <span class="spacer"></span>
+        <span class="system">− □ ×</span>
+      </header>
+      <nav>
+        <b>大厅</b>
+        <span class="tab sel">周末俱乐部</span>
+        <span class="tab">深夜电台</span>
+        <span>＋</span>
+      </nav>
+      <div class="workspace">
+        <aside>
+          <h2>周末俱乐部</h2>
+          <h3>文字房间</h3>
+          <div class="channel sel"><b>#</b> 放映室</div>
+          <div class="channel"><b>#</b> 分享</div>
+          <h3>语音房间</h3>
+          <div class="channel"><b>◖</b> 听音室</div>
+        </aside>
+        <main class="conversation">
+          <div class="head">
+            <h1>放映室</h1>
+            <span class="spacer"></span>
+            <span class="tag">成员</span>
+          </div>
+          <div class="thread">
+            <div class="date">今天</div>
+            <div class="person">
+              <span class="avatar">林</span>
+              <div>
+                <b>林野</b><time>20:15</time>
+                <p>今晚听哪张？我把上次聊到的现场录音找到了。</p>
+              </div>
+            </div>
+            <div class="person">
+              <span class="avatar alt">岑</span>
+              <div>
+                <b>小岑</b><time>20:16</time>
+                <p>我在听音室，发过来一起听。</p>
+              </div>
+            </div>
+          </div>
+          <div class="composer">
+            ＋　发消息到 放映室<span class="spacer"></span>
+            <span class="btn">发送</span>
+          </div>
+        </main>
+        <div class="members">
+          <b>成员</b>
+          <div class="row"><span class="avatar">林</span>林野</div>
+          <div class="row"><span class="avatar alt">岑</span>小岑</div>
+        </div>
+      </div>
+      <footer>
+        <span class="dot"></span>
+        <div><b>听音室</b><br /><small>语音已连接</small></div>
+        <span class="spacer"></span>
+        <div class="controls">
+          <span class="key">静音</span>
+          <span class="key">耳聋</span>
+          <span class="key leave">断开</span>
+        </div>
+      </footer>
+    </section>
+    <section id="login">
+      <header>
+        <span class="mark"><i></i><i></i><i></i></span>
+        OurCord
+      </header>
+      <div class="entry">
+        <div class="poster"><span class="waves"></span>OurCord</div>
+        <div class="form">
+          <h1>登录 OurCord</h1>
+          <b>邮箱</b>
+          <div class="field">name@example.com</div>
+          <span class="btn">发送登录链接</span>
+          <div class="secondary">使用 GitHub 登录</div>
+          <div class="secondary">使用 Google 登录</div>
+        </div>
+      </div>
+    </section>
+    <section id="voice">
+      <header>
+        <span class="mark"><i></i><i></i><i></i></span>
+        OurCord
+      </header>
+      <nav>
+        <b>大厅</b>
+        <span class="tab sel">周末俱乐部</span>
+        <span class="tab">深夜电台</span>
+        <span>＋</span>
+      </nav>
+      <div class="workspace">
+        <aside>
+          <h2>周末俱乐部</h2>
+          <h3>文字房间</h3>
+          <div class="channel">#　放映室</div>
+          <h3>语音房间</h3>
+          <div class="channel sel">◖　听音室</div>
+        </aside>
+        <main>
+          <div class="head"><h1>听音室</h1></div>
+          <div class="stage">
+            <div class="seat talking">
+              <span class="avatar">林</span>
+              <b>林野</b>
+              <small>正在说话</small>
+            </div>
+            <div class="seat">
+              <span class="avatar alt">岑</span>
+              <b>小岑</b>
+              <small>已连接</small>
+            </div>
+          </div>
+        </main>
+        <div class="members">
+          <b>成员</b>
+          <div class="row">林野</div>
+          <div class="row">小岑</div>
+        </div>
+      </div>
+      <footer>
+        <span class="dot"></span>
+        <b>听音室</b>　语音已连接<span class="spacer"></span>
+        <span class="key">静音</span>
+        <span class="key">耳聋</span>
+        <span class="key leave">断开</span>
+      </footer>
+    </section>
+  </body>
+</html>
