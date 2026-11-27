@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { bridge, type FileRecord, type Message, type Room } from "../bridge";
 import { mergeMessages, senderIDs } from "../messages";
+import { indexMissingFiles } from "../files";
 import { formatBytes, parseAttachments } from "../format";
 import { ChatSkeleton, Spinner } from "./Skeleton";
 import ContextMenu, { type MenuItem } from "./ContextMenu";
@@ -42,6 +43,7 @@ export default function ChatPane({ room, myUserID, canModerate, getName, ensureN
   const [reachedStart, setReachedStart] = useState(false);
   const [menu, setMenu] = useState<{ x: number; y: number; items: MenuItem[] } | null>(null);
   const [files, setFiles] = useState<Record<string, FileRecord>>({});
+  const fileLookup = useRef({ pending: false, retryAt: 0, delay: POLL_MS, missing: new Set<string>() });
   const [downloading, setDownloading] = useState("");
   const [uploading, setUploading] = useState(false);
   const listRef = useRef<HTMLDivElement>(null);
@@ -111,25 +113,36 @@ export default function ChatPane({ room, myUserID, canModerate, getName, ensureN
     };
   }, [poll]);
 
-  // Resolve attachment ids to file metadata lazily: only hit files.list when a
-  // message references an id we have not indexed yet.
+  useEffect(() => () => {
+    fileLookup.current = { pending: false, retryAt: 0, delay: POLL_MS, missing: new Set() };
+  }, [room.id]);
+
   useEffect(() => {
+    const lookup = fileLookup.current;
+    if (lookup.pending) return;
     const needed = new Set<string>();
     for (const message of messages) for (const id of parseAttachments(message.attachments)) if (!files[id]) needed.add(id);
     if (needed.size === 0) return;
-    let cancelled = false;
+    if (Date.now() < lookup.retryAt && [...needed].every((id) => lookup.missing.has(id))) return;
+    lookup.pending = true;
     void (async () => {
       try {
         const data = await bridge<{ files: FileRecord[] }>("files.list", { room_id: room.id });
-        if (cancelled) return;
-        setFiles((current) => {
-          const next = { ...current };
-          for (const file of data.files ?? []) next[file.id] = file;
-          return next;
-        });
+        if (fileLookup.current !== lookup) return;
+        const incoming = data.files ?? [];
+        setFiles((current) => indexMissingFiles(current, incoming));
+        if (incoming.some((file) => needed.has(file.id))) {
+          lookup.delay = POLL_MS;
+          lookup.retryAt = 0;
+          return;
+        }
       } catch { /* attachments render as generic chips until this succeeds */ }
+      finally { lookup.pending = false; }
+      // Retry on an existing message poll; a missing file creates no timer of its own.
+      lookup.missing = needed;
+      lookup.retryAt = Date.now() + lookup.delay;
+      lookup.delay = Math.min(lookup.delay * 2, MAX_POLL_RETRY_MS);
     })();
-    return () => { cancelled = true; };
   }, [messages, files, room.id]);
 
   async function download(fileID: string, filename: string) {
