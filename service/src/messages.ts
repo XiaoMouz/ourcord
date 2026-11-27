@@ -1,16 +1,16 @@
 import { Env, Message } from "./types";
 import { requireAuth, generateId, json, err, checkBodySize } from "./auth";
 
-// GET /api/rooms/:roomId/messages?before=<id>&limit=50
+// GET /api/rooms/:roomId/messages?before=<id>&before_created_at=<seconds>&limit=50
 export async function getMessages(request: Request, env: Env, roomId: string): Promise<Response> {
   const auth = await requireAuth(request, env);
   if (auth instanceof Response) return auth;
 
   // Verify room membership via lobby
   const room = await env.DB
-    .prepare("SELECT lobby_id FROM rooms WHERE id = ?")
+    .prepare("SELECT lobby_id, message_deletion_revision FROM rooms WHERE id = ?")
     .bind(roomId)
-    .first<{ lobby_id: string }>();
+    .first<{ lobby_id: string; message_deletion_revision: number }>();
   if (!room) return err("Room not found", 404);
 
   const isMember = await env.DB
@@ -28,14 +28,28 @@ export async function getMessages(request: Request, env: Env, roomId: string): P
     return err("limit must be a positive integer");
   }
   const limit = Math.min(requestedLimit, 100);
+  const rawBeforeCreatedAt = url.searchParams.get("before_created_at");
+  const beforeCreatedAt = rawBeforeCreatedAt === null ? null : Number(rawBeforeCreatedAt);
+  if (rawBeforeCreatedAt !== null &&
+      (!before || !/^\d+$/.test(rawBeforeCreatedAt) || !Number.isSafeInteger(beforeCreatedAt))) {
+    return err("before_created_at must be a non-negative safe integer with before");
+  }
 
   let stmt;
-  if (before) {
+  if (before && beforeCreatedAt !== null) {
+    // A client's saved position survives deletion of the boundary message.
+    // Room membership was checked above; the tuple only locates a page here.
+    stmt = env.DB
+      .prepare("SELECT * FROM messages WHERE room_id = ? AND (created_at, id) < (?, ?) ORDER BY created_at DESC, id DESC LIMIT ?")
+      .bind(roomId, beforeCreatedAt, before, limit);
+  } else if (before) {
+    // Keep the ID bound directly so SQLite can seek both cursor columns.
+    // A two-column scalar subquery only seeks created_at on the D1 planner.
     stmt = env.DB
       .prepare(
-        "SELECT * FROM messages WHERE room_id = ? AND (created_at, id) < (SELECT created_at, id FROM messages WHERE id = ? AND room_id = ?) ORDER BY created_at DESC, id DESC LIMIT ?"
+        "SELECT * FROM messages WHERE room_id = ? AND (created_at, id) < ((SELECT created_at FROM messages WHERE id = ? AND room_id = ?), ?) ORDER BY created_at DESC, id DESC LIMIT ?"
       )
-      .bind(roomId, before, roomId, limit);
+      .bind(roomId, before, roomId, before, limit);
   } else {
     stmt = env.DB
       .prepare("SELECT * FROM messages WHERE room_id = ? ORDER BY created_at DESC, id DESC LIMIT ?")
@@ -43,12 +57,14 @@ export async function getMessages(request: Request, env: Env, roomId: string): P
   }
 
   const messages = await stmt.all<Message>();
-  return json({ messages: messages.results.reverse() }); // return chronological order
+  // Read the revision BEFORE the page: if a deletion races this request, the
+  // next poll still observes a newer revision and invalidates cached history.
+  return json({ messages: messages.results.reverse(), deletion_revision: room.message_deletion_revision });
 }
 
 // POST /api/rooms/:roomId/messages
 export async function sendMessage(request: Request, env: Env, roomId: string): Promise<Response> {
-  const tooBig = checkBodySize(request, 16 * 1024);
+  const tooBig = await checkBodySize(request, 16 * 1024);
   if (tooBig) return tooBig;
   const auth = await requireAuth(request, env);
   if (auth instanceof Response) return auth;
