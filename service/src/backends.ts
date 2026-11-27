@@ -216,15 +216,25 @@ export async function checkBackendHealth(request: Request, env: Env, backendId: 
 }
 
 export async function runBackendHealthChecks(env: Env, batchSize = 50): Promise<{ checked: number; healthy: number; unhealthy: number }> {
+  // Merge the three schema-constrained status ranges in the existing
+  // (active, health_status, last_health_at) index. A global COALESCE sort
+  // reads the whole active registry before LIMIT, even for a small batch.
+  // NULL timestamps sort first, keeping never-probed backends eligible.
   const rows = await env.DB
     .prepare(
-      `SELECT id, base_url FROM file_backends
-       WHERE active = 1
-       ORDER BY last_health_at, id
+      `SELECT id, base_url, last_health_at FROM file_backends
+       WHERE active = 1 AND health_status = 'unknown'
+       UNION ALL
+       SELECT id, base_url, last_health_at FROM file_backends
+       WHERE active = 1 AND health_status = 'healthy'
+       UNION ALL
+       SELECT id, base_url, last_health_at FROM file_backends
+       WHERE active = 1 AND health_status = 'unhealthy'
+       ORDER BY last_health_at ASC
        LIMIT ?`,
     )
     .bind(batchSize)
-    .all<Pick<FileBackend, "id" | "base_url">>();
+    .all<Pick<FileBackend, "id" | "base_url" | "last_health_at">>();
 
   let checked = 0;
   let healthy = 0;

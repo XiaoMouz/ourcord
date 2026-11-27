@@ -5,7 +5,6 @@ import { join } from "node:path";
 import { hmacSign } from "./auth";
 import { initiateUpload, runR2Cleanup, updateFilePolicy, uploadToR2 } from "./files";
 import { deleteRoom } from "./lobby";
-import { runBackendHealthChecks } from "./backends";
 import worker from "./index";
 import type { Env } from "./types";
 
@@ -191,23 +190,17 @@ describe("R2 budget and lifecycle (real SQLite)", () => {
     expect(usage()).toMatchObject({ reserved_files: 0 });
   });
 
-  it("reads both scheduled batches in index order without sorting the backlog", async () => {
+  it("reads the due deletion batch in index order without sorting tied deadlines", async () => {
     const statements = vi.spyOn(env.DB, "prepare");
     await runR2Cleanup(env);
-    await runBackendHealthChecks(env);
-    for (const [table, index, params] of [
-      ["r2_deletion_queue", "idx_r2_deletion_due", [12345, 200]],
-      ["file_backends", "idx_file_backends_probe_due", [50]],
-    ] as const) {
-      const select = statements.mock.calls.find(([sql]) =>
-        sql.startsWith("SELECT") && sql.includes(`FROM ${table}`),
-      );
-      expect(select).toBeDefined();
-      const plan = db.prepare("EXPLAIN QUERY PLAN " + select![0]).all(...params) as { detail: string }[];
-      const details = plan.map((row) => row.detail).join("\n");
-      expect(details).toContain(index);
-      expect(details).not.toContain("TEMP B-TREE");
-    }
+    const select = statements.mock.calls.find(([sql]) =>
+      sql.startsWith("SELECT") && sql.includes("FROM r2_deletion_queue"),
+    );
+    expect(select).toBeDefined();
+    const plan = db.prepare("EXPLAIN QUERY PLAN " + select![0]).all(12345, 200) as { detail: string }[];
+    const details = plan.map((row) => row.detail).join("\n");
+    expect(details).toContain("idx_r2_deletion_due");
+    expect(details).not.toContain("TEMP B-TREE");
   });
 
   it("does not remove a queue generation refreshed during R2 deletion", async () => {

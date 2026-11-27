@@ -128,8 +128,6 @@ CREATE INDEX IF NOT EXISTS idx_files_expires
   ON files(storage_location, expires_at) WHERE expires_at IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_files_upload_status ON files(room_id, upload_status, created_at);
 CREATE INDEX IF NOT EXISTS idx_file_backends_health ON file_backends(active, health_status, last_health_at);
-CREATE INDEX IF NOT EXISTS idx_file_backends_probe_due
-  ON file_backends(active, last_health_at, id) WHERE active = 1;
 CREATE INDEX IF NOT EXISTS idx_lobby_members_user ON lobby_members(user_id);
 
 -- Invite codes for joining a lobby. Created by owner/admin; consumed (or
