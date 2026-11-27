@@ -40,6 +40,7 @@
 - **A-B-C 中继链路由**走 WireGuard `AllowedIPs`：
   - `routing.AddRelayChainRoutes()` 必须把计算出的 nextHopRoutes 真正应用到 `BuildIPCConfig`，不能只算不用。已在 `BuildIPCConfig` 内调用并合入 AllowedIPs。
 - **控制面断线要自动重连**（`pkg/control/client.go` `Run()` 已实现指数退避：min 1s → max 60s）。
+- **语音 nonce 不能随引擎/peer 重建归零**：`media.ReserveCounters` 在 state-dir 中为当前 WireGuard 身份持久化预留区间，然后才允许启动引擎；跨进程分配由文件锁串行化。`media-counter-*`（含初始化标记）必须与 `wg.key` 一起保留，不能单独清理、克隆或回滚旧备份后继续沿用同一个密钥。状态缺失/损坏或空间耗尽必须拒绝发送；恢复旧备份时需轮换 WireGuard 身份。音频重启的完整恢复需要双方更新（旧接收端可解密原格式，但不会重置旧的 jitter/codec 状态）。
 - **`pkg/control/client.go SendSignal` 用 `wsMu.RLock()` 取出 `*websocket.Conn` 后直接 `wsjson.Write`**：这是有意为之，不是 bug。`nhooyr.io/websocket` 对单个 Conn 的 Write 已自带串行化（内部锁），所以 RLock 仅用来防止与 `Connect`/`Close` 替换 `c.ws` 指针发生竞争，并不需要升级成 Lock 来串行 Write。后续 reviewer 看到「读锁里写」请勿改为写锁，会无谓地序列化所有发送方。
 
 ## TUN 路由（U 系列后）
