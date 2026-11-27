@@ -20,6 +20,7 @@ import { verifyMessageRevisions } from "./cloudflare-message-revisions.mjs";
 import { verifyBackendHealthScan } from "./cloudflare-backend-health.mjs";
 import { verifyProfileNameLimit } from "./cloudflare-profile-limits.mjs";
 import { verifyFileListScan } from "./cloudflare-file-list.mjs";
+import { verifyControlCors } from "./cloudflare-control-cors.mjs";
 import { verifyStatusCounts } from "./cloudflare-status-count.mjs";
 import { verifyUploadQuotaScans } from "./cloudflare-upload-quota.mjs";
 import { verifyBackendResolutionScans } from "./cloudflare-backend-resolution.mjs";
@@ -103,6 +104,13 @@ try {
         ? { durableObjects: { SIGNAL: { className: "SignalDO", useSQLite: true } } }
         : { r2Buckets: ["FILES"], unsafeDirectSockets: [{ host: "127.0.0.1", port: 0 }] }),
     })), {
+      name: "control-cors", modules: true, modulesRoot: join(output, "control"),
+      scriptPath: join(output, "control/index.js"),
+      compatibilityDate: "2024-01-01", compatibilityFlags: ["nodejs_compat"],
+      // Development email delivery is local logging only; native rate gates remain enabled.
+      bindings: { ENVIRONMENT: "development", JWT_SECRET: secret, ADMIN_USER_IDS: "cors-operator" },
+      d1Databases: { DB: "local-control-cors" }, kvNamespaces: { KV: "local-control-cors" }, ratelimits: limits,
+    }, {
       name: "control-status-count", modules: true, modulesRoot: join(output, "control"),
       scriptPath: join(output, "control/status-count.mjs"),
       compatibilityDate: "2024-01-01", compatibilityFlags: ["nodejs_compat"],
@@ -394,6 +402,9 @@ try {
   const controlDB = await mf.getD1Database("DB", "control");
   await migrate(controlDB, "control");
   const control = await mf.getWorker("control");
+  const corsDB = await mf.getD1Database("DB", "control-cors");
+  await migrate(corsDB, "control");
+  await verifyControlCors({ control: await mf.getWorker("control-cors"), db: corsDB, kv: await mf.getKVNamespace("KV", "control-cors"), jwt });
   await verifyErrorBoundaries({ mf, service, db, controlDB, jwt });
   const statusCountDB = await mf.getD1Database("DB", "control-status-count");
   await migrate(statusCountDB, "control");
