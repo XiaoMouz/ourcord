@@ -19,6 +19,7 @@ import { verifyMessageRevisions } from "./cloudflare-message-revisions.mjs";
 import { verifyBackendHealthScan } from "./cloudflare-backend-health.mjs";
 import { verifyProfileNameLimit } from "./cloudflare-profile-limits.mjs";
 import { verifyFileListScan } from "./cloudflare-file-list.mjs";
+import { verifyStatusCounts } from "./cloudflare-status-count.mjs";
 import { verifyUploadQuotaScans } from "./cloudflare-upload-quota.mjs";
 import { verifyBackendResolutionScans } from "./cloudflare-backend-resolution.mjs";
 
@@ -84,6 +85,8 @@ try {
     readFileSync(join(root, "tests/cloudflare-presence-index-worker.mjs"), "utf8"));
   writeFileSync(join(output, "service/file-list.mjs"),
     readFileSync(join(root, "tests/cloudflare-file-list-worker.mjs"), "utf8"));
+  writeFileSync(join(output, "control/control-under-test.mjs"), readFileSync(join(output, "control/index.js"), "utf8"));
+  writeFileSync(join(output, "control/status-count.mjs"), readFileSync(join(root, "tests/cloudflare-status-count-worker.mjs"), "utf8"));
   writeFileSync(join(output, "service/upload-quota.mjs"),
     readFileSync(join(root, "tests/cloudflare-upload-quota-worker.mjs"), "utf8"));
   writeFileSync(join(output, "service/backend-resolution.mjs"),
@@ -99,6 +102,12 @@ try {
         ? { durableObjects: { SIGNAL: { className: "SignalDO", useSQLite: true } } }
         : { r2Buckets: ["FILES"], unsafeDirectSockets: [{ host: "127.0.0.1", port: 0 }] }),
     })), {
+      name: "control-status-count", modules: true, modulesRoot: join(output, "control"),
+      scriptPath: join(output, "control/status-count.mjs"),
+      compatibilityDate: "2024-01-01", compatibilityFlags: ["nodejs_compat"],
+      bindings: { ENVIRONMENT: "production", JWT_SECRET: secret, ADMIN_USER_IDS: "status-operator" },
+      d1Databases: { DB: "local-control-status-count" }, ratelimits: limits,
+    }, {
       name: "service-upload-quota", modules: true, modulesRoot: join(output, "service"),
       scriptPath: join(output, "service/upload-quota.mjs"),
       compatibilityDate: "2024-01-01", compatibilityFlags: ["nodejs_compat"],
@@ -384,6 +393,9 @@ try {
   const controlDB = await mf.getD1Database("DB", "control");
   await migrate(controlDB, "control");
   const control = await mf.getWorker("control");
+  const statusCountDB = await mf.getD1Database("DB", "control-status-count");
+  await migrate(statusCountDB, "control");
+  await verifyStatusCounts({ db: statusCountDB, control: await mf.getWorker("control-status-count"), jwt });
   await verifyProfileBatches({ control, controlDB, service, db, jwt });
   await verifyProfileNameLimit({ control, controlDB, jwt });
   const kv = await mf.getKVNamespace("KV", "control");
