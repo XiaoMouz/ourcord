@@ -365,6 +365,15 @@ describe("App startup authentication recovery", () => {
     await signInFromDeepLink();
     expect(calls("auth.exchange")).toHaveLength(1);
     expect(container.textContent).toContain("status unavailable");
+    expect(calls("auth.status")).toHaveLength(2);
+
+    status = deferred();
+    await retry();
+    await act(async () => status.resolve({ authenticated: true }));
+    expect(calls("auth.status")).toHaveLength(3);
+    expect(calls("auth.exchange")).toHaveLength(1);
+    expect(calls("auth.begin")).toHaveLength(1);
+    expect(container.textContent).toContain("加入你的第一个大厅");
   });
 
   it("allows a callback retry after the exchange itself fails", async () => {
