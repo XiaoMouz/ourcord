@@ -20,6 +20,8 @@ afterEach(() => {
 
 describe("desktop magic login", () => {
   it("stores only a hash of the link token and applies recipient cooldown", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-22T00:00:00Z"));
     const kv = kvStub();
     const env = { KV: kv.api, DB: {} as D1Database, SIGNAL: {} as DurableObjectNamespace, ENVIRONMENT: "development" } as Env;
     vi.spyOn(console, "log").mockImplementation(() => {});

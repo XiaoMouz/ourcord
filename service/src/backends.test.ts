@@ -1,9 +1,23 @@
 import { describe, it, expect, vi } from "vitest";
-import { registerBackend, shareBackend, deactivateBackend, checkBackendHealth, validBackendURL, joinBackendURL, backendHealthURL, signBackendCapability, backendFileURL, listBackends, resolveFileBackend } from "./backends";
+import { registerBackend, shareBackend, deactivateBackend, checkBackendHealth, validBackendURL, joinBackendURL, backendHealthURL, signBackendCapability, backendFileURL, listBackends, resolveFileBackend, probeBackendHealth } from "./backends";
 import { getDownloadUrl } from "./files";
 import type { Env, FilePolicy } from "./types";
 
 const SECRET = "test-secret-1234567890abcdef";
+
+describe("backend probe resource bounds", () => {
+  it("cancels an unread response body and supplies a deadline", async () => {
+    const cancel = vi.fn();
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(new ReadableStream({ cancel }), { status: 200 }),
+    );
+    try {
+      expect(await probeBackendHealth("https://files.example")).toEqual({ status: "healthy", error: null });
+      expect(cancel).toHaveBeenCalledOnce();
+      expect(fetchMock.mock.calls[0][1]?.signal).toBeInstanceOf(AbortSignal);
+    } finally { fetchMock.mockRestore(); }
+  });
+});
 
 async function hmacSign(secret: string, data: string): Promise<string> {
   const key = await crypto.subtle.importKey(
@@ -222,7 +236,7 @@ describe("checkBackendHealth", () => {
       expect(resp.status).toBe(200);
       expect(fetchSpy).toHaveBeenCalledWith(
         "https://files.me.example/.well-known/ourcord-file-backend/health",
-        { method: "GET" },
+        { method: "GET", signal: expect.any(AbortSignal) },
       );
       const body = await resp.json<{ backend_id: string; health_status: string; error: string | null }>();
       expect(body.backend_id).toBe("B1");

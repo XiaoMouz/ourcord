@@ -49,7 +49,7 @@ export async function listLobbies(request: Request, env: Env): Promise<Response>
 
 // POST /api/lobbies — create a lobby
 export async function createLobby(request: Request, env: Env): Promise<Response> {
-  const tooBig = checkBodySize(request, 4 * 1024);
+  const tooBig = await checkBodySize(request, 4 * 1024);
   if (tooBig) return tooBig;
   const auth = await requireAuth(request, env);
   if (auth instanceof Response) return auth;
@@ -116,7 +116,7 @@ export async function getLobby(request: Request, env: Env, lobbyId: string): Pro
 // POST /api/lobbies/:id/join — requires an invite code (?code=XXX or { code }).
 // Owner/admin can grant invites via POST /api/lobbies/:id/invites.
 export async function joinLobby(request: Request, env: Env, lobbyId: string): Promise<Response> {
-  const tooBig = checkBodySize(request, 1024);
+  const tooBig = await checkBodySize(request, 1024);
   if (tooBig) return tooBig;
   const auth = await requireAuth(request, env);
   if (auth instanceof Response) return auth;
@@ -143,35 +143,31 @@ export async function joinLobby(request: Request, env: Env, lobbyId: string): Pr
     .first();
   if (existing) return json({ message: "Already a member" });
 
-  // N1: atomic conditional UPDATE consumes one invite use only when the
-  // invite is still valid AND under quota. SQLite evaluates the WHERE clause
-  // and the increment as one row-level operation, so concurrent joiners that
-  // raced past the SELECT (the previous design) can no longer all "win" a
-  // single-use invite. meta.changes==0 means another joiner won the race or
-  // the invite expired/was revoked between requests.
-  const upd = await env.DB
-    .prepare(
-      `UPDATE lobby_invites
-          SET uses = uses + 1
-        WHERE code = ?
-          AND lobby_id = ?
-          AND revoked = 0
+  // D1 batch is a transaction: membership and consumption either both commit
+  // or both roll back. changes() refers to the immediately preceding INSERT,
+  // so duplicate requests for the same membership never spend another use.
+  const [inserted] = await env.DB.batch([
+    env.DB.prepare(
+      `INSERT INTO lobby_members (lobby_id, user_id, role, joined_at)
+       SELECT ?, ?, 'member', ?
+         FROM lobby_invites
+        WHERE code = ? AND lobby_id = ? AND revoked = 0
           AND (expires_at IS NULL OR expires_at > ?)
-          AND (max_uses = 0 OR uses < max_uses)`
-    )
-    .bind(code, lobbyId, now)
-    .run();
-  if ((upd.meta?.changes ?? 0) === 0) {
+          AND (max_uses = 0 OR uses < max_uses)
+       ON CONFLICT(lobby_id, user_id) DO NOTHING`,
+    ).bind(lobbyId, auth.sub, now, code, lobbyId, now),
+    env.DB.prepare(
+      "UPDATE lobby_invites SET uses = uses + 1 WHERE code = ? AND lobby_id = ? AND changes() > 0",
+    ).bind(code, lobbyId),
+  ]);
+  if ((inserted.meta?.changes ?? 0) === 0) {
+    // Another request may have just redeemed the last use for this account.
+    const joined = await env.DB.prepare(
+      "SELECT role FROM lobby_members WHERE lobby_id = ? AND user_id = ?",
+    ).bind(lobbyId, auth.sub).first();
+    if (joined) return json({ message: "Already a member" });
     return err("invalid, revoked, or exhausted invite", 403);
   }
-
-  // INSERT OR IGNORE so a duplicate-member race (two requests both passed
-  // the existing check) doesn't 500. We've already consumed an invite use,
-  // which matches the user's intent (they tried to join twice).
-  await env.DB
-    .prepare("INSERT OR IGNORE INTO lobby_members (lobby_id, user_id, role, joined_at) VALUES (?,?,?,?)")
-    .bind(lobbyId, auth.sub, "member", now)
-    .run();
 
   return json({ joined: true });
 }
@@ -179,7 +175,7 @@ export async function joinLobby(request: Request, env: Env, lobbyId: string): Pr
 // POST /api/lobbies/:id/invites — owner/admin creates an invite code.
 // Body: { expires_in_seconds?, max_uses? } (default: 7d expiry, single use)
 export async function createInvite(request: Request, env: Env, lobbyId: string): Promise<Response> {
-  const tooBig = checkBodySize(request, 1024);
+  const tooBig = await checkBodySize(request, 1024);
   if (tooBig) return tooBig;
   const auth = await requireAuth(request, env);
   if (auth instanceof Response) return auth;
@@ -311,7 +307,7 @@ const ROOM_TYPES = new Set(["text", "voice", "video", "file"]);
 // vpn_namespace is auto-derived for voice/video/file so the daemon can
 // parse `lobby-{lobbyId}-{roomId}-{type}` without us threading more state.
 export async function createRoom(request: Request, env: Env, lobbyId: string): Promise<Response> {
-  const tooBig = checkBodySize(request, 4 * 1024);
+  const tooBig = await checkBodySize(request, 4 * 1024);
   if (tooBig) return tooBig;
   const auth = await requireAuth(request, env);
   if (auth instanceof Response) return auth;
@@ -340,41 +336,43 @@ export async function createRoom(request: Request, env: Env, lobbyId: string): P
     return err("type must be one of text, voice, video, file");
   }
 
-  let position: number;
-  if (body.position === undefined || body.position === null) {
-    const row = await env.DB
-      .prepare("SELECT COALESCE(MAX(position), -1) AS m FROM rooms WHERE lobby_id = ?")
-      .bind(lobbyId)
-      .first<{ m: number }>();
-    position = (row?.m ?? -1) + 1;
-  } else if (Number.isInteger(body.position) && body.position >= 0 && body.position <= 100000) {
+  let position: number | null = null;
+  if (body.position !== undefined && body.position !== null) {
+    if (!Number.isInteger(body.position) || body.position < 0 || body.position > 100000) {
+      return err("position must be a non-negative integer");
+    }
     position = body.position;
-  } else {
-    return err("position must be a non-negative integer");
   }
 
   const id = generateId();
   const vpnNamespace = type === "text" ? null : `lobby-${lobbyId}-${id}-${type}`;
 
-  await env.DB
-    .prepare("INSERT INTO rooms (id, lobby_id, name, type, position, vpn_namespace) VALUES (?,?,?,?,?,?)")
-    .bind(id, lobbyId, name, type, position, vpnNamespace)
-    .run();
+  // Allocate the appended position in the write: concurrent creators must not
+  // both use the same MAX captured by separate reads.
+  const inserted = await env.DB
+    .prepare(
+      `INSERT INTO rooms (id, lobby_id, name, type, position, vpn_namespace)
+       VALUES (?, ?, ?, ?, COALESCE(?, (SELECT COALESCE(MAX(position), -1) + 1 FROM rooms WHERE lobby_id = ?)), ?)
+       RETURNING position`,
+    )
+    .bind(id, lobbyId, name, type, position, lobbyId, vpnNamespace)
+    .first<{ position: number }>();
+  if (!inserted) return err("Room could not be created", 500);
 
   const room: Room = {
     id,
     lobby_id: lobbyId,
     name,
     type: type as Room["type"],
-    position,
+    position: inserted.position,
     vpn_namespace: vpnNamespace ?? undefined,
   };
   return json(room, 201);
 }
 
-// PATCH /api/rooms/:roomId — owner/admin renames or reorders.
-export async function updateRoom(request: Request, env: Env, roomId: string): Promise<Response> {
-  const tooBig = checkBodySize(request, 4 * 1024);
+// PATCH /api/rooms/:roomId, or /:roomId/reorder for an atomic pair swap.
+export async function updateRoom(request: Request, env: Env, roomId: string, swapPositions = false): Promise<Response> {
+  const tooBig = await checkBodySize(request, 4 * 1024);
   if (tooBig) return tooBig;
   const auth = await requireAuth(request, env);
   if (auth instanceof Response) return auth;
@@ -393,34 +391,74 @@ export async function updateRoom(request: Request, env: Env, roomId: string): Pr
     return err("Insufficient permissions", 403);
   }
 
-  let body: { name?: string; position?: number };
+  let body: { name?: string; position?: number; swap_with?: string; expected_position?: number };
   try {
-    body = await request.json<{ name?: string; position?: number }>();
+    body = await request.json<typeof body>();
   } catch {
     return err("invalid JSON body");
   }
+  if (!body || typeof body !== "object" || Array.isArray(body)) return err("invalid JSON body");
 
-  let newName = room.name;
+  if (!swapPositions && (body.swap_with !== undefined || body.expected_position !== undefined)) {
+    return err("Use the room reorder endpoint for swaps");
+  }
+  if (swapPositions) {
+    if (typeof body.swap_with !== "string" || !body.swap_with || body.swap_with === roomId
+      || typeof body.expected_position !== "number" || !Number.isInteger(body.expected_position)
+      || body.expected_position < 0 || body.expected_position > 100000
+      || typeof body.position !== "number" || !Number.isInteger(body.position) || body.position < 0 || body.position > 100000
+      || body.name !== undefined) {
+      return err("swap requires a different room and both expected positions, without name");
+    }
+    // Freeze both old positions before updating either row. The count guard
+    // makes stale, deleted, or out-of-scope pairs a no-op in the same write.
+    const swapped = await env.DB.prepare(`
+      WITH pair AS MATERIALIZED (
+        SELECT id, position FROM rooms
+        WHERE lobby_id = ? AND type = ?
+          AND ((id = ? AND position = ?) OR (id = ? AND position = ?))
+      )
+      UPDATE rooms SET position = (SELECT position FROM pair WHERE id <> rooms.id)
+      WHERE id IN (SELECT id FROM pair) AND (SELECT COUNT(*) FROM pair) = 2
+      RETURNING *
+    `).bind(room.lobby_id, room.type, roomId, body.expected_position, body.swap_with, body.position)
+      .all<Room>();
+    const updated = swapped.results.find((row) => row.id === roomId);
+    if (!updated) return err("Room order changed; refresh and try again", 409);
+    return json(updated);
+  }
+
+  const updates: string[] = [];
+  const values: (string | number)[] = [];
   if (body.name !== undefined) {
     const nameOrErr = validateRoomName(body.name);
     if (nameOrErr instanceof Response) return nameOrErr;
-    newName = nameOrErr;
+    updates.push("name = ?");
+    values.push(nameOrErr);
   }
 
-  let newPosition = room.position;
   if (body.position !== undefined) {
     if (!Number.isInteger(body.position) || body.position < 0 || body.position > 100000) {
       return err("position must be a non-negative integer");
     }
-    newPosition = body.position;
+    updates.push("position = ?");
+    values.push(body.position);
   }
 
-  await env.DB
-    .prepare("UPDATE rooms SET name = ?, position = ? WHERE id = ?")
-    .bind(newName, newPosition, roomId)
-    .run();
+  // Only write supplied fields: a concurrent rename must survive a reorder.
+  // RETURNING also detects deletion after the authorization read.
+  const updated = updates.length > 0
+    ? await env.DB
+      .prepare(`UPDATE rooms SET ${updates.join(", ")} WHERE id = ? RETURNING *`)
+      .bind(...values, roomId)
+      .first<Room>()
+    : await env.DB
+      .prepare("SELECT * FROM rooms WHERE id = ?")
+      .bind(roomId)
+      .first<Room>();
+  if (!updated) return err("Room not found", 404);
 
-  return json({ ...room, name: newName, position: newPosition });
+  return json(updated);
 }
 
 // DELETE /api/rooms/:roomId — owner only. Refuses to delete the last room
@@ -444,15 +482,17 @@ export async function deleteRoom(request: Request, env: Env, roomId: string): Pr
     return err("Insufficient permissions", 403);
   }
 
-  const count = await env.DB
-    .prepare("SELECT COUNT(*) AS c FROM rooms WHERE lobby_id = ?")
-    .bind(room.lobby_id)
-    .first<{ c: number }>();
-  if ((count?.c ?? 0) <= 1) {
+  // Evaluate the invariant in the write itself: two owner clients may delete
+  // different rooms concurrently after both have read the same room count.
+  const deleted = await env.DB.prepare(
+    `DELETE FROM rooms
+      WHERE id = ? AND lobby_id = ?
+        AND (SELECT COUNT(*) FROM rooms WHERE lobby_id = ?) > 1`,
+  ).bind(roomId, room.lobby_id, room.lobby_id).run();
+  if ((deleted.meta?.changes ?? 0) === 0) {
     return err("lobby must have at least one room");
   }
 
-  await env.DB.prepare("DELETE FROM rooms WHERE id = ?").bind(roomId).run();
   return json({ deleted: true });
 }
 
@@ -460,7 +500,7 @@ export async function deleteRoom(request: Request, env: Env, roomId: string): Pr
 export async function updateMemberRole(
   request: Request, env: Env, lobbyId: string, targetUserId: string
 ): Promise<Response> {
-  const tooBig = checkBodySize(request, 256);
+  const tooBig = await checkBodySize(request, 256);
   if (tooBig) return tooBig;
   const auth = await requireAuth(request, env);
   if (auth instanceof Response) return auth;

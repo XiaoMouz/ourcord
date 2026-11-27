@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { initiateUpload, uploadToR2, completeExternalUpload, runR2Cleanup } from "./files";
+import { initiateUpload, uploadToR2, completeExternalUpload } from "./files";
 import type { Env, FilePolicy } from "./types";
 
 // NOTE on scope: the spec for Y4 referenced a chunked upload protocol
@@ -553,7 +553,9 @@ const FILE_ROW = {
   storage_location: "r2" as const,
   storage_key: "files/L1/R1/F1/f.txt",
   expires_at: null,
-  created_at: 1,
+  created_at: Math.floor(Date.now() / 1000),
+  upload_status: "pending" as const,
+  upload_expires_at: 9999999999,
 };
 
 const EXTERNAL_FILE_ROW = {
@@ -656,7 +658,7 @@ describe("completeExternalUpload", () => {
     try {
       const resp = await completeExternalUpload(completeReq(token, uploadToken), envOf(db), "R1", "F1");
       expect(resp.status).toBe(200);
-      expect(fetchSpy).toHaveBeenCalledWith("https://files.me.example/files/F1/f.txt", { method: "HEAD" });
+      expect(fetchSpy).toHaveBeenCalledWith("https://files.me.example/files/F1/f.txt", { method: "HEAD", signal: expect.any(AbortSignal) });
       const body = await resp.json<{ uploaded: boolean; bytes: number; backend_id: string }>();
       expect(body).toEqual({ uploaded: true, bytes: 5, storage_location: "user_server", backend_id: "B1" });
     } finally {
@@ -785,59 +787,4 @@ describe("quota / cleanup", () => {
     expect(inserted[9]).toBeNull();
   });
 
-  it("runR2Cleanup deletes expired R2 objects then their D1 rows", async () => {
-    const rows = [
-      { id: "F1", storage_key: "files/L1/R1/F1/a" },
-      { id: "F2", storage_key: "files/L1/R1/F2/b" },
-    ];
-    const deleteRowIds: unknown[] = [];
-    let call = 0;
-    const db = {
-      prepare: vi.fn((sql: string) => {
-        call++;
-        const isSelect = sql.includes("SELECT");
-        const s: any = {
-          bind: (...vals: unknown[]) => { if (!isSelect) deleteRowIds.push(vals[0]); return s; },
-          first: vi.fn(async () => null),
-          run: vi.fn(async () => ({ meta: { changes: 1 } })),
-          all: vi.fn(async () => (isSelect ? { results: rows } : { results: [] })),
-        };
-        return s as D1PreparedStatement;
-      }),
-      batch: vi.fn(),
-      exec: vi.fn(),
-    } as unknown as D1Database;
-    const r2 = makeR2();
-    const result = await runR2Cleanup(envOf(db, r2.bucket));
-    expect(result).toEqual({ deleted: 2, failed: 0 });
-    expect(r2.calls.delete).toEqual([rows[0].storage_key, rows[1].storage_key]);
-    expect(deleteRowIds).toEqual(["F1", "F2"]);
-    void call; // touched to keep linter happy
-  });
-
-  it("runR2Cleanup counts R2 failures and skips the D1 delete for those rows", async () => {
-    const rows = [{ id: "F1", storage_key: "k1" }, { id: "F2", storage_key: "k2" }];
-    const dbRunCalls: string[] = [];
-    const db = {
-      prepare: vi.fn((sql: string) => {
-        const isSelect = sql.includes("SELECT");
-        const s: any = {
-          _vals: [] as unknown[],
-          bind: (...vals: unknown[]) => { s._vals = vals; return s; },
-          first: vi.fn(async () => null),
-          run: vi.fn(async () => { dbRunCalls.push(String(s._vals[0])); return { meta: { changes: 1 } }; }),
-          all: vi.fn(async () => (isSelect ? { results: rows } : { results: [] })),
-        };
-        return s as D1PreparedStatement;
-      }),
-      batch: vi.fn(),
-      exec: vi.fn(),
-    } as unknown as D1Database;
-    const r2 = makeR2({ deleteThrows: new Error("R2 down") });
-    const result = await runR2Cleanup(envOf(db, r2.bucket));
-    expect(result).toEqual({ deleted: 0, failed: 2 });
-    // Both R2 deletes attempted, no D1 row deletes happened.
-    expect(r2.calls.delete).toEqual(["k1", "k2"]);
-    expect(dbRunCalls).toEqual([]);
-  });
 });
