@@ -19,7 +19,8 @@ CREATE TABLE IF NOT EXISTS rooms (
   type TEXT NOT NULL DEFAULT 'text' CHECK(type IN ('text','voice','video','file')),
   position INTEGER NOT NULL DEFAULT 0,
   vpn_namespace TEXT
-);
+  ,
+  message_deletion_revision INTEGER NOT NULL DEFAULT 0);
 
 CREATE TABLE IF NOT EXISTS lobby_members (
   lobby_id TEXT NOT NULL REFERENCES lobbies(id) ON DELETE CASCADE,
@@ -129,6 +130,12 @@ CREATE INDEX IF NOT EXISTS idx_files_expires
 CREATE INDEX IF NOT EXISTS idx_files_upload_status ON files(room_id, upload_status, created_at);
 CREATE INDEX IF NOT EXISTS idx_file_backends_health ON file_backends(active, health_status, last_health_at);
 CREATE INDEX IF NOT EXISTS idx_lobby_members_user ON lobby_members(user_id);
+
+CREATE TRIGGER IF NOT EXISTS messages_deletion_revision AFTER DELETE ON messages
+BEGIN
+  UPDATE rooms SET message_deletion_revision = message_deletion_revision + 1
+    WHERE id = OLD.room_id;
+END;
 
 -- Invite codes for joining a lobby. Created by owner/admin; consumed (or
 -- counted) by joinLobby. uses=0 + max_uses>0 means single/multi-use; max_uses=0

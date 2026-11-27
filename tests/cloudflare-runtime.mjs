@@ -15,6 +15,7 @@ import { createHash, createHmac } from "node:crypto";
 import { verifyExternalUploadFinalization } from "./cloudflare-external-uploads.mjs";
 import { verifyRoomReorder } from "./cloudflare-room-reorder.mjs";
 import { verifyInternalReplay } from "./cloudflare-internal-replay.mjs";
+import { verifyMessageRevisions } from "./cloudflare-message-revisions.mjs";
 import { verifyBackendHealthScan } from "./cloudflare-backend-health.mjs";
 import { verifyProfileNameLimit } from "./cloudflare-profile-limits.mjs";
 import { verifyFileListScan } from "./cloudflare-file-list.mjs";
@@ -142,6 +143,7 @@ try {
     db.prepare("INSERT INTO file_policies(lobby_id,max_temp_files,user_server_enabled,lobby_server_enabled) VALUES ('L1',0,0,0)"),
   ]);
   const service = await mf.getWorker("service");
+  await verifyMessageRevisions({ db, service: await mf.getWorker("service-presence-cost"), jwt });
   await verifyBackendResolutionScans({ db, service: await mf.getWorker("service-backend-resolution"), jwt });
   await verifyJSONBodyLimits({ mf, db, jwt });
   await verifyFileListScan({ db, service, metered: await mf.getWorker("service-file-list"), jwt });
