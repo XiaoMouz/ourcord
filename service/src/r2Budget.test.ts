@@ -214,6 +214,19 @@ describe("R2 budget and lifecycle (real SQLite)", () => {
     expect(usage()).toMatchObject({ reserved_files: 0 });
   });
 
+  it("reads the due deletion batch in index order without sorting tied deadlines", async () => {
+    const statements = vi.spyOn(env.DB, "prepare");
+    await runR2Cleanup(env);
+    const select = statements.mock.calls.find(([sql]) =>
+      sql.startsWith("SELECT") && sql.includes("FROM r2_deletion_queue"),
+    );
+    expect(select).toBeDefined();
+    const plan = db.prepare("EXPLAIN QUERY PLAN " + select![0]).all(12345, 200) as { detail: string }[];
+    const details = plan.map((row) => row.detail).join("\n");
+    expect(details).toContain("idx_r2_deletion_due");
+    expect(details).not.toContain("TEMP B-TREE");
+  });
+
   it("does not remove a queue generation refreshed during R2 deletion", async () => {
     await reservation();
     db.exec("DELETE FROM rooms WHERE id = 'R1'");

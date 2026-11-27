@@ -2,9 +2,11 @@
 // Uses the Miniflare version already installed with control's pinned Wrangler.
 import { verifyPresenceRetirement } from "./cloudflare-presence-cost.mjs";
 import assert from "node:assert/strict";
+import { verifyJSONBodyLimits } from "./cloudflare-json-limits.mjs";
 import { createRequire } from "node:module";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { verifyProfileBatches } from "./cloudflare-profile-batches.mjs";
 import { tmpdir } from "node:os";
 import { verifyPresenceIndex } from "./cloudflare-presence-index.mjs";
 import { dirname, join } from "node:path";
@@ -13,6 +15,8 @@ import { createHash, createHmac } from "node:crypto";
 import { verifyExternalUploadFinalization } from "./cloudflare-external-uploads.mjs";
 import { verifyRoomReorder } from "./cloudflare-room-reorder.mjs";
 import { verifyInternalReplay } from "./cloudflare-internal-replay.mjs";
+import { verifyBackendHealthScan } from "./cloudflare-backend-health.mjs";
+import { verifyProfileNameLimit } from "./cloudflare-profile-limits.mjs";
 import { verifyFileListScan } from "./cloudflare-file-list.mjs";
 import { verifyUploadQuotaScans } from "./cloudflare-upload-quota.mjs";
 
@@ -72,6 +76,8 @@ try {
     readFileSync(join(root, "tests/cloudflare-presence-cost-worker.mjs"), "utf8"));
   writeFileSync(join(output, "service/service-under-test.mjs"),
     readFileSync(join(output, "service/index.js"), "utf8"));
+  writeFileSync(join(output, "service/backend-health.mjs"),
+    readFileSync(join(root, "tests/cloudflare-backend-health-worker.mjs"), "utf8"));
   writeFileSync(join(output, "service/presence-index.mjs"),
     readFileSync(join(root, "tests/cloudflare-presence-index-worker.mjs"), "utf8"));
   writeFileSync(join(output, "service/file-list.mjs"),
@@ -87,13 +93,19 @@ try {
       d1Databases: { DB: `local-${name}` }, kvNamespaces: ["KV"], ratelimits: limits,
       ...(name === "control"
         ? { durableObjects: { SIGNAL: { className: "SignalDO", useSQLite: true } } }
-        : { r2Buckets: ["FILES"] }),
+        : { r2Buckets: ["FILES"], unsafeDirectSockets: [{ host: "127.0.0.1", port: 0 }] }),
     })), {
       name: "service-upload-quota", modules: true, modulesRoot: join(output, "service"),
       scriptPath: join(output, "service/upload-quota.mjs"),
       compatibilityDate: "2024-01-01", compatibilityFlags: ["nodejs_compat"],
       bindings: { ENVIRONMENT: "production", JWT_SECRET: secret },
       d1Databases: { DB: "local-upload-quota" }, ratelimits: limits,
+    }, {
+      name: "service-backend-health", modules: true, modulesRoot: join(output, "service"),
+      scriptPath: join(output, "service/backend-health.mjs"),
+      compatibilityDate: "2024-01-01", compatibilityFlags: ["nodejs_compat"],
+      d1Databases: { DB: "local-service" }, r2Buckets: ["FILES"],
+      outboundService: () => new Response(null, { status: 200 }),
     }, {
       name: "service-file-list", modules: true, modulesRoot: join(output, "service"),
       scriptPath: join(output, "service/file-list.mjs"),
@@ -122,6 +134,7 @@ try {
   });
   const db = await mf.getD1Database("DB", "service");
   await migrate(db, "service");
+  await verifyBackendHealthScan({ db, worker: await mf.getWorker("service-backend-health") });
   await db.batch([
     db.prepare("INSERT INTO lobbies VALUES ('L1','test','u1',NULL,1)"),
     db.prepare("INSERT INTO rooms(id,lobby_id,name) VALUES ('R1','L1','files'), ('R2','L1','general')"),
@@ -132,6 +145,7 @@ try {
   const quotaDB = await mf.getD1Database("DB", "service-upload-quota");
   await migrate(quotaDB, "service");
   await verifyUploadQuotaScans({ db: quotaDB, service: await mf.getWorker("service-upload-quota"), jwt });
+  await verifyJSONBodyLimits({ mf, db, jwt });
   await verifyFileListScan({ db, service, metered: await mf.getWorker("service-file-list"), jwt });
   await verifyPresenceIndex({ db, service: await mf.getWorker("service-presence-index"), jwt });
   await verifyInternalReplay({ service, db, secret });
@@ -358,6 +372,8 @@ try {
   const controlDB = await mf.getD1Database("DB", "control");
   await migrate(controlDB, "control");
   const control = await mf.getWorker("control");
+  await verifyProfileBatches({ control, controlDB, service, db, jwt });
+  await verifyProfileNameLimit({ control, controlDB, jwt });
   const kv = await mf.getKVNamespace("KV", "control");
   const verifier = "v".repeat(43);
   const challenge = createHash("sha256").update(verifier).digest("base64url");

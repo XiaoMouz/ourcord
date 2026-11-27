@@ -60,7 +60,7 @@ function newFixedLengthStream(length: number): { readable: ReadableStream<Uint8A
 // POST /api/rooms/:roomId/files — initiate file upload
 // Client sends metadata; server returns a pre-signed URL or storage target
 export async function initiateUpload(request: Request, env: Env, roomId: string): Promise<Response> {
-  const tooBig = checkBodySize(request, 4 * 1024);
+  const tooBig = await checkBodySize(request, 4 * 1024);
   if (tooBig) return tooBig;
   const auth = await requireAuth(request, env);
   if (auth instanceof Response) return auth;
@@ -374,7 +374,7 @@ export async function completeExternalUpload(
   roomId: string,
   fileId: string,
 ): Promise<Response> {
-  const tooBig = checkBodySize(request, 1024);
+  const tooBig = await checkBodySize(request, 1024);
   if (tooBig) return tooBig;
   const auth = await requireAuth(request, env);
   if (auth instanceof Response) return auth;
@@ -572,7 +572,7 @@ export async function getFilePolicy(request: Request, env: Env, lobbyId: string)
 
 // PUT /api/lobbies/:lobbyId/file-policy — update file policy (owner/admin only)
 export async function updateFilePolicy(request: Request, env: Env, lobbyId: string): Promise<Response> {
-  const tooBig = checkBodySize(request, 2 * 1024);
+  const tooBig = await checkBodySize(request, 2 * 1024);
   if (tooBig) return tooBig;
   const auth = await requireAuth(request, env);
   if (auth instanceof Response) return auth;
@@ -650,7 +650,7 @@ export async function runR2Cleanup(env: Env, batchSize = 200): Promise<{ deleted
 
   const rows = await env.DB.prepare(
     `SELECT storage_key, not_before FROM r2_deletion_queue
-     WHERE not_before <= ? ORDER BY not_before, storage_key LIMIT ?`,
+     WHERE not_before <= ? ORDER BY not_before LIMIT ?`,
   ).bind(now, limit).all<{ storage_key: string; not_before: number }>();
   let deleted = 0;
   let failed = 0;
