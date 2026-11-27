@@ -199,6 +199,11 @@ jobs:
       - run: go build ./...
       - run: go vet ./pkg/tun/...
       - run: go test ./pkg/tun/... ./cmd/ourcordd/... ./pkg/media/... ./cmd/ourcord-service/...
+      - name: Named pipe transport and client round trips
+        run: |
+          go test ./pkg/ipc/...
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          go test -run '^TestDial' ./pkg/client/...
       - name: ICE gathering with local STUN servers
         run: go test ./pkg/ice/...
       # Real Wintun adapter smoke: driver load + address assign + /32 route
@@ -219,6 +224,8 @@ jobs:
         env:
           OURCORD_WINTUN_SMOKE: "1"
         run: go test -run TestWintunAdapterSmoke -v ./pkg/tun/
+      - name: Verify private client output permissions
+        run: go test -run '^(TestEnrollDevicePersistsCredentialWithoutReturningIt|TestWriteDiagnosticsArchiveRedactsLogCredentials|TestFailedDiagnosticsExportPreservesExistingArchive|TestDiagnosticsZIPPropagatesFlushError)$' ./pkg/client
 
   desktop-web:
     name: Desktop (React)
