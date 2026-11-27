@@ -18,7 +18,6 @@ vi.mock("./updater", () => ({
   installDesktopUpdate: vi.fn(), retryDesktopUpdate: vi.fn(),
 }));
 vi.mock("./components/TitleBar", () => ({ default: () => null }));
-vi.mock("./components/RoomPanel", () => ({ default: () => null }));
 vi.mock("./components/VoiceStage", () => ({ default: () => null }));
 vi.mock("./components/ChatPane", () => ({ default: () => null }));
 

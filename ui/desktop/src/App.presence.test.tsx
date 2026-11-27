@@ -18,7 +18,6 @@ vi.mock("./updater", () => ({
   installDesktopUpdate: vi.fn(), retryDesktopUpdate: vi.fn(),
 }));
 vi.mock("./components/TitleBar", () => ({ default: () => null }));
-vi.mock("./components/ChatPane", () => ({ default: () => null }));
 
 function deferred() {
   let resolve!: () => void;
@@ -66,6 +65,8 @@ describe("App presence writes through voice controls", () => {
       if (method === "auth.status") return { authenticated: true };
       if (method === "lobbies.list") return { lobbies: [lobby] };
       if (method === "lobbies.members") return { members: [] };
+      if (method === "messages.list") return { messages: [] };
+      if (method === "messages.send") return {};
       if (method === "daemon.snapshot") return snapshot;
       if (method === "presence.update") {
         const room = String(args?.voice_room_id ?? "");
@@ -118,6 +119,19 @@ describe("App presence writes through voice controls", () => {
     await act(async () => button!.click());
   }
 
+  it("sends side chat to the active voice room without reconnecting", async () => {
+    voice("B");
+    await mount();
+    const input = container.querySelector<HTMLTextAreaElement>(".channel-chat textarea")!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(input, "voice room note");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => container.querySelector<HTMLButtonElement>(".channel-chat [type=submit]")!.click());
+    expect(bridge).toHaveBeenCalledWith("messages.send", { room_id: "B", content: "voice room note" });
+    expect(vi.mocked(bridge).mock.calls.some(([method]) => method === "voice.join_network")).toBe(false);
+  });
+
   it("browses text during a call and returns to the active room without reconnecting", async () => {
     voice("A");
     await mount();
@@ -125,9 +139,11 @@ describe("App presence writes through voice controls", () => {
     const textRoom = container.querySelector<HTMLElement>('[title="Chat"]')!;
     await act(async () => textRoom.click());
     expect(container.querySelector(".room-heading h1")?.textContent).toBe("Chat");
-    expect(container.querySelector(".call-location strong")?.textContent).toBe("Voice A");
-    await join("A");
+    const returnToCall = container.querySelector<HTMLButtonElement>('button[title="返回 Voice A"]')!;
+    expect(returnToCall.textContent).toBe("Voice A");
+    await act(async () => returnToCall.click());
     expect(container.querySelector(".room-heading h1")?.textContent).toBe("Voice A");
+    expect(container.querySelector('[aria-label="语音频道聊天"]')).not.toBeNull();
     expect(vi.mocked(bridge).mock.calls.filter(([method]) => method === "voice.join_network")).toHaveLength(0);
   });
 

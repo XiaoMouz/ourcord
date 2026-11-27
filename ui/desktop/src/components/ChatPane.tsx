@@ -1,6 +1,7 @@
 import { Fragment, useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { bridge, type FileRecord, type Message, type Room } from "../bridge";
+import Icon from "./Icon";
 import { RoomComposer } from "../roomComposer";
 import { mergeMessages, senderIDs } from "../messages";
 import { formatBytes, parseAttachments } from "../format";
@@ -222,7 +223,7 @@ export default function ChatPane({ room, composers, myUserID, canModerate, getNa
                 <button className="card card-border w-full max-w-80 bg-base-200 text-left text-base-content transition hover:bg-base-300" disabled={downloading === fileID}
                   onClick={() => void download(fileID, file?.filename ?? fileID)}>
                   <span className="card-body flex-row items-center gap-3 p-3">
-                    <span className="text-lg">📎</span>
+                    <Icon name="attach" />
                     <span className="min-w-0 flex-1">
                       <strong className="block truncate text-sm">{file?.filename ?? "附件"}</strong>
                       <small className="block text-xs text-base-content/50">{file ? formatBytes(file.size_bytes) : "点击下载"}</small>
@@ -238,7 +239,7 @@ export default function ChatPane({ room, composers, myUserID, canModerate, getNa
     </div>
     <form className="message-composer" onSubmit={(e) => { e.preventDefault(); void send(); }}>
       <IconButton label="上传附件" className="btn-md" disabled={uploading || sending} onClick={() => void attach()}>
-        {uploading ? <Spinner /> : "＋"}
+        {uploading ? <Spinner /> : <Icon name="plus" />}
       </IconButton>
       <textarea aria-label={`发送到 #${room.name}`} rows={1} value={draft}
         onChange={(e) => composer.edit(e.target.value)}
@@ -249,8 +250,8 @@ export default function ChatPane({ room, composers, myUserID, canModerate, getNa
           }
         }}
         title="Enter 发送，Shift+Enter 换行" placeholder={uploading ? "上传中…" : `发送到 #${room.name}`} maxLength={4000} disabled={uploading} />
-      <button className="btn btn-primary" type="submit" disabled={sending || uploading || !draft.trim()}>
-        {sending && <Spinner />}发送
+      <button className="send-message" type="submit" title="发送" aria-label="发送" disabled={sending || uploading || !draft.trim()}>
+        {sending ? <Spinner /> : <Icon name="send" />}
       </button>
     </form>
     {menu && <ContextMenu x={menu.x} y={menu.y} items={menu.items} onClose={() => setMenu(null)} />}

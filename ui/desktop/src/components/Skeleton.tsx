@@ -2,7 +2,7 @@ export function LobbyRailSkeleton() {
   return <nav className="lobby-strip" aria-label="正在载入大厅">
     <div className="skeleton h-11 w-11 rounded-box" />
 
-    {[0, 1, 2].map((i) => <div key={i} className="skeleton h-8 w-24 rounded-field" />)}
+    {[0, 1, 2].map((i) => <div key={i} className="skeleton h-10 w-10 rounded-field" />)}
   </nav>;
 }
 

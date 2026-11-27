@@ -1,4 +1,5 @@
 import type { LobbyEntry } from "../bridge";
+import Icon from "./Icon";
 import { cx } from "./ui";
 
 export default function LobbyRail({ lobbies, activeID, onSelect, onCreate, onJoin }: {
@@ -9,15 +10,14 @@ export default function LobbyRail({ lobbies, activeID, onSelect, onCreate, onJoi
   onJoin: () => void;
 }) {
   return <nav className="lobby-strip" aria-label="大厅">
-    <strong>大厅</strong>
     <ul className="lobby-tabs">
       {lobbies.map(({ lobby }) => <li key={lobby.id}>
-        <button type="button" className={cx("btn btn-sm", activeID === lobby.id ? "btn-primary" : "btn-ghost")}
+        <button type="button" className={cx("server-button", activeID === lobby.id && "current")}
           aria-current={activeID === lobby.id ? "true" : undefined} title={lobby.name}
-          aria-label={lobby.name} onClick={() => onSelect(lobby.id)}><span className="truncate">{lobby.name}</span></button>
+          aria-label={lobby.name} onClick={() => onSelect(lobby.id)}><span>{Array.from(lobby.name)[0]}</span></button>
       </li>)}
     </ul>
-    <button className="btn btn-ghost btn-sm" onClick={onCreate}>创建大厅</button>
-    <button className="btn btn-outline btn-sm" onClick={onJoin}>加入大厅</button>
+    <button className="server-button" title="创建大厅" aria-label="创建大厅" onClick={onCreate}><Icon name="plus" /></button>
+    <button className="server-button" title="加入大厅" aria-label="加入大厅" onClick={onJoin}><Icon name="join" /></button>
   </nav>;
 }

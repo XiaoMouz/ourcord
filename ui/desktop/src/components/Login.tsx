@@ -1,6 +1,8 @@
 import { useEffect, useState, type CSSProperties } from "react";
 
 
+import { SignalMark } from "./ui";
+
 export default function Login({ busy, cooldownSeconds, loginURLs, onMagic, onOAuth }: {
   busy: boolean;
   cooldownSeconds: number;
@@ -24,11 +26,12 @@ export default function Login({ busy, cooldownSeconds, loginURLs, onMagic, onOAu
   const address = email.trim();
   const canSend = !busy && !coolingDown && address.includes("@");
   return <main className="login-layout">
-    <div className="login-poster" aria-hidden="true"><span className="radio-rings" /><strong>OurCord</strong></div>
+
     <form className="login-form" onSubmit={(event) => {
       event.preventDefault();
       if (canSend) onMagic(address);
     }}>
+      <div className="login-brand"><SignalMark />OurCord</div>
       <h1>欢迎回来</h1>
       <label htmlFor="login-email">邮箱地址</label>
       <input id="login-email" className="input w-full" type="email" required autoComplete="email"

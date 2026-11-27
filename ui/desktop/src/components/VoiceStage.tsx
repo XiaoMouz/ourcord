@@ -7,10 +7,10 @@ export default function VoiceStage({ snapshot, selfName }: { snapshot: Snapshot;
   const participants = snapshot.voice?.participants ?? [];
   const voice = snapshot.voice;
   return <div className="voice-stage">
-    {voice?.joined && <article className={cx("voice-seat", voice.local_speaking && !voice.muted && "border-success ring-2 ring-success/20")}>
+    {voice?.joined && <article className={cx("voice-seat", voice.local_speaking && !voice.muted && "is-speaking")}>
       <div className="seat-body">
       <InitialAvatar name={selfName || "我"} size="lg" online={voice.local_speaking && !voice.muted} />
-      <div className="min-w-0 max-w-full">
+      <div className="seat-label">
         <strong className="block truncate">{selfName ? `${selfName}（你）` : "你"}</strong>
         {(voice.muted || voice.local_speaking) && <span className={cx("badge badge-sm mt-1", voice.muted ? "badge-error badge-soft" : "badge-success badge-soft")}>
           {voice.muted ? "已静音" : "说话中"}
@@ -27,18 +27,18 @@ export default function VoiceStage({ snapshot, selfName }: { snapshot: Snapshot;
         `抖动 ${Math.round(participant.jitter_ms)}ms`,
       ].filter(Boolean).join(" · ");
       const peerName = peer?.display_name || "未知成员";
-      return <article key={participant.public_key} className={cx("voice-seat", participant.speaking && "border-success ring-2 ring-success/20")}>
+      return <article key={participant.public_key} className={cx("voice-seat", participant.speaking && "is-speaking")}>
         <div className="seat-body">
         <InitialAvatar name={peerName} size="lg" online={participant.speaking} />
-        <div className="min-w-0 max-w-full">
+        <div className="seat-label">
           <strong className="flex flex-wrap justify-center items-center gap-1">{peerName}
             {participant.secure && <Tooltip label="端到端加密"><span className="badge badge-success badge-soft badge-xs">加密</span></Tooltip>}
             {peer?.flapping && <Tooltip label="路径抖动"><span className="badge badge-warning badge-soft badge-xs">抖动</span></Tooltip>}
           </strong>
-          {participant.speaking && <small>说话中</small>}
+          {participant.speaking && <small className="talking-label">说话中</small>}
           <span className="mt-1 block truncate text-xs text-base-content/50">{metrics}</span>
         </div>
-        <SignalBars quality={quality} title={metrics} />
+        <div className="seat-quality"><SignalBars quality={quality} title={metrics} /></div>
         </div>
       </article>;
     })}

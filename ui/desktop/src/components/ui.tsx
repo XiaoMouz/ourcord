@@ -32,8 +32,10 @@ export function InitialAvatar({ name, size = "md", online }: {
   online?: boolean;
 }) {
   const dimensions = size === "sm" ? "h-7 w-7 text-xs" : size === "lg" ? "h-12 w-12 text-lg" : "h-9 w-9 text-sm";
-  const initial = Array.from(name || "?")[0].toUpperCase();
-  return <div data-tone={(initial.codePointAt(0) ?? 0) % 3} className={cx("avatar avatar-placeholder", online === true && "avatar-online", online === false && "avatar-offline")}>
+  const letters = Array.from(name || "?");
+  const initial = letters[0].toUpperCase();
+  const tone = letters.reduce((hash, char) => (hash * 31 + char.codePointAt(0)!) % 5, 0);
+  return <div data-tone={tone} className={cx("avatar avatar-placeholder", online === true && "avatar-online", online === false && "avatar-offline")}>
     <div className={cx("rounded-selector bg-neutral text-neutral-content", dimensions)}>
       <span className="font-semibold">{initial}</span>
     </div>
