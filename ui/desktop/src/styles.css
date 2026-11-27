@@ -126,7 +126,7 @@ button:disabled { cursor: default; }
 .avatar[data-tone="3"] > div { background: #995676; }
 .avatar-online::before { background: #75dba6; }
 .room-directory footer { background: #1c1d24; min-height: 58px; }
-.room-directory footer small, .member-directory header p, .member-directory h3, .member-directory .list-row { color: var(--muted); }
+.member-directory h3, .member-directory .list-row { color: var(--muted); }
 .studio-main, .channel-content, .channel-chat { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .studio-main { overflow: hidden; }
 .room-heading { flex: none; display: flex; align-items: center; gap: 9px; }
@@ -137,11 +137,9 @@ button:disabled { cursor: default; }
 .channel-layout { display: flex; flex: 1; min-width: 0; min-height: 0; }
 .channel-content { flex: 1; }
 .channel-chat { flex: 0 0 clamp(275px, 25vw, 365px); border-left: 1px solid var(--line); background: var(--color-base-200); }
-.channel-chat > h2 { flex: none; display: flex; align-items: center; gap: 8px; padding: 11px 15px; border-bottom: 1px solid var(--line); font-size: 14px; font-weight: 650; }
 .channel-chat .message-list { padding-inline: 15px; }
 .channel-chat .message-composer { margin-inline: 10px; }
 .member-directory { flex: 0 0 clamp(172px,16vw,218px); background: #22242c; }
-.member-directory > header { min-height: 56px; }
 .member-directory .list-row { gap: 8px; }
 .message-list { flex: 1; min-height: 0; overflow-y: auto; padding: 16px var(--gutter); }
 .day-rule { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 12px; }
@@ -185,14 +183,36 @@ button:disabled { cursor: default; }
 .seat-body > .avatar > div { width: 64px; height: 64px; font-size: 25px; }
 .is-speaking .seat-body > .avatar > div { box-shadow: 0 0 0 6px #38524a; }
 .seat-body > .avatar::before { display: none; }
-.seat-label { position: absolute; left: 11px; right: 22px; bottom: 9px; min-width: 0; font-size: 13px; }
+.seat-label { position: absolute; left: 11px; right: 38px; bottom: 9px; min-width: 0; font-size: 13px; }
 .seat-label strong { justify-content: flex-start; color: #f3f4f8; }
-.seat-label .text-xs { color: #b7bdc9; }
 .talking-label { color: var(--live); }
-.seat-quality { position: absolute; right: 10px; bottom: 10px; }
+.seat-quality { position: absolute; right: 6px; bottom: 6px; }
+.seat-quality summary {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border-radius: 5px;
+  cursor: pointer;
+  list-style: none;
+}
+.seat-quality summary::-webkit-details-marker { display: none; }
+.seat-quality summary:hover, .seat-quality[open] summary { background: var(--color-base-300); }
+.seat-metrics {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 4px);
+  width: max-content;
+  max-width: 148px;
+  padding: 6px 9px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--tree);
+  color: var(--color-base-content);
+  font-size: 12px;
+}
 .login-layout { height: 100%; overflow-y: auto; display: grid; place-items: center; background: #1c1d24; }
 .login-form { width: min(410px,84%); display: grid; gap: 12px; padding: 32px; margin: 24px; border: 1px solid var(--line); border-radius: 14px; background: #262831; }
-.login-brand { display: flex; align-items: center; gap: 8px; color: #c0c4ff; font-weight: 650; }
 .login-form h1 { margin-bottom: 10px; font-size: 29px; font-weight: 700; }
 .login-form label { font-size: 14px; font-weight: 600; }
 .login-form input, .login-form .btn { min-height: 42px; }

@@ -8,8 +8,7 @@ describe("Login", () => {
       <Login busy={false} cooldownSeconds={0} onMagic={() => undefined} />,
     );
 
-    expect(html).toContain("OurCord");
-    expect(html).toContain("欢迎回来");
+    expect(html).toContain("<h1>登录</h1>");
     expect(html).toContain("邮箱地址");
     expect(html).toContain('<label for="login-email">邮箱地址</label>');
     expect(html).toContain('class="input');

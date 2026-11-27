@@ -32,13 +32,17 @@ export default function VoiceStage({ snapshot, selfName }: { snapshot: Snapshot;
         <InitialAvatar name={peerName} size="lg" online={participant.speaking} />
         <div className="seat-label">
           <strong className="flex flex-wrap justify-center items-center gap-1">{peerName}
-            {participant.secure && <Tooltip label="端到端加密"><span className="badge badge-success badge-soft badge-xs">加密</span></Tooltip>}
             {peer?.flapping && <Tooltip label="路径抖动"><span className="badge badge-warning badge-soft badge-xs">抖动</span></Tooltip>}
           </strong>
           {participant.speaking && <small className="talking-label">说话中</small>}
-          <span className="mt-1 block truncate text-xs text-base-content/50">{metrics}</span>
         </div>
-        <div className="seat-quality"><SignalBars quality={quality} title={metrics} /></div>
+        <details className="seat-quality">
+          <summary title="连接详情"><span className="sr-only">{peerName}的连接详情</span><SignalBars quality={quality} /></summary>
+          <div className="seat-metrics">
+            {participant.secure && <p>端到端加密</p>}
+            <p>{metrics}</p>
+          </div>
+        </details>
         </div>
       </article>;
     })}

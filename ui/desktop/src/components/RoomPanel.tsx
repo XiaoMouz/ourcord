@@ -96,25 +96,30 @@ export default function RoomPanel({ lobby, callControls, selectedRoomID, connect
       {lobby && canManage && <button className="btn btn-ghost btn-sm" onClick={onInvite} aria-label="邀请" title="邀请成员"><Icon name="people" /></button>}
     </header>
     <div className="min-h-0 flex-1 overflow-y-auto px-2 py-3">
-      <div className="menu-title flex h-8 flex-row items-center justify-between px-2 text-xs font-medium text-base-content/45">
-        <span>语音房间</span>{lobby && canManage && <IconButton label="新建语音房间" className="btn-xs" onClick={() => onCreateRoom("voice")}><Icon name="plus" /></IconButton>}
-      </div>
-      <ul className="room-list">
-        {voiceRooms.map((room) => roomRow(room))}
-        {voiceRooms.length === 0 && <li className="px-3 py-2 text-xs text-base-content/40">暂无房间</li>}
-      </ul>
-      <div className="menu-title mt-3 flex h-8 flex-row items-center justify-between px-2 text-xs font-medium text-base-content/45">
-        <span>文字房间</span>{lobby && canManage && <IconButton label="新建文字房间" className="btn-xs" onClick={() => onCreateRoom("text")}><Icon name="plus" /></IconButton>}
-      </div>
-      <ul className="room-list">
-        {textRooms.map((room) => roomRow(room))}
-        {textRooms.length === 0 && <li className="px-3 py-2 text-xs text-base-content/40">暂无房间</li>}
-      </ul>
+      {(voiceRooms.length > 0 || canManage) && <>
+        <div className="menu-title flex h-8 flex-row items-center justify-between px-2 text-xs font-medium text-base-content/45">
+          <span>语音房间</span>{lobby && canManage && <IconButton label="新建语音房间" className="btn-xs" onClick={() => onCreateRoom("voice")}><Icon name="plus" /></IconButton>}
+        </div>
+        <ul className="room-list">
+          {voiceRooms.map((room) => roomRow(room))}
+        </ul>
+      </>}
+      {(textRooms.length > 0 || canManage) && <>
+        <div className="menu-title mt-3 flex h-8 flex-row items-center justify-between px-2 text-xs font-medium text-base-content/45">
+          <span>文字房间</span>{lobby && canManage && <IconButton label="新建文字房间" className="btn-xs" onClick={() => onCreateRoom("text")}><Icon name="plus" /></IconButton>}
+        </div>
+        <ul className="room-list">
+          {textRooms.map((room) => roomRow(room))}
+        </ul>
+      </>}
     </div>
     {callControls}
     <footer className="flex items-center gap-3 border-t border-base-300 bg-base-200 px-3 py-3">
       <InitialAvatar name={accountName ?? "OurCord 用户"} size="sm" online={snapshot.daemon_available} />
-      <div className="min-w-0 flex-1"><strong className="block truncate text-sm">{accountName ?? "OurCord 用户"}</strong><small className="block text-xs text-base-content/45">{snapshot.daemon_available ? "后台服务在线" : "后台服务离线"}</small></div>
+      <div className="min-w-0 flex-1">
+        <strong className="block truncate text-sm">{accountName ?? "OurCord 用户"}</strong>
+        {!snapshot.daemon_available && <small className="block text-xs text-warning">后台服务离线</small>}
+      </div>
       <IconButton label="设置" onClick={onOpenSettings}><Icon name="settings" /></IconButton>
     </footer>
     {menu && <ContextMenu x={menu.x} y={menu.y} items={menu.items} onClose={() => setMenu(null)} />}

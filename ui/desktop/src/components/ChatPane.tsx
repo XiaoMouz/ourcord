@@ -15,10 +15,7 @@ const POLL_MS = 3000;
 
 function formatTime(createdAt: number): string {
   const date = new Date(createdAt * 1000);
-  const today = new Date();
-  const sameDay = date.toDateString() === today.toDateString();
-  const time = date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-  return sameDay ? time : `${date.toLocaleDateString()} ${time}`;
+  return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
 export default function ChatPane({ room, composers, myUserID, canModerate, getName, ensureNames, onError, onCopy, onNotice }: {
@@ -210,7 +207,7 @@ export default function ChatPane({ room, composers, myUserID, canModerate, getNa
           <div className="message-avatar"><InitialAvatar name={getName(message.user_id)} /></div>
           <header className="message-author mb-1 flex items-center gap-2 text-xs text-base-content/55">
               <strong className="text-sm text-base-content">{getName(message.user_id)}</strong>
-              <time>{formatTime(message.created_at)}</time>
+              <time dateTime={new Date(message.created_at * 1000).toISOString()}>{formatTime(message.created_at)}</time>
               {(message.user_id === myUserID || canModerate) && (
                 <Tooltip label="删除消息"><button aria-label="删除消息" className="btn btn-ghost btn-circle btn-xs text-error" onClick={() => void remove(message)}>×</button></Tooltip>
               )}
@@ -225,8 +222,8 @@ export default function ChatPane({ room, composers, myUserID, canModerate, getNa
                   <span className="card-body flex-row items-center gap-3 p-3">
                     <Icon name="attach" />
                     <span className="min-w-0 flex-1">
-                      <strong className="block truncate text-sm">{file?.filename ?? "附件"}</strong>
-                      <small className="block text-xs text-base-content/50">{file ? formatBytes(file.size_bytes) : "点击下载"}</small>
+                      <strong className="block truncate text-sm">{file?.filename ?? "下载附件"}</strong>
+                      {file && <small className="block text-xs text-base-content/50">{formatBytes(file.size_bytes)}</small>}
                     </span>
                     {downloading === fileID && <Spinner />}
                   </span>

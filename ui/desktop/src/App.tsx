@@ -547,7 +547,6 @@ export default function App() {
         : !selectedRoom
           ? <div className="flex-1"><EmptyState icon={<SignalMark />} title={!selectedLobby ? "加入你的第一个大厅" : selectedLobby.rooms.length ? "选择一个房间" : "大厅里还没有房间"}>
               {!selectedLobby && <button className="btn btn-primary" onClick={() => void promptAction("joinLobby")}>加入大厅</button>}
-              {!!selectedLobby?.rooms.length && "从左侧选择房间，开始聊天或通话。"}
               {selectedLobby?.rooms.length === 0 && (canManage
                 ? <button className="btn btn-primary" onClick={() => void createRoom("text")}>创建文字房间</button>
                 : "等待大厅管理员创建房间。")}
@@ -556,7 +555,7 @@ export default function App() {
           ? <div className="flex-1"><EmptyState icon={<span className="loading loading-ring loading-lg" />} title="正在连接语音" /></div>
           : <VoiceStage snapshot={snapshot} selfName={auth.profile?.user?.display_name} />}
       </div>
-      {sideChat && <aside className="channel-chat" aria-label="语音频道聊天"><h2><Icon name="chat" />频道聊天</h2>{chat}</aside>}
+      {sideChat && <aside className="channel-chat" aria-label="语音频道聊天">{chat}</aside>}
       {showMembers && <MemberPanel members={members} loading={membersLoading} getName={getName}
       onCopy={(text, label) => void copyText(text, label)} />}
       </div>
