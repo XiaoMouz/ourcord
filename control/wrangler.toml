@@ -6,6 +6,9 @@ routes = [
   { pattern = "control.ourcord.mou.best", custom_domain = true }
 ]
 
+[triggers]
+crons = ["0 * * * *"]
+
 [[d1_databases]]
 binding = "DB"
 database_name = "ourcord-control"
@@ -30,10 +33,6 @@ ENVIRONMENT = "production"
 SERVICE_URL = "https://service.ourcord.mou.best"
 EMAIL_FROM = "OurCord <ourcord@mou.best>"
 EMAIL_RATE_LIMIT_PER_DAY = "10"
-
-# Bound HTTP CPU; rate limits reduce downstream work, not billed ingress.
-[limits]
-cpu_ms = 50
 
 [[ratelimits]]
 name = "RATE_LIMIT_5"

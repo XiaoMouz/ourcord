@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { check, type DownloadEvent, type Update } from "@tauri-apps/plugin-updater";
@@ -45,6 +46,10 @@ export function checkForDesktopUpdate(): Promise<void> {
   if (checkPromise || downloadPromise || update) return checkPromise ?? downloadPromise ?? Promise.resolve();
   checkPromise = (async () => {
     try {
+      if (!await invoke<boolean>("desktop_updater_available")) {
+        publish({ status: "idle" });
+        return;
+      }
       const available = await check();
       if (!available) {
         publish({ status: "idle" });
@@ -118,8 +123,10 @@ function startUpdater() {
 
   const appWindow = getCurrentWindow();
   void appWindow.onCloseRequested(async (event) => {
-    if (closing) return;
+    // Each close event needs cancellation, including repeats while cleanup
+    // or an update is pending; otherwise Tauri destroys the window itself.
     event.preventDefault();
+    if (closing) return;
     closing = true;
     await leaveRealtimeSession();
     try {

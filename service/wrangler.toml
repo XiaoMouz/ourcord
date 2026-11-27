@@ -30,10 +30,6 @@ R2_MAX_FILE_BYTES = "104857600" # 100 MiB; lobby policies may only tighten this
 [triggers]
 crons = ["0 * * * *"]
 
-# Bound HTTP CPU; rate limits reduce downstream work, not billed ingress.
-[limits]
-cpu_ms = 50
-
 [[ratelimits]]
 name = "RATE_LIMIT_5"
 namespace_id = "12005"

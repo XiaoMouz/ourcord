@@ -29,7 +29,7 @@ function desktopMagicResponse(retryAfter: number): Response {
 
 // POST /api/auth/otp/request — send OTP to email
 export async function requestOTP(request: Request, env: Env): Promise<Response> {
-  const tooBig = checkBodySize(request, 1024);
+  const tooBig = await checkBodySize(request, 1024);
   if (tooBig) return tooBig;
   const body = await request.json<{ email: string }>();
   if (!body.email || !body.email.includes("@")) {
@@ -71,7 +71,7 @@ export async function requestOTP(request: Request, env: Env): Promise<Response> 
 
 // POST /api/auth/otp/verify — verify OTP and issue token
 export async function verifyOTP(request: Request, env: Env): Promise<Response> {
-  const tooBig = checkBodySize(request, 1024);
+  const tooBig = await checkBodySize(request, 1024);
   if (tooBig) return tooBig;
   const body = await request.json<{ email: string; otp: string }>();
   if (!body.email || !body.otp) return json({ error: "email and otp required" }, 400);
@@ -307,7 +307,7 @@ export async function oauthCallback(request: Request, env: Env, provider: string
 // POST /api/auth/desktop/magic — send a browser confirmation link bound to
 // the requesting desktop instance's PKCE challenge.
 export async function requestDesktopMagic(request: Request, env: Env): Promise<Response> {
-  const tooBig = checkBodySize(request, 2048);
+  const tooBig = await checkBodySize(request, 2048);
   if (tooBig) return tooBig;
   let body: { email?: unknown; code_challenge?: unknown };
   try { body = await request.json(); } catch { return json({ error: "invalid JSON body" }, 400); }
@@ -361,13 +361,15 @@ export async function confirmDesktopMagicPage(request: Request): Promise<Respons
 }
 
 export async function confirmDesktopMagic(request: Request, env: Env): Promise<Response> {
+  const tooBig = await checkBodySize(request, 2048);
+  if (tooBig) return tooBig;
   const form = await request.formData();
   const rawToken = String(form.get("token") ?? "");
   if (!/^[a-f0-9]{64}$/.test(rawToken)) return json({ error: "Invalid or expired link" }, 400);
   const key = `desktop_magic:${await sha256Base64url(rawToken)}`;
   const storedRaw = await env.KV.get(key);
-  await env.KV.delete(key);
   if (!storedRaw) return json({ error: "Invalid or expired link" }, 400);
+  await env.KV.delete(key);
   let stored: { email: string; challenge: string };
   try { stored = JSON.parse(storedRaw); } catch { return json({ error: "Invalid link" }, 400); }
   if (!PKCE_CHALLENGE_RE.test(stored.challenge)) return json({ error: "Invalid link" }, 400);
@@ -378,7 +380,7 @@ export async function confirmDesktopMagic(request: Request, env: Env): Promise<R
 }
 
 export async function exchangeDesktopCode(request: Request, env: Env): Promise<Response> {
-  const tooBig = checkBodySize(request, 2048);
+  const tooBig = await checkBodySize(request, 2048);
   if (tooBig) return tooBig;
   let body: { code?: unknown; code_verifier?: unknown };
   try { body = await request.json(); } catch { return json({ error: "invalid JSON body" }, 400); }
@@ -411,6 +413,18 @@ async function issueDesktopCode(env: Env, userId: string, email: string, challen
     "INSERT INTO desktop_auth_codes (code_hash, user_id, email, code_challenge, expires_at) VALUES (?,?,?,?,?)",
   ).bind(await sha256Base64url(code), userId, email, challenge, now + DESKTOP_CODE_TTL).run();
   return code;
+}
+
+export async function cleanupExpiredDesktopCodes(env: Env): Promise<number> {
+  // Match exchangeDesktopCode's strict expiry boundary. Use the expiry index
+  // and one bounded batch so old abandoned logins cannot make a cron unbounded.
+  const result = await env.DB.prepare(
+    `DELETE FROM desktop_auth_codes WHERE code_hash IN (
+       SELECT code_hash FROM desktop_auth_codes
+       WHERE expires_at < ? ORDER BY expires_at LIMIT 500
+     )`,
+  ).bind(Math.floor(Date.now() / 1000)).run();
+  return result.meta.changes;
 }
 
 async function getOrCreateUser(env: Env, email: string): Promise<{ id: string; email: string; banned_at: number | null }> {
@@ -568,10 +582,9 @@ async function sendOTPEmail(env: Env, email: string, otp: string): Promise<void>
 // jsonWithCookie returns a JSON response with a Set-Cookie header attached.
 // Used by oauthCallback to clear the OAuth CSRF cookie on every exit path.
 function jsonWithCookie(data: unknown, status: number, setCookie: string): Response {
-  return new Response(JSON.stringify(data), {
-    status,
-    headers: { "Content-Type": "application/json", "Set-Cookie": setCookie },
-  });
+  const response = json(data, status);
+  response.headers.set("Set-Cookie", setCookie);
+  return response;
 }
 
 // parseCookie extracts a single cookie value from a Cookie header. Returns

@@ -63,7 +63,7 @@ function makeCapturingDB(plan: DBStep[]): CapturingDB {
       };
       return s as D1PreparedStatement;
     }),
-    batch: vi.fn(),
+    batch: vi.fn(async (statements: D1PreparedStatement[]) => Promise.all(statements.map((statement) => statement.run()))),
     exec: vi.fn(),
   } as unknown as D1Database;
   return { db, binds, sqls };
@@ -210,9 +210,9 @@ describe("revokeDevice", () => {
     const cap = makeCapturingDB([
       { first: null }, // ban check
       { first: { public_key: VALID_WG_KEY } },
-      {}, // revoke token
       {}, // remove connectivity
       {}, // remove peer
+      {}, // revoke token
     ]);
     const resp = await revokeDevice(
       new Request("https://control.example/api/devices/dev-1", {
@@ -223,11 +223,11 @@ describe("revokeDevice", () => {
       "dev-1",
     );
     expect(resp.status).toBe(200);
-    expect(cap.sqls[2]).toMatch(/UPDATE device_tokens SET revoked_at/);
-    expect(cap.binds[2].slice(1)).toEqual(["dev-1", "u1"]);
-    expect(cap.sqls[3]).toMatch(/DELETE FROM peer_connectivity/);
-    expect(cap.sqls[4]).toMatch(/DELETE FROM peers/);
-    expect(cap.binds[4]).toEqual(["u1", VALID_WG_KEY]);
+    expect(cap.sqls[4]).toMatch(/UPDATE device_tokens SET revoked_at/);
+    expect(cap.binds[4].slice(1)).toEqual(["dev-1", "u1"]);
+    expect(cap.sqls[2]).toMatch(/DELETE FROM peer_connectivity/);
+    expect(cap.sqls[3]).toMatch(/DELETE FROM peers/);
+    expect(cap.binds[3]).toEqual(["u1", VALID_WG_KEY, "dev-1", "u1"]);
   });
 
   it("404s for a device the caller does not own", async () => {
