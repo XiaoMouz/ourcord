@@ -537,7 +537,7 @@ func TestApplyConfig_UsesDERPAsStartupFallbackEndpoint(t *testing.T) {
 			DERPNodeKey: "nodekey:0123456789abcdef",
 		}},
 		Relays: []control.RelayEntry{{Hostname: "relay.example.com", Port: 443, Region: "test"}},
-	})
+	}, func(string) bool { return false })
 	if err != nil {
 		t.Fatalf("applyConfig: %v", err)
 	}
@@ -548,6 +548,44 @@ func TestApplyConfig_UsesDERPAsStartupFallbackEndpoint(t *testing.T) {
 	}
 	if strings.Contains(uapi, "endpoint=ice://") {
 		t.Fatalf("startup fallback must not claim ICE before validation:\n%s", uapi)
+	}
+}
+
+func TestApplyConfig_ICEValidatedBeforeFirstRoute(t *testing.T) {
+	priv, err := wgtypes.GeneratePrivateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pk := priv.PublicKey()
+	table := routing.NewTable()
+	ft := &fakeTun{}
+	cfg := &control.PeerConfig{Peers: []control.RemotePeer{{
+		PublicKey: pk.String(), IP4: "198.19.0.2", DERPNodeKey: "nodekey:0123456789abcdef",
+		DERPURL: "https://relay.example.test/derp",
+	}}}
+	// Incoming signaling finished while this peer was still absent from the room snapshot.
+	if table.SetICEReady(pk, true) {
+		t.Fatal("a probe alone must not create a route")
+	}
+	validated := func(key string) bool { return key == pk.String() }
+	if err := applyConfig(ft, table, priv, cfg, validated); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(ft.lastIPC(), "endpoint=ice://") {
+		t.Fatalf("first authorized config did not install the validated path: %s", ft.lastIPC())
+	}
+	table.SetDERPFallback(pk, "operator requested")
+	if err := applyConfig(ft, table, priv, cfg, validated); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(ft.lastIPC(), "endpoint=derp://") {
+		t.Fatal("config refresh overrode an existing fallback")
+	}
+	if err := applyConfig(ft, table, priv, &control.PeerConfig{}, validated); err != nil {
+		t.Fatal(err)
+	}
+	if len(table.All()) != 0 {
+		t.Fatal("removed peer retained a route")
 	}
 }
 
