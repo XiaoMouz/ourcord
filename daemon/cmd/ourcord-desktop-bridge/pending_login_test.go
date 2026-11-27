@@ -70,6 +70,19 @@ func TestPendingLoginSurvivesAppReinitialization(t *testing.T) {
 	}
 }
 
+func TestExchangeReportsUnreadablePendingLogin(t *testing.T) {
+	storeErr := errors.New("credential storage temporarily unavailable")
+	desktop := &bridge{credentials: failingCredentials{err: storeErr}}
+	if _, err := desktop.dispatch("auth.exchange", json.RawMessage(`{"code":"synthetic-code"}`)); !errors.Is(err, storeErr) {
+		t.Fatalf("exchange with unreadable login state = %v, want storage error", err)
+	}
+
+	desktop.credentials = memoryCredentials{}
+	if _, err := desktop.dispatch("auth.exchange", json.RawMessage(`{"code":"synthetic-code"}`)); err == nil || err.Error() != "login session expired" {
+		t.Fatalf("exchange without a pending login = %v, want expired session", err)
+	}
+}
+
 func TestPendingLoginExpiresAfterFullEmailAndCodeWindows(test *testing.T) {
 	now := time.Unix(1800000000, 0)
 	desktop := &bridge{controlURL: "https://control.test", credentials: memoryCredentials{}, clock: func() time.Time { return now }}
