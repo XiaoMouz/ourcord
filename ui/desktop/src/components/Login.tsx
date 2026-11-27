@@ -30,7 +30,12 @@ export default function Login({ busy, cooldownSeconds, loginURLs, onMagic, onOAu
       }}>
         <label htmlFor="login-email">邮箱地址</label>
         <input id="login-email" className="input w-full" type="email" name="email" required
-          autoComplete="email" placeholder="name@example.com" />
+          autoComplete="email" placeholder="name@example.com"
+          onKeyDown={event => {
+            if (event.key === "Enter" && event.repeat && !event.nativeEvent.isComposing && event.nativeEvent.keyCode !== 229) {
+              event.preventDefault();
+            }
+          }} />
         <button className="btn btn-primary w-full" type="submit" disabled={sendUnavailable}>
           {busy && <span className="loading loading-spinner loading-sm" />}
           {coolingDown ? <span aria-live="polite">

@@ -204,6 +204,9 @@ func (b *bridge) dispatch(method string, raw json.RawMessage) (any, error) {
 	case "auth.exchange":
 		code := stringParam(params, "code")
 		pending, err := b.readPendingLogin(b.now())
+		if err != nil && !errors.Is(err, keyring.ErrNotFound) {
+			return nil, fmt.Errorf("read login state: %w", err)
+		}
 		if err != nil || pending.ControlURL != b.controlURL || pending.ExpiresAt <= b.now().Unix() {
 			return nil, errors.New("login session expired")
 		}

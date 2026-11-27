@@ -46,10 +46,25 @@ describe("Magic Link submission", () => {
     expect(onMagic).not.toHaveBeenCalled();
   });
 
-  it("leaves composition Enter to the input method", async () => {
+  it.each([{ isComposing: true }, { keyCode: 229 }])("leaves composition Enter to the input method", async (composition) => {
     const { input } = await render("test@example.com");
-    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", isComposing: true, bubbles: true }));
+    const event = new KeyboardEvent("keydown", { key: "Enter", repeat: true, ...composition, bubbles: true, cancelable: true });
+    expect(input.dispatchEvent(event)).toBe(true);
     expect(onMagic).not.toHaveBeenCalled();
+  });
+
+  it("cancels the browser's default submission on repeated Enter", async () => {
+    const { input } = await render("test@example.com");
+    const event = new KeyboardEvent("keydown", { key: "Enter", repeat: true, bubbles: true, cancelable: true });
+    expect(input.dispatchEvent(event)).toBe(false);
+    expect(onMagic).not.toHaveBeenCalled();
+  });
+
+  it("submits the trimmed address after the pending request completes", async () => {
+    await render("", true);
+    const { form } = await render("  test@example.com  ");
+    form.requestSubmit();
+    expect(onMagic).toHaveBeenCalledExactlyOnceWith("test@example.com");
   });
 
   it("submits the current valid address once per activation", async () => {

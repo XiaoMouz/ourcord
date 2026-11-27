@@ -275,6 +275,8 @@ describe("App startup authentication recovery", () => {
     begin.resolve(loginURLs);
     await mount();
     expect(container.textContent).toContain("startup link unavailable");
+    expect(container.textContent).toContain("暂时无法启动 OurCord");
+    expect(container.textContent).not.toContain("登录未完成");
     expect(calls("auth.status")).toHaveLength(0);
     expect(calls("auth.begin")).toHaveLength(0);
     await retry();
@@ -325,6 +327,9 @@ describe("App startup authentication recovery", () => {
     await act(async () => exchange.reject(new Error("authorization expired")));
     expect(calls("auth.begin")).toHaveLength(0);
     expect(container.textContent).toContain("authorization expired");
+    expect(container.textContent).toContain("登录未完成");
+    expect(container.textContent).toContain("链接已过期或失效");
+    expect(container.textContent).not.toContain("请重新打开应用");
     const restart = [...container.querySelectorAll("button")].find((item) => item.textContent === "重新开始登录");
     expect(restart).toBeDefined();
     await act(async () => restart!.click());
