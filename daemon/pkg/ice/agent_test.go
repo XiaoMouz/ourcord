@@ -4,6 +4,7 @@ import (
 	"net"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -11,17 +12,49 @@ import (
 	"github.com/pion/stun/v3"
 )
 
-// fakeSTUN spins up a minimal STUN binding server on 127.0.0.1 and returns
-// its UDP address plus a cleanup func. It only handles BindingRequest and
-// replies with XOR-MAPPED-ADDRESS = source address (RFC 5389 §10.2).
+func localSTUNIP(t *testing.T) net.IP {
+	t.Helper()
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var localIP net.IP
+	for _, networkInterface := range interfaces {
+		if networkInterface.Flags&net.FlagUp == 0 || networkInterface.Flags&net.FlagLoopback != 0 || !buildInterfaceFilter(nil)(networkInterface.Name) {
+			continue
+		}
+		addresses, err := networkInterface.Addrs()
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, address := range addresses {
+			ip, _, err := net.ParseCIDR(address.String())
+			if err == nil && ip.To4() != nil && ip.IsGlobalUnicast() {
+				localIP = ip.To4()
+				break
+			}
+		}
+		if localIP != nil {
+			break
+		}
+	}
+	if localIP == nil {
+		t.Skip("no usable non-loopback IPv4 interface for local STUN")
+	}
+	return localIP
+}
+
 func fakeSTUN(t *testing.T) (*net.UDPAddr, func()) {
 	t.Helper()
-	conn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	conn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: localSTUNIP(t), Port: 0})
 	if err != nil {
 		t.Fatalf("listen fake stun: %v", err)
 	}
 	done := make(chan struct{})
+	stopped := make(chan struct{})
+	var requests atomic.Int64
 	go func() {
+		defer close(stopped)
 		buf := make([]byte, 1500)
 		for {
 			_ = conn.SetReadDeadline(time.Now().Add(250 * time.Millisecond))
@@ -44,6 +77,7 @@ func fakeSTUN(t *testing.T) (*net.UDPAddr, func()) {
 			if req.Type != stun.BindingRequest {
 				continue
 			}
+			requests.Add(1)
 			resp, err := stun.Build(
 				stun.NewTransactionIDSetter(req.TransactionID),
 				stun.BindingSuccess,
@@ -59,6 +93,10 @@ func fakeSTUN(t *testing.T) (*net.UDPAddr, func()) {
 	cleanup := func() {
 		close(done)
 		_ = conn.Close()
+		<-stopped
+		if requests.Load() == 0 {
+			t.Error("fake STUN server did not receive any binding requests")
+		}
 	}
 	return conn.LocalAddr().(*net.UDPAddr), cleanup
 }
@@ -155,8 +193,7 @@ func TestAgent_SrflxAgainstFakeSTUN(t *testing.T) {
 	if srflxN == 0 {
 		t.Fatalf("expected ≥1 srflx candidate from fake STUN, got 0 (cands=%v)", cands)
 	}
-	// srflx should report a 127.0.0.1 mapped address (the fake server saw us
-	// sourcing from loopback because both ends are on lo).
+	// srflx must report a usable mapped address from the local test server.
 	for _, c := range cands {
 		if c.Type() != pionice.CandidateTypeServerReflexive {
 			continue
@@ -173,7 +210,7 @@ func TestAgent_SrflxAgainstFakeSTUN(t *testing.T) {
 
 func TestAgent_STUNUnreachable_NoSrflxNoPanic(t *testing.T) {
 	// Bind+close to grab a port nothing listens on.
-	tmp, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	tmp, err := net.ListenUDP("udp4", &net.UDPAddr{IP: localSTUNIP(t), Port: 0})
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
@@ -226,7 +263,10 @@ func TestAgent_PriorityOrdering(t *testing.T) {
 	if hostMax == 0 {
 		t.Skip("no host candidates")
 	}
-	if srflxMax != 0 && hostMax <= srflxMax {
+	if srflxMax == 0 {
+		t.Fatal("no server-reflexive candidates to compare with host priority")
+	}
+	if hostMax <= srflxMax {
 		t.Fatalf("host priority %d should exceed srflx priority %d", hostMax, srflxMax)
 	}
 }
