@@ -19,7 +19,7 @@ export const NETWORK_PRESENCE_TTL_SECONDS = 90;
 // POST /api/peers/register — register a new device/peer
 // Body: { public_key: string, name: string, platform: string }
 export async function registerPeer(request: Request, env: Env): Promise<Response> {
-  const tooBig = checkBodySize(request, 4 * 1024);
+  const tooBig = await checkBodySize(request, 4 * 1024);
   if (tooBig) return tooBig;
   const authResult = await requireAuth(request, env);
   if (authResult instanceof Response) return authResult;
@@ -342,9 +342,9 @@ export async function getPeerConfig(request: Request, env: Env): Promise<Respons
   const relayMap = await buildRelayMap(env, null, userId);
   const relays = relayMap.relays;
 
-  const headers: HeadersInit = { "Content-Type": "application/json" };
-  if (scopeWarning) headers["X-Scope-Warning"] = scopeWarning;
-  return new Response(JSON.stringify({ peers: publicPeerRows, relays }), { headers });
+  const response = json({ peers: publicPeerRows, relays });
+  if (scopeWarning) response.headers.set("X-Scope-Warning", scopeWarning);
+  return response;
 }
 
 // POST /api/peers/connectivity — daemon reports per-peer link capabilities in
@@ -354,7 +354,7 @@ export async function getPeerConfig(request: Request, env: Env): Promise<Respons
 // DERP is the most expensive baseline, and one-hop relay is selected only when
 // it improves on the direct edge or the direct edge is unavailable.
 export async function reportPeerConnectivity(request: Request, env: Env): Promise<Response> {
-  const tooBig = checkBodySize(request, 4 * 1024);
+  const tooBig = await checkBodySize(request, 4 * 1024);
   if (tooBig) return tooBig;
   const authResult = await requireAuth(request, env);
   if (authResult instanceof Response) return authResult;
@@ -749,7 +749,7 @@ interface RelayEntry {
 // Users with no registered peers are omitted from the map (callers
 // shouldn't need to distinguish "absent" from "empty array").
 export async function lookupPeers(request: Request, env: Env): Promise<Response> {
-  const tooBig = checkBodySize(request, 16 * 1024);
+  const tooBig = await checkBodySize(request, 16 * 1024);
   if (tooBig) return tooBig;
   const authResult = await requireAuth(request, env);
   if (authResult instanceof Response) return authResult;
