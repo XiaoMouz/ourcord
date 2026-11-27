@@ -43,7 +43,7 @@ function newDeviceSecret(): string {
 // devices. Requires a fresh user JWT (the human is present). Re-enrolling the
 // same public key rotates the credential: the old secret stops working.
 export async function enrollDevice(request: Request, env: Env): Promise<Response> {
-  const tooBig = checkBodySize(request, 4 * 1024);
+  const tooBig = await checkBodySize(request, 4 * 1024);
   if (tooBig) return tooBig;
   const authResult = await requireAuth(request, env);
   if (authResult instanceof Response) return authResult;
@@ -87,7 +87,7 @@ export async function enrollDevice(request: Request, env: Env): Promise<Response
 // the route. Bans are enforced here so a banned user's devices stop refreshing
 // within one JWT TTL.
 export async function exchangeDeviceToken(request: Request, env: Env, ctx?: ExecutionContext): Promise<Response> {
-  const tooBig = checkBodySize(request, 4 * 1024);
+  const tooBig = await checkBodySize(request, 4 * 1024);
   if (tooBig) return tooBig;
 
   let body: { device_token?: unknown };

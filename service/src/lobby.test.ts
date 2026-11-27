@@ -67,7 +67,11 @@ function makeDB(plan: { first?: unknown; run?: unknown }[]): D1Database {
     };
     return s as D1PreparedStatement;
   };
-  return { prepare: vi.fn(() => stmt()), batch: vi.fn(), exec: vi.fn() } as unknown as D1Database;
+  return {
+    prepare: vi.fn(() => stmt()),
+    batch: vi.fn(async (statements: D1PreparedStatement[]) => Promise.all(statements.map((s) => s.run()))),
+    exec: vi.fn(),
+  } as unknown as D1Database;
 }
 
 async function joinReq(token: string, code: string | null): Promise<Request> {
@@ -121,7 +125,7 @@ describe("joinLobby", () => {
     expect(body.message).toMatch(/Already a member/);
   });
 
-  it("rejects when invite update changes 0 rows (invalid/exhausted)", async () => {
+  it("rejects when the conditional membership insert changes 0 rows (invalid/exhausted)", async () => {
     const token = await makeToken();
     const env = {
       ENVIRONMENT: "production",
@@ -129,7 +133,9 @@ describe("joinLobby", () => {
       DB: makeDB([
         { first: { id: "L1" } },
         { first: null }, // not yet a member
-        { run: { meta: { changes: 0 } } }, // UPDATE invites → 0
+        { run: { meta: { changes: 0 } } }, // conditional INSERT
+        { run: { meta: { changes: 0 } } }, // no consumption
+        { first: null }, // no concurrent membership
       ]),
     } as Env;
     const resp = await joinLobby(await joinReq(token, "ABC"), env, "L1");
@@ -146,8 +152,8 @@ describe("joinLobby", () => {
       DB: makeDB([
         { first: { id: "L1" } },
         { first: null },
-        { run: { meta: { changes: 1 } } }, // UPDATE
-        { run: { meta: { changes: 1 } } }, // INSERT OR IGNORE
+        { run: { meta: { changes: 1 } } }, // conditional INSERT
+        { run: { meta: { changes: 1 } } }, // consume one use
       ]),
     } as Env;
     const resp = await joinLobby(await joinReq(token, "ABC"), env, "L1");
@@ -185,8 +191,7 @@ describe("createRoom", () => {
       JWT_SECRET: SECRET,
       DB: makeDB([
         { first: { role: "owner" } },        // membership
-        { first: { m: 2 } },                  // MAX(position)
-        { run: { meta: { changes: 1 } } },    // INSERT
+        { first: { position: 3 } },          // atomic INSERT ... RETURNING
       ]),
     } as Env;
     const req = jsonReq("https://x/api/lobbies/L1/rooms", "POST", token, { name: "chat", type: "text" });
@@ -206,8 +211,7 @@ describe("createRoom", () => {
       JWT_SECRET: SECRET,
       DB: makeDB([
         { first: { role: "admin" } },
-        { first: { m: 0 } },
-        { run: { meta: { changes: 1 } } },
+        { first: { position: 1 } },
       ]),
     } as Env;
     const req = jsonReq("https://x/api/lobbies/L1/rooms", "POST", token, { name: "huddle", type: "voice" });
@@ -264,7 +268,7 @@ describe("updateRoom", () => {
       DB: makeDB([
         { first: { id: "R1", lobby_id: "L1", name: "old", type: "text", position: 0 } },
         { first: { role: "admin" } },
-        { run: { meta: { changes: 1 } } },
+        { first: { id: "R1", lobby_id: "L1", name: "new", type: "text", position: 0 } },
       ]),
     } as Env;
     const req = jsonReq("https://x/api/rooms/R1", "PATCH", token, { name: "new" });
@@ -300,7 +304,6 @@ describe("deleteRoom", () => {
       DB: makeDB([
         { first: { lobby_id: "L1" } },
         { first: { role: "owner" } },
-        { first: { c: 2 } },
         { run: { meta: { changes: 1 } } },
       ]),
     } as Env;
@@ -332,7 +335,7 @@ describe("deleteRoom", () => {
       DB: makeDB([
         { first: { lobby_id: "L1" } },
         { first: { role: "owner" } },
-        { first: { c: 1 } },
+        { run: { meta: { changes: 0 } } },
       ]),
     } as Env;
     const resp = await deleteRoom(delReq("https://x/api/rooms/R1", token), env, "R1");

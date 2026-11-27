@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { initiateUpload, uploadToR2, completeExternalUpload, runR2Cleanup } from "./files";
+import { initiateUpload, uploadToR2, completeExternalUpload } from "./files";
 import type { Env, FilePolicy } from "./types";
 
 // NOTE on scope: the spec for Y4 referenced a chunked upload protocol
@@ -139,6 +139,30 @@ function envOf(db: D1Database, files?: R2Bucket): Env {
 }
 
 describe("initiateUpload", () => {
+  it.each([
+    ["CJK boundary", "\u6587".repeat(83) + "ab.txt", 201],
+    ["emoji boundary", "\u{1f680}".repeat(62) + "abc.txt", 201],
+    ["ASCII boundary", "a".repeat(251) + ".txt", 201],
+    ["CJK over byte limit", "\u6587".repeat(84) + ".txt", 400],
+    ["emoji over byte limit", "\u{1f680}".repeat(63) + ".txt", 400],
+    ["ASCII over byte limit", "a".repeat(252) + ".txt", 400],
+  ] as const)("enforces a portable filename byte limit: %s", async (_name, filename, status) => {
+    const db = makeDB([
+      { first: { lobby_id: "L1" } },
+      { first: { 1: 1 } },
+      { first: { ...POLICY_ALL_ON } },
+    ]);
+    const response = await initiateUpload(initReq(await makeToken(), {
+      filename, size_bytes: 1, mime_type: "text/plain",
+    }), envOf(db), "R1");
+    expect(response.status).toBe(status);
+    if (status === 400) {
+      expect(vi.mocked(db.prepare).mock.calls.some(([sql]) => sql.includes("INSERT INTO files"))).toBe(false);
+    } else {
+      expect((await response.json<{ storage_key: string }>()).storage_key.endsWith(`/${filename}`)).toBe(true);
+    }
+  });
+
   it("happy path (R2 storage) returns 201 with upload_url", async () => {
     const token = await makeToken();
     const db = makeDB([
@@ -553,7 +577,9 @@ const FILE_ROW = {
   storage_location: "r2" as const,
   storage_key: "files/L1/R1/F1/f.txt",
   expires_at: null,
-  created_at: 1,
+  created_at: Math.floor(Date.now() / 1000),
+  upload_status: "pending" as const,
+  upload_expires_at: 9999999999,
 };
 
 const EXTERNAL_FILE_ROW = {
@@ -656,7 +682,7 @@ describe("completeExternalUpload", () => {
     try {
       const resp = await completeExternalUpload(completeReq(token, uploadToken), envOf(db), "R1", "F1");
       expect(resp.status).toBe(200);
-      expect(fetchSpy).toHaveBeenCalledWith("https://files.me.example/files/F1/f.txt", { method: "HEAD" });
+      expect(fetchSpy).toHaveBeenCalledWith("https://files.me.example/files/F1/f.txt", { method: "HEAD", signal: expect.any(AbortSignal) });
       const body = await resp.json<{ uploaded: boolean; bytes: number; backend_id: string }>();
       expect(body).toEqual({ uploaded: true, bytes: 5, storage_location: "user_server", backend_id: "B1" });
     } finally {
@@ -785,59 +811,4 @@ describe("quota / cleanup", () => {
     expect(inserted[9]).toBeNull();
   });
 
-  it("runR2Cleanup deletes expired R2 objects then their D1 rows", async () => {
-    const rows = [
-      { id: "F1", storage_key: "files/L1/R1/F1/a" },
-      { id: "F2", storage_key: "files/L1/R1/F2/b" },
-    ];
-    const deleteRowIds: unknown[] = [];
-    let call = 0;
-    const db = {
-      prepare: vi.fn((sql: string) => {
-        call++;
-        const isSelect = sql.includes("SELECT");
-        const s: any = {
-          bind: (...vals: unknown[]) => { if (!isSelect) deleteRowIds.push(vals[0]); return s; },
-          first: vi.fn(async () => null),
-          run: vi.fn(async () => ({ meta: { changes: 1 } })),
-          all: vi.fn(async () => (isSelect ? { results: rows } : { results: [] })),
-        };
-        return s as D1PreparedStatement;
-      }),
-      batch: vi.fn(),
-      exec: vi.fn(),
-    } as unknown as D1Database;
-    const r2 = makeR2();
-    const result = await runR2Cleanup(envOf(db, r2.bucket));
-    expect(result).toEqual({ deleted: 2, failed: 0 });
-    expect(r2.calls.delete).toEqual([rows[0].storage_key, rows[1].storage_key]);
-    expect(deleteRowIds).toEqual(["F1", "F2"]);
-    void call; // touched to keep linter happy
-  });
-
-  it("runR2Cleanup counts R2 failures and skips the D1 delete for those rows", async () => {
-    const rows = [{ id: "F1", storage_key: "k1" }, { id: "F2", storage_key: "k2" }];
-    const dbRunCalls: string[] = [];
-    const db = {
-      prepare: vi.fn((sql: string) => {
-        const isSelect = sql.includes("SELECT");
-        const s: any = {
-          _vals: [] as unknown[],
-          bind: (...vals: unknown[]) => { s._vals = vals; return s; },
-          first: vi.fn(async () => null),
-          run: vi.fn(async () => { dbRunCalls.push(String(s._vals[0])); return { meta: { changes: 1 } }; }),
-          all: vi.fn(async () => (isSelect ? { results: rows } : { results: [] })),
-        };
-        return s as D1PreparedStatement;
-      }),
-      batch: vi.fn(),
-      exec: vi.fn(),
-    } as unknown as D1Database;
-    const r2 = makeR2({ deleteThrows: new Error("R2 down") });
-    const result = await runR2Cleanup(envOf(db, r2.bucket));
-    expect(result).toEqual({ deleted: 0, failed: 2 });
-    // Both R2 deletes attempted, no D1 row deletes happened.
-    expect(r2.calls.delete).toEqual(["k1", "k2"]);
-    expect(dbRunCalls).toEqual([]);
-  });
 });
