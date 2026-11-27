@@ -147,8 +147,8 @@ describe("remote message deletions across real chat views", () => {
     await tick();
     await remove(author, 1);
     await act(async () => {
-      const input = reader.querySelector("input")!;
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "New message");
+      const input = reader.querySelector("form textarea")!;
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(input, "New message");
       input.dispatchEvent(new Event("input", { bubbles: true }));
     });
     await act(async () => reader.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
@@ -205,8 +205,8 @@ describe("remote message deletions across real chat views", () => {
     versioned = false;
     messages = [message(2)];
     await act(async () => {
-      const input = reader.querySelector("input")!;
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "New message");
+      const input = reader.querySelector("form textarea")!;
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(input, "New message");
       input.dispatchEvent(new Event("input", { bubbles: true }));
     });
     await act(async () => reader.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));

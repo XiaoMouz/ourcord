@@ -13,11 +13,11 @@ describe("MemberPanel", () => {
       <MemberPanel members={members} loading={false} getName={(id) => id === "owner" ? "Alice" : "Bob"} onCopy={() => undefined} />,
     );
 
-    expect(html).toContain("成员 · 2");
+    expect(html).toContain('aria-label="成员"');
     expect(html).toContain("Alice");
     expect(html).toContain("Bob");
     expect(html).toContain("所有者");
-    expect(html).toContain("1 人在线");
+    expect(html).not.toContain("人在线");
     expect(html).toContain("在线 — 1");
     expect(html).toContain("离线 — 1");
     expect(html).toContain("avatar-online");

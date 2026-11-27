@@ -50,11 +50,11 @@ describe("ChatPane composer", () => {
     container.remove();
   });
 
-  function input() { return container.querySelector("input")!; }
+  function input() { return container.querySelector("textarea")!; }
 
   async function edit(value: string) {
     await act(async () => {
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input(), value);
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(input(), value);
       input().dispatchEvent(new Event("input", { bubbles: true }));
     });
   }

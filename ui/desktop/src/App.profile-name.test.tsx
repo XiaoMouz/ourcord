@@ -99,6 +99,8 @@ describe("display name updates through real settings controls", () => {
 
   async function editName(value: string) {
     await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="设置"]')!.click());
+    const account = [...container.querySelectorAll<HTMLButtonElement>(".modal nav button")].find((item) => item.textContent === "账号")!;
+    await act(async () => account.click());
     const input = container.querySelector<HTMLInputElement>(".modal input.input")!;
     expect(input).not.toBeNull();
     await act(async () => {

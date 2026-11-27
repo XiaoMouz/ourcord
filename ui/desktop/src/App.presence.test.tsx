@@ -2,7 +2,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { bridge, type LobbyEntry, type Snapshot } from "./bridge";
+import { bridge, type LobbyEntry, type Message, type Snapshot } from "./bridge";
 import { DialogProvider } from "./dialog";
 import App from "./App";
 
@@ -18,7 +18,6 @@ vi.mock("./updater", () => ({
   installDesktopUpdate: vi.fn(), retryDesktopUpdate: vi.fn(),
 }));
 vi.mock("./components/TitleBar", () => ({ default: () => null }));
-vi.mock("./components/ChatPane", () => ({ default: () => null }));
 
 function deferred() {
   let resolve!: () => void;
@@ -30,9 +29,9 @@ function deferred() {
 const lobby: LobbyEntry = {
   lobby: { id: "L1", name: "Friends", owner_id: "me" },
   member: { role: "owner", joined_at: 1 },
-  rooms: ["A", "B"].map((id, position) => ({
+  rooms: [{ id: "chat", lobby_id: "L1", name: "Chat", type: "text", position: 0 }, ...["A", "B"].map((id, position) => ({
     id, lobby_id: "L1", name: `Voice ${id}`, type: "voice", position, vpn_namespace: `network-${id}`,
-  })),
+  }))],
 };
 
 describe("App presence writes through voice controls", () => {
@@ -40,6 +39,8 @@ describe("App presence writes through voice controls", () => {
   let root: Root;
   let snapshot: Snapshot;
   let serverPresence: string;
+  let messages: Message[];
+  let nextSend: ReturnType<typeof deferred> | undefined;
   let nextWrite: ReturnType<typeof deferred> | undefined;
   let writes: string[];
   let activeWrites: number;
@@ -59,6 +60,8 @@ describe("App presence writes through voice controls", () => {
     vi.clearAllMocks();
     voice("");
     serverPresence = "";
+    messages = [];
+    nextSend = undefined;
     nextWrite = undefined;
     writes = [];
     activeWrites = maxActiveWrites = 0;
@@ -66,6 +69,12 @@ describe("App presence writes through voice controls", () => {
       if (method === "auth.status") return { authenticated: true };
       if (method === "lobbies.list") return { lobbies: [lobby] };
       if (method === "lobbies.members") return { members: [] };
+      if (method === "messages.list") return { messages: messages.filter((message) => message.room_id === args?.room_id) };
+      if (method === "messages.send") {
+        await nextSend?.promise;
+        messages.push({ id: "sent", room_id: String(args?.room_id), content: String(args?.content), user_id: "me", created_at: 1 });
+        return {};
+      }
       if (method === "daemon.snapshot") return snapshot;
       if (method === "presence.update") {
         const room = String(args?.voice_room_id ?? "");
@@ -117,6 +126,72 @@ describe("App presence writes through voice controls", () => {
     expect(button?.disabled).toBe(false);
     await act(async () => button!.click());
   }
+
+  it("sends side chat to the active voice room without reconnecting", async () => {
+    voice("B");
+    await mount();
+    const input = container.querySelector<HTMLTextAreaElement>(".channel-chat textarea")!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(input, "voice room note");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => container.querySelector<HTMLButtonElement>(".channel-chat [type=submit]")!.click());
+    expect(bridge).toHaveBeenCalledWith("messages.send", { room_id: "B", content: "voice room note" });
+    expect(vi.mocked(bridge).mock.calls.some(([method]) => method === "voice.join_network")).toBe(false);
+  });
+
+  it("waits for a fresh plain Enter before sending a voice-room draft", async () => {
+    voice("A");
+    await mount();
+    const input = container.querySelector<HTMLTextAreaElement>(".channel-chat textarea")!;
+    const key = (extra: KeyboardEventInit) => new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true, ...extra });
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(input, "中文候选");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    for (const modifiers of [{ isComposing: true }, { repeat: true }, { shiftKey: true }, { ctrlKey: true }, { altKey: true }, { metaKey: true }]) {
+      await act(async () => { input.dispatchEvent(key(modifiers)); });
+      expect(bridge).not.toHaveBeenCalledWith("messages.send", expect.anything());
+    }
+    await act(async () => { input.dispatchEvent(key({})); });
+    expect(bridge).toHaveBeenCalledWith("messages.send", { room_id: "A", content: "中文候选" });
+  });
+
+  it("browses text during a call and returns to the active room without reconnecting", async () => {
+    voice("A");
+    await mount();
+    await join("A");
+    const textRoom = container.querySelector<HTMLElement>('[title="Chat"]')!;
+    await act(async () => textRoom.click());
+    expect(container.querySelector(".room-heading h1")?.textContent).toBe("Chat");
+    const returnToCall = container.querySelector<HTMLButtonElement>('button[title="返回 Voice A"]')!;
+    expect(returnToCall.textContent).toBe("Voice A");
+    await act(async () => returnToCall.click());
+    expect(container.querySelector(".room-heading h1")?.textContent).toBe("Voice A");
+    expect(container.querySelector('[aria-label="语音频道聊天"]')).not.toBeNull();
+    expect(vi.mocked(bridge).mock.calls.filter(([method]) => method === "voice.join_network")).toHaveLength(0);
+  });
+
+  it.each([true, false])("refreshes acknowledged sends only in the visible room (returned=%s)", async (returned) => {
+    voice("A");
+    await mount();
+    const pending = nextSend = deferred();
+    const input = container.querySelector<HTMLTextAreaElement>(".channel-chat textarea")!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(input, "Voice room note");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => container.querySelector<HTMLButtonElement>(".channel-chat [type=submit]")!.click());
+    await act(async () => container.querySelector<HTMLElement>('[title="Chat"]')!.click());
+    if (returned) await act(async () => container.querySelector<HTMLButtonElement>('button[title="返回 Voice A"]')!.click());
+    const readCount = () => vi.mocked(bridge).mock.calls.filter(([method, args]) => method === "messages.list" && args?.room_id === "A").length;
+    const previous = readCount();
+    await act(async () => pending.resolve());
+    expect(readCount() - previous).toBe(returned ? 1 : 0);
+    if (returned) expect(container.querySelector(".channel-chat article")?.textContent).toContain("Voice room note");
+    else expect(container.querySelector("article")).toBeNull();
+    expect(bridge).not.toHaveBeenCalledWith("voice.join_network", expect.anything());
+  });
 
   it.each([["", "A"], ["A", "B"], ["A", ""]])(
     "does not let a delayed %j heartbeat overwrite the action's %j presence",

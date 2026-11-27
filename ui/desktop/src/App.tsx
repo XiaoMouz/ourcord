@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { register, unregister } from "@tauri-apps/plugin-global-shortcut";
@@ -7,7 +7,9 @@ import { parseOurCordLink, type OurCordLink } from "./deepLink";
 import { loadVoicePrefs } from "./prefs";
 import { createNameCache, displayName } from "./names";
 import { useDialog } from "./dialog";
+import { RoomComposer } from "./roomComposer";
 import { remainingCooldownSeconds } from "./cooldown";
+import Icon from "./components/Icon";
 import Login from "./components/Login";
 import LobbyRail from "./components/LobbyRail";
 import RoomPanel from "./components/RoomPanel";
@@ -17,8 +19,8 @@ import ChatPane from "./components/ChatPane";
 import CallBar from "./components/CallBar";
 import SettingsModal from "./components/SettingsModal";
 import DiagnosticsModal from "./components/DiagnosticsModal";
-import { LobbyRailSkeleton, MemberPanelSkeleton, RoomPanelSkeleton, Spinner } from "./components/Skeleton";
-import { EmptyState, ToastHost, cx, type ToastMessage } from "./components/ui";
+import { LobbyRailSkeleton, RoomPanelSkeleton, Spinner } from "./components/Skeleton";
+import { EmptyState, SignalMark, ToastHost, cx, type ToastMessage } from "./components/ui";
 import TitleBar from "./components/TitleBar";
 import { installDesktopUpdate, retryDesktopUpdate, useDesktopUpdater } from "./updater";
 
@@ -51,6 +53,8 @@ export default function App() {
   const [selectedLobbyID, setSelectedLobbyID] = useState("");
   const [selectedRoomID, setSelectedRoomID] = useState("");
   const [snapshot, setSnapshot] = useState<Snapshot>({ daemon_available: false });
+  const [voicePanel, setVoicePanel] = useState<"chat" | "members" | null>("chat");
+  const [membersOpen, setMembersOpen] = useState(() => window.innerWidth >= 1000);
   const [settings, setSettings] = useState(false);
   const [diagnostics, setDiagnostics] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -83,12 +87,17 @@ export default function App() {
   const memberLobbyRef = useRef("");
   memberLobbyRef.current = auth.authenticated ? selectedLobby?.lobby.id ?? "" : "";
   const memberRequestRef = useRef(0);
-  const selectedRoom = selectedLobby?.rooms.find((room) => room.id === selectedRoomID);
   const canManage = !!selectedLobby && ["owner", "admin"].includes(selectedLobby.member.role);
   const myUserID = auth.profile?.user?.id ?? "";
-  const activeVoiceRoomID = snapshot.voice?.joined
-    ? lobbies.flatMap((entry) => entry.rooms).find((room) => room.vpn_namespace === snapshot.status?.network_id)?.id ?? ""
-    : "";
+  const composers = useMemo(() => new Map<string, RoomComposer>(), [myUserID, auth.authenticated]);
+  const networkID = snapshot.status?.network_id;
+  const activeVoiceRoom = snapshot.voice?.joined && networkID
+    ? lobbies.flatMap((entry) => entry.rooms).find((room) => room.type === "voice" && room.vpn_namespace === networkID)
+    : undefined;
+  const activeVoiceRoomID = activeVoiceRoom?.id ?? "";
+  const selectedRoom = selectedLobby?.rooms.find((room) => room.id === selectedRoomID)
+    ?? (activeVoiceRoom?.lobby_id === selectedLobby?.lobby.id ? activeVoiceRoom : undefined)
+    ?? selectedLobby?.rooms.filter((room) => room.type === "text").sort((a, b) => a.position - b.position)[0];
 
   const refreshAuth = useCallback(async (restart = false) => {
     const requestID = ++authRequestRef.current;
@@ -365,7 +374,10 @@ export default function App() {
       await refreshSnapshot();
       await updatePresence(room.id).catch(() => undefined);
       if (selectedLobby) await refreshMembers(selectedLobby.lobby.id);
-    } catch (e) { showError(String(e)); } finally { setBusy(false); setConnectingRoomID(""); }
+    } catch (e) {
+      setSelectedRoomID((id) => id === room.id ? activeVoiceRoomID : id);
+      showError(String(e));
+    } finally { setBusy(false); setConnectingRoomID(""); }
   }
 
   async function leaveVoice() {
@@ -381,7 +393,7 @@ export default function App() {
   }
 
   function selectRoom(room: Room) {
-    if (room.type === "voice") void joinVoice(room);
+    if (room.type === "voice" && room.id !== activeVoiceRoomID) void joinVoice(room);
     else setSelectedRoomID(room.id);
   }
 
@@ -389,19 +401,26 @@ export default function App() {
     try {
       if (kind === "createLobby") {
         const name = await dialog.promptText("创建大厅", { label: "大厅名称", placeholder: "例如：周末开黑", required: true, maxLength: 80 });
-        if (name) await bridge("lobbies.create", { name });
+        if (!name) return;
+        const lobby = await bridge<{ id: string }>("lobbies.create", { name });
+        setSelectedLobbyID(lobby.id);
+        setSelectedRoomID("");
       }
       if (kind === "joinLobby") {
         const values = await dialog.prompt({ title: "加入大厅", fields: [
           { name: "lobby_id", label: "大厅 ID", required: true },
           { name: "code", label: "邀请码", required: true },
         ] });
-        if (values) await bridge("lobbies.join", { lobby_id: values.lobby_id, code: values.code });
+        if (!values) return;
+        await bridge("lobbies.join", { lobby_id: values.lobby_id, code: values.code });
+        setSelectedLobbyID(values.lobby_id);
+        setSelectedRoomID("");
       }
       if (kind === "invite" && selectedLobby) {
         const result = await bridge<{ code: string }>("lobbies.invite", { lobby_id: selectedLobby.lobby.id });
         await navigator.clipboard.writeText(`ourcord://invite?lobby_id=${selectedLobby.lobby.id}&code=${result.code}`);
         showNotice("邀请链接已复制");
+        return;
       }
       await refreshLobbies();
     } catch (e) { showError(String(e)); }
@@ -478,53 +497,70 @@ export default function App() {
   </div></div>;
 
   if (!lobbiesLoaded) return <div className="flex h-screen min-w-[920px] flex-col bg-base-300 text-base-content">{titleBar}<div className="min-h-0 flex-1">
-    <main className="grid h-full grid-cols-[4.5rem_17rem_minmax(0,1fr)_15rem]">
+    <main className="studio-workspace h-full">
       <LobbyRailSkeleton />
       <RoomPanelSkeleton />
       <section className="hero bg-base-200"><Spinner label="正在载入大厅" /></section>
-      <MemberPanelSkeleton />
+
     </main>
     <ToastHost toast={toast} onDismiss={dismissToast} />
   </div></div>;
 
   const inVoice = !!snapshot.voice?.joined;
   const showChat = selectedRoom?.type === "text";
-  const connecting = !!connectingRoomID && !inVoice;
-  const stageTitle = selectedRoom ? (showChat ? `#${selectedRoom.name}` : selectedRoom.name) : "选择一个房间";
-  const path = connecting ? "waiting" : snapshot.status?.path_summary ?? "inactive";
-
-  return <div className="flex h-screen min-w-[920px] flex-col bg-base-300 text-base-content">{titleBar}<main className="grid min-h-0 flex-1 grid-cols-[4.5rem_17rem_minmax(0,1fr)_15rem]">
+  const connecting = !!connectingRoomID;
+  const isVoiceRoom = selectedRoom?.type === "voice";
+  const showMembers = isVoiceRoom ? voicePanel === "members" : membersOpen;
+  const sideChat = isVoiceRoom && voicePanel === "chat";
+  const chat = selectedRoom && <ChatPane key={myUserID + ":" + selectedRoom.id} composers={composers} room={selectedRoom} myUserID={myUserID} canModerate={canManage}
+            getName={getName} ensureNames={ensureNames} onError={showError} onNotice={showNotice}
+            onCopy={(text, label) => void copyText(text, label)} />;
+  const callControls = (inVoice || connecting) && <CallBar snapshot={snapshot} busy={busy} connecting={connecting} shortcut={PTT_SHORTCUT}
+    roomName={connecting ? lobbies.flatMap((entry) => entry.rooms).find((room) => room.id === connectingRoomID)?.name : activeVoiceRoom?.name}
+    onReturn={activeVoiceRoom && !connecting ? () => {
+      setSelectedLobbyID(activeVoiceRoom.lobby_id);
+      setSelectedRoomID(activeVoiceRoom.id);
+    } : undefined}
+    onLeave={() => void leaveVoice()} refresh={refreshSnapshot} onError={showError} />;
+  return <div className="flex h-screen min-w-[920px] flex-col bg-base-300 text-base-content">{titleBar}<main className="studio-workspace min-h-0 flex-1">
     <LobbyRail lobbies={lobbies} activeID={selectedLobby?.lobby.id ?? ""}
       onSelect={(id) => { setSelectedLobbyID(id); setSelectedRoomID(""); }}
       onCreate={() => void promptAction("createLobby")} onJoin={() => void promptAction("joinLobby")} />
-    <RoomPanel lobby={selectedLobby}
-      selectedRoomID={selectedRoomID} connectingRoomID={connectingRoomID}
+    <RoomPanel lobby={selectedLobby} callControls={callControls}
+      selectedRoomID={selectedRoom?.id ?? ""} connectingRoomID={connectingRoomID}
       snapshot={snapshot} members={members} getName={getName} busy={busy} canManage={canManage} accountName={auth.profile?.user?.display_name}
       onSelectRoom={selectRoom} onCreateRoom={(type) => void createRoom(type)} onInvite={() => void promptAction("invite")}
       onRenameRoom={(room) => void renameRoom(room)} onDeleteRoom={(room) => void deleteRoom(room)}
       onReorderRoom={(room, dir) => void reorderRoom(room, dir)}
-      onOpenSettings={() => setSettings(true)} onLeaveVoice={() => void leaveVoice()}
-      refreshSnapshot={refreshSnapshot} onError={showError} onCopy={(text, label) => void copyText(text, label)} />
-    <section className="relative flex min-w-0 flex-col overflow-hidden bg-base-200">
-      <header className="navbar min-h-16 shrink-0 border-b border-base-300 bg-base-100 px-5">
-        <div className="min-w-0 flex-1"><h1 className="truncate text-lg font-semibold">{stageTitle}</h1></div>
-        <div className={cx("badge badge-sm gap-2", path === "direct" ? "badge-success badge-soft" : path === "derp" || path === "next-hop" ? "badge-warning badge-soft" : path === "waiting" ? "badge-primary badge-soft" : "badge-ghost")}>
-          <span className={cx("status status-xs", path === "direct" ? "status-success" : path === "derp" || path === "next-hop" ? "status-warning" : path === "waiting" ? "status-primary" : "status-neutral")} />
-          {connecting ? "连接中" : path}
-        </div>
+      onOpenSettings={() => setSettings(true)} onCopy={(text, label) => void copyText(text, label)} />
+    <section className="studio-main">
+      <header className="room-heading">
+        <Icon name={isVoiceRoom ? "voice" : "text"} />
+        <h1 title={selectedRoom?.name}>{selectedRoom?.name ?? selectedLobby?.lobby.name ?? "大厅"}</h1>
+        {isVoiceRoom && <button className="panel-switch" aria-expanded={sideChat}
+          onClick={() => setVoicePanel(sideChat ? null : "chat")}><Icon name="chat" />聊天</button>}
+        <button className="panel-switch" aria-expanded={showMembers}
+          onClick={() => isVoiceRoom ? setVoicePanel(showMembers ? null : "members") : setMembersOpen(!membersOpen)}><Icon name="people" />成员</button>
       </header>
+      <div className="channel-layout"><div className="channel-content">
       {showChat && selectedRoom
-        ? <ChatPane key={selectedRoom.id} room={selectedRoom} myUserID={myUserID} canModerate={canManage}
-            getName={getName} ensureNames={ensureNames} onError={showError} onNotice={showNotice}
-            onCopy={(text, label) => void copyText(text, label)} />
-        : connecting
+        ? chat
+        : !selectedRoom
+          ? <div className="flex-1"><EmptyState icon={<SignalMark />} title={!selectedLobby ? "加入你的第一个大厅" : selectedLobby.rooms.length ? "选择一个房间" : "大厅里还没有房间"}>
+              {!selectedLobby && <button className="btn btn-primary" onClick={() => void promptAction("joinLobby")}>加入大厅</button>}
+              {selectedLobby?.rooms.length === 0 && (canManage
+                ? <button className="btn btn-primary" onClick={() => void createRoom("text")}>创建文字房间</button>
+                : "等待大厅管理员创建房间。")}
+            </EmptyState></div>
+          : connecting
           ? <div className="flex-1"><EmptyState icon={<span className="loading loading-ring loading-lg" />} title="正在连接语音" /></div>
           : <VoiceStage snapshot={snapshot} selfName={auth.profile?.user?.display_name} />}
-      {(inVoice || connecting || !showChat) && <CallBar snapshot={snapshot} busy={busy} shortcut={PTT_SHORTCUT}
-        onLeave={() => void leaveVoice()} refresh={refreshSnapshot} onError={showError} />}
+      </div>
+      {sideChat && <aside className="channel-chat" aria-label="语音频道聊天">{chat}</aside>}
+      {showMembers && <MemberPanel members={members} loading={membersLoading} getName={getName}
+      onCopy={(text, label) => void copyText(text, label)} />}
+      </div>
     </section>
-    <MemberPanel members={members} loading={membersLoading} getName={getName}
-      onCopy={(text, label) => void copyText(text, label)} />
     {settings && <SettingsModal snapshot={snapshot} auth={auth} close={() => setSettings(false)}
       refreshSnapshot={refreshSnapshot} refreshAuth={refreshAuth} onError={showError} onNotice={showNotice}
       openDiagnostics={() => { setSettings(false); setDiagnostics(true); }}

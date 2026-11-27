@@ -25,8 +25,8 @@ describe("RoomPanel", () => {
       lobby={lobby} selectedRoomID="V1" connectingRoomID="" snapshot={snapshot}
       members={members} getName={() => "Alice"} busy={false} canManage accountName="Me"
       onSelectRoom={vi.fn()} onCreateRoom={vi.fn()} onInvite={vi.fn()} onRenameRoom={vi.fn()}
-      onDeleteRoom={vi.fn()} onReorderRoom={vi.fn()} onOpenSettings={vi.fn()} onLeaveVoice={vi.fn()}
-      refreshSnapshot={async () => undefined} onError={vi.fn()} onCopy={vi.fn()}
+      onDeleteRoom={vi.fn()} onReorderRoom={vi.fn()} onOpenSettings={vi.fn()}
+      onCopy={vi.fn()}
     />);
 
     expect(html).toContain("hover:bg-base-200/70");

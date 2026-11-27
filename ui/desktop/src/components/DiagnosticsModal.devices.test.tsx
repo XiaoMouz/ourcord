@@ -49,9 +49,15 @@ describe("DiagnosticsModal device identity loading", () => {
     .find((row) => row.textContent?.includes(name))!.querySelector<HTMLButtonElement>("button")!;
   async function clickAndConfirm(button: HTMLButtonElement) {
     await act(async () => button.click());
-    const confirm = Array.from(container.querySelectorAll<HTMLButtonElement>('[role="dialog"] button'))
-      .find((b) => b.textContent === "吊销");
-    if (confirm) await act(async () => confirm.click());
+    const dialog = container.querySelector('[role="dialog"][aria-label^="吊销设备"]');
+    if (button.disabled) {
+      expect(dialog).toBeNull();
+      return;
+    }
+    expect(dialog).not.toBeNull();
+    const confirm = Array.from(dialog!.querySelectorAll("button")).find((b) => b.textContent === "吊销");
+    expect(confirm).toBeDefined();
+    await act(async () => confirm!.click());
   }
 
   it("cannot revoke this computer while its identity request is pending", async () => {
