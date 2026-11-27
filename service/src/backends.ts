@@ -218,13 +218,13 @@ export async function checkBackendHealth(request: Request, env: Env, backendId: 
 export async function runBackendHealthChecks(env: Env, batchSize = 50): Promise<{ checked: number; healthy: number; unhealthy: number }> {
   const rows = await env.DB
     .prepare(
-      `SELECT * FROM file_backends
+      `SELECT id, base_url FROM file_backends
        WHERE active = 1
-       ORDER BY COALESCE(last_health_at, 0) ASC
+       ORDER BY last_health_at, id
        LIMIT ?`,
     )
     .bind(batchSize)
-    .all<FileBackend>();
+    .all<Pick<FileBackend, "id" | "base_url">>();
 
   let checked = 0;
   let healthy = 0;

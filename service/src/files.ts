@@ -661,7 +661,7 @@ export async function runR2Cleanup(env: Env, batchSize = 200): Promise<{ deleted
 
   const rows = await env.DB.prepare(
     `SELECT storage_key, not_before FROM r2_deletion_queue
-     WHERE not_before <= ? ORDER BY not_before, storage_key LIMIT ?`,
+     WHERE not_before <= ? ORDER BY not_before LIMIT ?`,
   ).bind(now, limit).all<{ storage_key: string; not_before: number }>();
   let deleted = 0;
   let failed = 0;
