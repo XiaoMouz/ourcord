@@ -219,15 +219,25 @@ export async function checkBackendHealth(request: Request, env: Env, backendId: 
 }
 
 export async function runBackendHealthChecks(env: Env, batchSize = 50): Promise<{ checked: number; healthy: number; unhealthy: number }> {
+  // Merge the three schema-constrained status ranges in the existing
+  // (active, health_status, last_health_at) index. A global COALESCE sort
+  // reads the whole active registry before LIMIT, even for a small batch.
+  // NULL timestamps sort first, keeping never-probed backends eligible.
   const rows = await env.DB
     .prepare(
-      `SELECT * FROM file_backends
-       WHERE active = 1
-       ORDER BY COALESCE(last_health_at, 0) ASC
+      `SELECT id, base_url, last_health_at FROM file_backends
+       WHERE active = 1 AND health_status = 'unknown'
+       UNION ALL
+       SELECT id, base_url, last_health_at FROM file_backends
+       WHERE active = 1 AND health_status = 'healthy'
+       UNION ALL
+       SELECT id, base_url, last_health_at FROM file_backends
+       WHERE active = 1 AND health_status = 'unhealthy'
+       ORDER BY last_health_at ASC
        LIMIT ?`,
     )
     .bind(batchSize)
-    .all<FileBackend>();
+    .all<Pick<FileBackend, "id" | "base_url" | "last_health_at">>();
 
   let checked = 0;
   let healthy = 0;
@@ -246,7 +256,7 @@ export async function runBackendHealthChecks(env: Env, batchSize = 50): Promise<
 // personal (自建) backend owned by the caller; with lobby_id it becomes the
 // lobby's (大厅) backend and requires owner/admin role there.
 export async function registerBackend(request: Request, env: Env): Promise<Response> {
-  const tooBig = checkBodySize(request, 4 * 1024);
+  const tooBig = await checkBodySize(request, 4 * 1024);
   if (tooBig) return tooBig;
   const auth = await requireAuth(request, env);
   if (auth instanceof Response) return auth;
@@ -357,7 +367,7 @@ export async function deactivateBackend(request: Request, env: Env, backendId: s
 // (the 分享 tier). Owner only; lobby backends are already visible to members
 // and cannot be shared individually.
 export async function shareBackend(request: Request, env: Env, backendId: string): Promise<Response> {
-  const tooBig = checkBodySize(request, 4 * 1024);
+  const tooBig = await checkBodySize(request, 4 * 1024);
   if (tooBig) return tooBig;
   const auth = await requireAuth(request, env);
   if (auth instanceof Response) return auth;
