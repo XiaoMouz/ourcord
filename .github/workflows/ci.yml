@@ -221,6 +221,8 @@ jobs:
         run: go test -run TestWintunAdapterSmoke -v ./pkg/tun/
       - name: Verify private client output permissions
         run: go test -run '^(TestEnrollDevicePersistsCredentialWithoutReturningIt|TestWriteDiagnosticsArchiveRedactsLogCredentials|TestFailedDiagnosticsExportPreservesExistingArchive|TestDiagnosticsZIPPropagatesFlushError)$' ./pkg/client
+      - name: Verify service registration and upgrade commands
+        run: go test -run '^TestConfigureService' ./cmd/ourcord-service
 
   desktop-web:
     name: Desktop (React)
