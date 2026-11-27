@@ -219,6 +219,8 @@ jobs:
         env:
           OURCORD_WINTUN_SMOKE: "1"
         run: go test -run TestWintunAdapterSmoke -v ./pkg/tun/
+      - name: Verify private client output permissions
+        run: go test -run '^(TestEnrollDevicePersistsCredentialWithoutReturningIt|TestWriteDiagnosticsArchiveRedactsLogCredentials)$' ./pkg/client
 
   desktop-web:
     name: Desktop (React)

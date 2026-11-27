@@ -40,14 +40,11 @@ func CollectDiagnostics(socketPath, logFile, outputPath string) error {
 }
 
 func writeDiagnosticsArchive(outputPath, socketPath, logFile string, status, peers any) error {
-	f, err := os.OpenFile(outputPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	f, err := openPrivateOutput(outputPath)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
-	if err := f.Chmod(0o600); err != nil {
-		return err
-	}
 	zw := zip.NewWriter(f)
 	defer zw.Close()
 

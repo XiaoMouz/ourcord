@@ -18,6 +18,9 @@ func TestWriteDiagnosticsArchiveRedactsLogCredentials(t *testing.T) {
 		t.Fatal(err)
 	}
 	archivePath := filepath.Join(dir, "diagnostics.zip")
+	if err := os.WriteFile(archivePath, []byte("previous export"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	if err := writeDiagnosticsArchive(archivePath, "/tmp/ourcordd.sock", logPath, ipc.DaemonStatus{PathSummary: "derp"}, []ipc.ConnectedPeer{{PublicKey: "peer"}}); err != nil {
 		t.Fatal(err)
 	}
@@ -45,8 +48,5 @@ func TestWriteDiagnosticsArchiveRedactsLogCredentials(t *testing.T) {
 	if contents == "" || strings.Contains(contents, "dt_") || !strings.Contains(contents, "REDACTED_DEVICE_TOKEN") {
 		t.Fatalf("diagnostics log was not redacted: %q", contents)
 	}
-	info, err := os.Stat(archivePath)
-	if err != nil || info.Mode().Perm() != 0o600 {
-		t.Fatalf("archive mode = %v err=%v", info.Mode().Perm(), err)
-	}
+	assertPrivateOutput(t, archivePath)
 }
