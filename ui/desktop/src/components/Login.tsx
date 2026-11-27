@@ -1,5 +1,4 @@
 import { useEffect, useState, type CSSProperties } from "react";
-import { InitialAvatar } from "./ui";
 
 export default function Login({ busy, cooldownSeconds, loginURLs, onMagic, onOAuth }: {
   busy: boolean;
@@ -21,45 +20,34 @@ export default function Login({ busy, cooldownSeconds, loginURLs, onMagic, onOAu
     return () => cancelAnimationFrame(frame);
   }, [coolingDown]);
 
-  return <main className="hero min-h-full bg-base-200">
-    <div className="hero-content w-full max-w-md">
-      <section className="card card-border w-full bg-base-100 shadow-2xl">
-        <div className="card-body gap-5 p-8">
-          <div className="flex items-center gap-3">
-            <InitialAvatar name="OurCord" size="lg" />
-            <h1 className="text-2xl font-semibold tracking-tight">OurCord</h1>
-          </div>
-          <h2 className="card-title text-3xl">欢迎回来</h2>
-          <form className="flex flex-col gap-5" onSubmit={(event) => {
-            event.preventDefault();
-            const email = new FormData(event.currentTarget).get("email");
-            if (!sendUnavailable && typeof email === "string") onMagic(email);
-          }}>
-            <label className="fieldset">
-              <span className="fieldset-legend">邮箱地址</span>
-              <input className="input w-full" type="email" name="email" required autoComplete="email" placeholder="you@example.com"
-                onKeyDown={event => {
-                  if (event.key === "Enter" && event.repeat && !event.nativeEvent.isComposing && event.nativeEvent.keyCode !== 229) {
-                    event.preventDefault();
-                  }
-                }} />
-            </label>
-            <button type="submit" className="btn btn-primary btn-block" disabled={sendUnavailable}>
-              {busy && <span className="loading loading-spinner loading-sm" />}
-              {coolingDown ? <span aria-live="polite">
-                <span className={`countdown font-mono${animateCooldown ? "" : " countdown-initial"}`}>
-                  <span style={{ "--value": cooldownSeconds } as CSSProperties} aria-label={String(cooldownSeconds)}>{cooldownSeconds}</span>
-                </span> 秒后可重新发送
-              </span> : "发送 Magic Link"}
-            </button>
-          </form>
-          <div className="divider text-xs text-base-content/40">或</div>
-          <div className="grid grid-cols-2 gap-3">
-            <button className="btn" disabled={busy || !loginURLs || !onOAuth} onClick={() => onOAuth?.("google")}>G&nbsp; Google</button>
-            <button className="btn" disabled={busy || !loginURLs || !onOAuth} onClick={() => onOAuth?.("github")}>⌁&nbsp; GitHub</button>
-          </div>
-        </div>
-      </section>
-    </div>
+  return <main className="login-layout">
+    <section className="login-form">
+      <h1>登录</h1>
+      <form className="grid gap-3" onSubmit={(event) => {
+        event.preventDefault();
+        const email = new FormData(event.currentTarget).get("email");
+        if (!sendUnavailable && typeof email === "string") onMagic(email);
+      }}>
+        <label htmlFor="login-email">邮箱地址</label>
+        <input id="login-email" className="input w-full" type="email" name="email" required
+          autoComplete="email" placeholder="name@example.com"
+          onKeyDown={event => {
+            if (event.key === "Enter" && event.repeat && !event.nativeEvent.isComposing && event.nativeEvent.keyCode !== 229) {
+              event.preventDefault();
+            }
+          }} />
+        <button className="btn btn-primary w-full" type="submit" disabled={sendUnavailable}>
+          {busy && <span className="loading loading-spinner loading-sm" />}
+          {coolingDown ? <span aria-live="polite">
+            <span className={`countdown font-mono${animateCooldown ? "" : " countdown-initial"}`}>
+              <span style={{ "--value": cooldownSeconds } as CSSProperties} aria-label={String(cooldownSeconds)}>{cooldownSeconds}</span>
+            </span> 秒后可重新发送
+          </span> : "发送登录链接"}
+        </button>
+      </form>
+      <div className="divider text-xs">或</div>
+      <button type="button" className="btn w-full" disabled={busy || !loginURLs || !onOAuth} onClick={() => onOAuth?.("google")}>使用 Google 登录</button>
+      <button type="button" className="btn w-full" disabled={busy || !loginURLs || !onOAuth} onClick={() => onOAuth?.("github")}>使用 GitHub 登录</button>
+    </section>
   </main>;
 }

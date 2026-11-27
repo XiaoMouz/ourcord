@@ -1,13 +1,16 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { bridge, type FileRecord, type Message, type Room } from "../bridge";
+import Icon from "./Icon";
+import { RoomComposer } from "../roomComposer";
+import { shouldSendMessage } from "../composer";
 import { mergeMessages, senderIDs } from "../messages";
 import { indexMissingFiles } from "../files";
 import { formatBytes, parseAttachments } from "../format";
 import { ChatSkeleton, Spinner } from "./Skeleton";
 import ContextMenu, { type MenuItem } from "./ContextMenu";
 import { useDialog } from "../dialog";
-import { EmptyState, IconButton, InitialAvatar, Tooltip, cx } from "./ui";
+import { EmptyState, IconButton, InitialAvatar, Tooltip } from "./ui";
 
 const PAGE_SIZE = 50;
 const POLL_MS = 3000;
@@ -16,14 +19,12 @@ type MessagePage = { messages: Message[]; deletion_revision?: number };
 
 function formatTime(createdAt: number): string {
   const date = new Date(createdAt * 1000);
-  const today = new Date();
-  const sameDay = date.toDateString() === today.toDateString();
-  const time = date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-  return sameDay ? time : `${date.toLocaleDateString()} ${time}`;
+  return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
-export default function ChatPane({ room, myUserID, canModerate, getName, ensureNames, onError, onCopy, onNotice }: {
+export default function ChatPane({ room, composers, myUserID, canModerate, getName, ensureNames, onError, onCopy, onNotice }: {
   room: Room;
+  composers?: Map<string, RoomComposer>;
   myUserID: string;
   canModerate: boolean;
   getName: (userID: string) => string;
@@ -35,17 +36,23 @@ export default function ChatPane({ room, myUserID, canModerate, getName, ensureN
   const dialog = useDialog();
   const [messages, setMessages] = useState<Message[]>([]);
   const [loaded, setLoaded] = useState(false);
-  const [draft, setDraft] = useState("");
-  const draftRevision = useRef(0);
-  const composerBusy = useRef(false);
-  const [sending, setSending] = useState(false);
+  const [composer] = useState(() => {
+    const existing = composers?.get(room.id);
+    if (existing) return existing;
+    const created = new RoomComposer();
+    composers?.set(room.id, created);
+    return created;
+  });
+  const { text: draft, pending, sentCount } = useSyncExternalStore(composer.subscribe, composer.snapshot, composer.snapshot);
+  const lastSentCount = useRef(sentCount);
+  const sending = pending === "send";
+  const uploading = pending === "upload";
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [reachedStart, setReachedStart] = useState(false);
   const [menu, setMenu] = useState<{ x: number; y: number; items: MenuItem[] } | null>(null);
   const [files, setFiles] = useState<Record<string, FileRecord>>({});
   const fileLookup = useRef({ pending: false, retryAt: 0, delay: POLL_MS, missing: new Set<string>() });
   const [downloading, setDownloading] = useState("");
-  const [uploading, setUploading] = useState(false);
   const listRef = useRef<HTMLDivElement>(null);
   const stickToBottom = useRef(true);
   // Track deletions only for reads already in flight; each read releases its
@@ -94,6 +101,15 @@ export default function ChatPane({ room, myUserID, canModerate, getName, ensureN
       setLoaded(true);
     }
   }, [room.id, ensureNames, acceptRevision]);
+
+  // A send can finish after this room has been closed and reopened. Refresh
+  // the currently mounted view, which also owns its pending history reads.
+  useEffect(() => {
+    if (lastSentCount.current === sentCount) return;
+    lastSentCount.current = sentCount;
+    stickToBottom.current = true;
+    void poll();
+  }, [sentCount, poll]);
 
   useEffect(() => {
     let active = true;
@@ -197,34 +213,27 @@ export default function ChatPane({ room, myUserID, canModerate, getName, ensureN
 
   async function send() {
     const content = draft.trim();
-    if (!content || composerBusy.current) return;
-    composerBusy.current = true;
-    const submittedRevision = draftRevision.current;
-    setSending(true);
+    if (!content) return;
+    const attempt = composer.begin("send");
+    if (!attempt) return;
     try {
       await bridge("messages.send", { room_id: room.id, content });
-      if (draftRevision.current === submittedRevision) setDraft("");
-      stickToBottom.current = true;
-      await poll();
-    } catch (e) { onError(String(e)); } finally { composerBusy.current = false; setSending(false); }
+      composer.sent(attempt.revision);
+    } catch (e) { onError(String(e)); } finally { composer.finish(); }
   }
 
   async function attach() {
-    if (composerBusy.current) return;
-    composerBusy.current = true;
-    const submittedRevision = draftRevision.current;
-    setUploading(true);
+    const attempt = composer.begin("upload");
+    if (!attempt) return;
     try {
-      const path = (await open({ multiple: false, directory: false })) as string | null;
+      const path = await open({ multiple: false, directory: false });
       if (!path) return;
       const uploaded = await bridge<{ file_id: string; filename: string }>("files.upload", { room_id: room.id, path });
       // The message carries the attachment; content is optional (a bare caption).
       await bridge("messages.send", { room_id: room.id, content: draft.trim(), attachments: [uploaded.file_id] });
-      if (draftRevision.current === submittedRevision) setDraft("");
-      stickToBottom.current = true;
-      await poll();
+      composer.sent(attempt.revision);
       onNotice(`已发送附件 ${uploaded.filename}`);
-    } catch (e) { onError(String(e)); } finally { composerBusy.current = false; setUploading(false); }
+    } catch (e) { onError(String(e)); } finally { composer.finish(); }
   }
 
   async function remove(message: Message) {
@@ -250,51 +259,61 @@ export default function ChatPane({ room, myUserID, canModerate, getName, ensureN
   if (!loaded) return <div className="flex min-h-0 flex-1 flex-col"><ChatSkeleton /><div className="h-20 shrink-0 border-t border-base-300 bg-base-100" /></div>;
 
   return <div className="flex min-h-0 flex-1 flex-col bg-base-200">
-    <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5" ref={listRef} onScroll={onScroll}>
+    <div className="message-list" ref={listRef} onScroll={onScroll}>
       {!reachedStart && messages.length >= PAGE_SIZE && (
         <div className="mb-5 flex justify-center"><button className="btn btn-ghost btn-sm" disabled={loadingOlder} onClick={() => void loadOlder()}>
           {loadingOlder && <Spinner />}加载更早的消息
         </button></div>
       )}
       {messages.length === 0 && <div className="h-full"><EmptyState icon="#" title="暂无消息" /></div>}
-      {messages.map((message) => <article key={message.id} className={cx("chat", message.user_id === myUserID ? "chat-end" : "chat-start")} onContextMenu={(e) => openMessageMenu(e, message)}>
-        <div className="chat-image"><InitialAvatar name={getName(message.user_id)} size="sm" /></div>
-        <header className="chat-header mb-1 flex items-center gap-2 text-xs text-base-content/55">
-            <strong className="text-sm text-base-content">{getName(message.user_id)}</strong>
-            <time>{formatTime(message.created_at)}</time>
-            {(message.user_id === myUserID || canModerate) && (
-              <Tooltip label="删除消息"><button className="btn btn-ghost btn-circle btn-xs text-error" onClick={() => void remove(message)}>×</button></Tooltip>
-            )}
-        </header>
-        <div className={cx("chat-bubble max-w-xl whitespace-pre-wrap break-words", message.user_id === myUserID ? "chat-bubble-primary" : "bg-base-100 text-base-content")}>
-          {message.content && <p>{message.content}</p>}
-          {parseAttachments(message.attachments).map((fileID) => {
-            const file = files[fileID];
-            return <Tooltip key={fileID} label={file ? file.mime_type : "下载附件"} className="mt-2 block">
-              <button className="card card-border w-full min-w-64 bg-base-200 text-left text-base-content transition hover:bg-base-300" disabled={downloading === fileID}
-                onClick={() => void download(fileID, file?.filename ?? fileID)}>
-                <span className="card-body flex-row items-center gap-3 p-3">
-                  <span className="text-lg">📎</span>
-                  <span className="min-w-0 flex-1">
-                    <strong className="block truncate text-sm">{file?.filename ?? "附件"}</strong>
-                    <small className="block text-xs text-base-content/50">{file ? formatBytes(file.size_bytes) : "点击下载"}</small>
+      {messages.map((message, index) => <Fragment key={message.id}>
+        {(index === 0 || new Date(messages[index - 1].created_at * 1000).toDateString() !== new Date(message.created_at * 1000).toDateString()) &&
+          <div className="day-rule">{new Date(message.created_at * 1000).toLocaleDateString(undefined, { month: "long", day: "numeric", year: "numeric" })}</div>}
+        <article className="message-row" onContextMenu={(e) => openMessageMenu(e, message)}>
+          <div className="message-avatar"><InitialAvatar name={getName(message.user_id)} /></div>
+          <header className="message-author mb-1 flex items-center gap-2 text-xs text-base-content/55">
+              <strong className="text-sm text-base-content">{getName(message.user_id)}</strong>
+              <time dateTime={new Date(message.created_at * 1000).toISOString()}>{formatTime(message.created_at)}</time>
+              {(message.user_id === myUserID || canModerate) && (
+                <Tooltip label="删除消息"><button aria-label="删除消息" className="btn btn-ghost btn-circle btn-xs text-error" onClick={() => void remove(message)}>×</button></Tooltip>
+              )}
+          </header>
+          <div className="message-body">
+            {message.content && <p>{message.content}</p>}
+            {parseAttachments(message.attachments).map((fileID) => {
+              const file = files[fileID];
+              return <Tooltip key={fileID} label={file ? file.mime_type : "下载附件"} className="mt-2 block">
+                <button className="card card-border w-full max-w-80 bg-base-200 text-left text-base-content transition hover:bg-base-300" disabled={downloading === fileID}
+                  onClick={() => void download(fileID, file?.filename ?? fileID)}>
+                  <span className="card-body flex-row items-center gap-3 p-3">
+                    <Icon name="attach" />
+                    <span className="min-w-0 flex-1">
+                      <strong className="block truncate text-sm">{file?.filename ?? "下载附件"}</strong>
+                      {file && <small className="block text-xs text-base-content/50">{formatBytes(file.size_bytes)}</small>}
+                    </span>
+                    {downloading === fileID && <Spinner />}
                   </span>
-                  {downloading === fileID && <Spinner />}
-                </span>
-              </button>
-            </Tooltip>;
-          })}
-        </div>
-      </article>)}
+                </button>
+              </Tooltip>;
+            })}
+          </div>
+        </article>
+      </Fragment>)}
     </div>
-    <form className="flex shrink-0 items-center gap-2 border-t border-base-300 bg-base-100 p-4" onSubmit={(e) => { e.preventDefault(); void send(); }}>
+    <form className="message-composer" onSubmit={(e) => { e.preventDefault(); void send(); }}>
       <IconButton label="上传附件" className="btn-md" disabled={uploading || sending} onClick={() => void attach()}>
-        {uploading ? <Spinner /> : "＋"}
+        {uploading ? <Spinner /> : <Icon name="plus" />}
       </IconButton>
-      <input className="input min-w-0 flex-1" value={draft} onChange={(e) => { draftRevision.current += 1; setDraft(e.target.value); }}
-        placeholder={uploading ? "上传中…" : `发送到 #${room.name}`} maxLength={4000} disabled={uploading} />
-      <button className="btn btn-primary" type="submit" disabled={sending || uploading || !draft.trim()}>
-        {sending && <Spinner />}发送
+      <textarea aria-label={`发送到 #${room.name}`} rows={1} value={draft}
+        onChange={(e) => composer.edit(e.target.value)}
+        onKeyDown={(e) => {
+          if (!shouldSendMessage(e.nativeEvent)) return;
+          e.preventDefault();
+          if (!e.repeat) void send();
+        }}
+        title="Enter 发送，Shift+Enter 换行" placeholder={uploading ? "上传中…" : `发送到 #${room.name}`} maxLength={4000} disabled={uploading} />
+      <button className="send-message" type="submit" title="发送" aria-label="发送" disabled={sending || uploading || !draft.trim()}>
+        {sending ? <Spinner /> : <Icon name="send" />}
       </button>
     </form>
     {menu && <ContextMenu x={menu.x} y={menu.y} items={menu.items} onClose={() => setMenu(null)} />}

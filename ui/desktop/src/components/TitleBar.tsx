@@ -1,7 +1,7 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { UpdaterState } from "../updater";
 import { updateProgressPercent } from "../updater";
-import { IconButton, Tooltip } from "./ui";
+import { IconButton, SignalMark, Tooltip } from "./ui";
 
 export default function TitleBar({ update, onInstall, onRetry }: {
   update: UpdaterState;
@@ -10,9 +10,9 @@ export default function TitleBar({ update, onInstall, onRetry }: {
 }) {
   const progress = updateProgressPercent(update);
 
-  return <header className="navbar min-h-10 h-10 shrink-0 select-none border-b border-base-300 bg-base-100 px-2 py-0">
+  return <header className="studio-titlebar navbar shrink-0 select-none">
     <div className="navbar-start min-w-0 flex-1" data-tauri-drag-region>
-      <span className="px-2 text-xs font-semibold tracking-[0.16em] text-base-content/70" data-tauri-drag-region>OURCORD</span>
+      <span className="studio-wordmark" data-tauri-drag-region><SignalMark />OurCord</span>
     </div>
     <div className="navbar-end w-auto gap-1">
       {update.status === "downloading" && <Tooltip label={`OurCord ${update.version} 正在后台下载`} side="bottom">
