@@ -34,88 +34,89 @@ export default {
 
     log({ event: "request.start", request_id: requestId, method, path });
 
+    // Await routed handlers so their rejections stay inside this error boundary.
     try {
       if (method === "POST" && path === "/api/presence") {
         const rl = await checkRateLimit(request, env, "presence", 120, 60);
         if (rl) return rl;
-        return updatePresence(request, env);
+        return await updatePresence(request, env);
       }
       if (method === "DELETE" && path === "/api/presence") {
-        return leavePresence(request, env);
+        return await leavePresence(request, env);
       }
 
       // ── Lobbies ────────────────────────────────────────────────────────────
       if (method === "POST" && path === "/api/lobbies") {
         const rl = await checkRateLimit(request, env, "lobby-create", 5, 60);
         if (rl) return rl;
-        return createLobby(request, env);
+        return await createLobby(request, env);
       }
       if (method === "GET" && path === "/api/lobbies") {
-        return listLobbies(request, env);
+        return await listLobbies(request, env);
       }
       if (method === "GET" && parts[0] === "api" && parts[1] === "lobbies" && parts[2] && !parts[3]) {
-        return getLobby(request, env, parts[2]);
+        return await getLobby(request, env, parts[2]);
       }
       if (method === "POST" && parts[1] === "lobbies" && parts[3] === "join") {
-        return joinLobby(request, env, parts[2]);
+        return await joinLobby(request, env, parts[2]);
       }
       if (method === "GET" && parts[1] === "lobbies" && parts[3] === "members") {
-        return listMembers(request, env, parts[2]);
+        return await listMembers(request, env, parts[2]);
       }
       if (method === "PUT" && parts[1] === "lobbies" && parts[3] === "members" && parts[4]) {
-        return updateMemberRole(request, env, parts[2], parts[4]);
+        return await updateMemberRole(request, env, parts[2], parts[4]);
       }
       if (method === "POST" && parts[1] === "lobbies" && parts[3] === "invites") {
         const rl = await checkRateLimit(request, env, "invite-create", 10, 60);
         if (rl) return rl;
-        return createInvite(request, env, parts[2]);
+        return await createInvite(request, env, parts[2]);
       }
       if (method === "DELETE" && parts[1] === "lobbies" && parts[3] === "invites" && parts[4]) {
-        return revokeInvite(request, env, parts[2], parts[4]);
+        return await revokeInvite(request, env, parts[2], parts[4]);
       }
 
       // ── Rooms (CRUD) ───────────────────────────────────────────────────────
       if (method === "POST" && parts[1] === "lobbies" && parts[3] === "rooms" && !parts[4]) {
         const rl = await checkRateLimit(request, env, "room-create", 10, 60);
         if (rl) return rl;
-        return createRoom(request, env, parts[2]);
+        return await createRoom(request, env, parts[2]);
       }
       if (method === "PATCH" && parts[1] === "rooms" && parts[2] && !parts[3]) {
-        return updateRoom(request, env, parts[2]);
+        return await updateRoom(request, env, parts[2]);
       }
       if (parts[0] === "api" && parts[1] === "rooms" && parts[3] === "reorder" && parts.length === 4 && method === "PATCH") {
-        return updateRoom(request, env, parts[2], true);
+        return await updateRoom(request, env, parts[2], true);
       }
       if (method === "DELETE" && parts[1] === "rooms" && parts[2] && !parts[3]) {
-        return deleteRoom(request, env, parts[2]);
+        return await deleteRoom(request, env, parts[2]);
       }
 
       // ── File policies ──────────────────────────────────────────────────────
       if (method === "GET" && parts[1] === "lobbies" && parts[3] === "file-policy") {
-        return getFilePolicy(request, env, parts[2]);
+        return await getFilePolicy(request, env, parts[2]);
       }
       if (method === "PUT" && parts[1] === "lobbies" && parts[3] === "file-policy") {
-        return updateFilePolicy(request, env, parts[2]);
+        return await updateFilePolicy(request, env, parts[2]);
       }
 
       // ── Messages ───────────────────────────────────────────────────────────
       if (method === "GET" && parts[1] === "rooms" && parts[3] === "messages") {
-        return getMessages(request, env, parts[2]);
+        return await getMessages(request, env, parts[2]);
       }
       if (method === "POST" && parts[1] === "rooms" && parts[3] === "messages") {
         const rl = await checkRateLimit(request, env, "msg-send", 120, 60);
         if (rl) return rl;
-        return sendMessage(request, env, parts[2]);
+        return await sendMessage(request, env, parts[2]);
       }
       if (method === "DELETE" && parts[1] === "rooms" && parts[3] === "messages" && parts[4]) {
-        return deleteMessage(request, env, parts[2], parts[4]);
+        return await deleteMessage(request, env, parts[2], parts[4]);
       }
 
       // ── Files ──────────────────────────────────────────────────────────────
       if (method === "POST" && parts[1] === "rooms" && parts[3] === "files" && !parts[4]) {
         const rl = await checkRateLimit(request, env, "file-init", 30, 60);
         if (rl) return rl;
-        return initiateUpload(request, env, parts[2]);
+        return await initiateUpload(request, env, parts[2]);
       }
       if (method === "PUT" && parts[1] === "rooms" && parts[3] === "files" && parts[5] === "upload") {
         const rl = await checkRateLimit(request, env, "file-upload", 30, 60);
@@ -125,39 +126,39 @@ export default {
       if (method === "POST" && parts[1] === "rooms" && parts[3] === "files" && parts[5] === "complete") {
         const rl = await checkRateLimit(request, env, "file-complete", 30, 60);
         if (rl) return rl;
-        return completeExternalUpload(request, env, parts[2], parts[4]);
+        return await completeExternalUpload(request, env, parts[2], parts[4]);
       }
       if (method === "GET" && parts[1] === "rooms" && parts[3] === "files" && !parts[4]) {
-        return listFiles(request, env, parts[2]);
+        return await listFiles(request, env, parts[2]);
       }
       if (method === "GET" && parts[1] === "rooms" && parts[3] === "files" && parts[5] === "download") {
         const rl = await checkRateLimit(request, env, "file-download", 120, 60);
         if (rl) return rl;
-        return getDownloadUrl(request, env, parts[2], parts[4]);
+        return await getDownloadUrl(request, env, parts[2], parts[4]);
       }
 
       // ── File backends (自建/分享/大厅 storage chain) ────────────────────────
       if (method === "POST" && parts[1] === "backends" && !parts[2]) {
         const rl = await checkRateLimit(request, env, "backend-reg", 10, 60);
         if (rl) return rl;
-        return registerBackend(request, env);
+        return await registerBackend(request, env);
       }
       if (method === "GET" && parts[1] === "backends" && !parts[2]) {
-        return listBackends(request, env);
+        return await listBackends(request, env);
       }
       if (method === "DELETE" && parts[1] === "backends" && parts[2] && !parts[3]) {
-        return deactivateBackend(request, env, parts[2]);
+        return await deactivateBackend(request, env, parts[2]);
       }
       if (method === "POST" && parts[1] === "backends" && parts[3] === "shares" && !parts[4]) {
-        return shareBackend(request, env, parts[2]);
+        return await shareBackend(request, env, parts[2]);
       }
       if (method === "DELETE" && parts[1] === "backends" && parts[3] === "shares" && parts[4]) {
-        return unshareBackend(request, env, parts[2], parts[4]);
+        return await unshareBackend(request, env, parts[2], parts[4]);
       }
       if (method === "POST" && parts[1] === "backends" && parts[3] === "check" && !parts[4]) {
         const rl = await checkRateLimit(request, env, "backend-check", 30, 60);
         if (rl) return rl;
-        return checkBackendHealth(request, env, parts[2]);
+        return await checkBackendHealth(request, env, parts[2]);
       }
 
       // ── Internal (control → service) ───────────────────────────────────────
