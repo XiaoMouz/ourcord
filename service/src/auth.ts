@@ -22,25 +22,45 @@ export function getJwtSecret(env: Env): string {
   throw new Error("JWT_SECRET is not configured (>=16 bytes required in production)");
 }
 
-// M4: see control/src/auth.ts for the rationale. Mirror here so service-layer
-// handlers can guard their own JSON inputs without crossing module boundaries.
-export function checkBodySize(request: Request, maxBytes: number): Response | null {
+// Mirror in control/src/auth.ts. Check actual bytes before JSON/form parsing;
+// Content-Length is only a fast rejection path and may be absent on streams.
+export async function checkBodySize(request: Request, maxBytes: number): Promise<Response | null> {
   const cl = request.headers.get("content-length");
-  if (cl === null) return null;
-  const n = parseInt(cl, 10);
-  if (!Number.isFinite(n) || n < 0) {
-    return new Response(JSON.stringify({ error: "invalid content-length" }), {
-      status: 400,
-      headers: { "Content-Type": "application/json" },
-    });
+  if (cl !== null && !/^\d+$/.test(cl)) {
+    void request.body?.cancel().catch(() => {});
+    return json({ error: "invalid content-length" }, 400);
   }
-  if (n > maxBytes) {
-    return new Response(JSON.stringify({ error: "request body too large" }), {
-      status: 413,
-      headers: { "Content-Type": "application/json" },
-    });
+  if (cl !== null && Number(cl) > maxBytes) {
+    void request.body?.cancel().catch(() => {});
+    return json({ error: "request body too large" }, 413);
   }
-  return null;
+  if (!request.body) return null;
+
+  // The original branch retains only the bounded body for the existing parser.
+  const reader = request.clone().body!.getReader();
+  let size = 0;
+  const cancel = () => {
+    // Cancel both tee branches. Awaiting one alone can wait for the other;
+    // an untrusted source's cancellation must not hold up the 413 response.
+    void reader.cancel().catch(() => {});
+    void request.body!.cancel().catch(() => {});
+  };
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) return null;
+      size += value.byteLength;
+      if (size > maxBytes) {
+        cancel();
+        return json({ error: "request body too large" }, 413);
+      }
+    }
+  } catch {
+    cancel();
+    return json({ error: "invalid request body" }, 400);
+  } finally {
+    reader.releaseLock();
+  }
 }
 
 // Importing a CryptoKey is not free, and hmacSign runs on every JWT verify and
