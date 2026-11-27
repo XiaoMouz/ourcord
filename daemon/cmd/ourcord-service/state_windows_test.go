@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -25,10 +26,7 @@ func TestSecureStateDirectoryProtectsNewFiles(t *testing.T) {
 	if err := secureStateDirectory(directory); err != nil {
 		t.Fatal(err)
 	}
-	dacl := stateDACL(t, directory)
-	if !strings.HasPrefix(dacl, "D:P") || !strings.Contains(dacl, ";;;SY)") || !strings.Contains(dacl, ";;;BA)") {
-		t.Fatalf("unexpected directory DACL: %s", dacl)
-	}
+	assertPrivateStateDACL(t, directory)
 	keyPath := filepath.Join(directory, "wg.key")
 	if err := os.WriteFile(keyPath, []byte("test-key"), 0o600); err != nil {
 		t.Fatal(err)
@@ -53,21 +51,36 @@ func assertPrivateStateDACL(t *testing.T, path string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if dacl == nil || dacl.AceCount != 3 {
+	if dacl == nil {
 		t.Fatalf("unexpected access entries: %s", descriptor.String())
 	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.IsDir() {
+		flags, _, err := descriptor.Control()
+		if err != nil || flags&windows.SE_DACL_PROTECTED == 0 {
+			t.Fatalf("directory DACL is not protected: %s (%v)", descriptor.String(), err)
+		}
+	}
+	want := map[string]bool{"S-1-5-18": true, "S-1-5-32-544": true, user.User.Sid.String(): true}
+	got := make(map[string]bool)
+	// FILE_ALL_ACCESS as defined by the Windows SDK (winnt.h).
+	const fileAllAccess = windows.STANDARD_RIGHTS_REQUIRED | windows.SYNCHRONIZE | 0x1ff
 	for index := uint32(0); index < uint32(dacl.AceCount); index++ {
 		var entry *windows.ACCESS_ALLOWED_ACE
 		if err := windows.GetAce(dacl, index, &entry); err != nil {
 			t.Fatal(err)
 		}
-		if entry.Header.AceType != windows.ACCESS_ALLOWED_ACE_TYPE {
-			t.Fatalf("unexpected ACE type: %s", descriptor.String())
-		}
-		principal := (*windows.SID)(unsafe.Pointer(&entry.SidStart))
-		if !principal.IsWellKnown(windows.WinLocalSystemSid) && !principal.IsWellKnown(windows.WinBuiltinAdministratorsSid) && !principal.Equals(user.User.Sid) {
+		if entry.Header.AceType != windows.ACCESS_ALLOWED_ACE_TYPE || entry.Mask != fileAllAccess {
 			t.Fatalf("unexpected access grant: %s", descriptor.String())
 		}
+		principal := (*windows.SID)(unsafe.Pointer(&entry.SidStart))
+		got[principal.String()] = true
+	}
+	if !maps.Equal(got, want) {
+		t.Fatalf("access granted to %v, want %v", got, want)
 	}
 }
 
