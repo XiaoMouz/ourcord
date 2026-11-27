@@ -62,7 +62,7 @@ export async function getMessages(request: Request, env: Env, roomId: string): P
 
 // POST /api/rooms/:roomId/messages
 export async function sendMessage(request: Request, env: Env, roomId: string): Promise<Response> {
-  const tooBig = checkBodySize(request, 16 * 1024);
+  const tooBig = await checkBodySize(request, 16 * 1024);
   if (tooBig) return tooBig;
   const auth = await requireAuth(request, env);
   if (auth instanceof Response) return auth;
