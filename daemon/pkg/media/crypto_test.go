@@ -47,7 +47,8 @@ func TestSealOpenRoundTrip(t *testing.T) {
 
 	payload := []byte("twenty ms of audio")
 	aad := []byte("rtp-header")
-	ct, counter := s.seal(payload, aad)
+	counter := uint64(0)
+	ct := s.seal(payload, aad, counter)
 	got, err := o.open(ct, aad, counter)
 	if err != nil || !bytes.Equal(got, payload) {
 		t.Fatalf("round-trip failed: %v got=%q", err, got)
@@ -73,7 +74,12 @@ func TestReplayWindow(t *testing.T) {
 	s, _ := newSealer(key, ssrc)
 	o, _ := newOpener(key, ssrc)
 
-	seal := func() ([]byte, uint64) { return s.seal([]byte("frame"), []byte("h")) }
+	next := uint64(0)
+	seal := func() ([]byte, uint64) {
+		counter := next
+		next++
+		return s.seal([]byte("frame"), []byte("h"), counter), counter
+	}
 
 	ct0, c0 := seal()
 	ct1, c1 := seal()

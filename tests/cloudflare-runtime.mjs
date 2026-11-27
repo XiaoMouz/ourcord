@@ -20,9 +20,14 @@ import { verifyMessageRevisions } from "./cloudflare-message-revisions.mjs";
 import { verifyBackendHealthScan } from "./cloudflare-backend-health.mjs";
 import { verifyProfileNameLimit } from "./cloudflare-profile-limits.mjs";
 import { verifyFileListScan } from "./cloudflare-file-list.mjs";
+import { verifyConnectivityScope } from "./cloudflare-connectivity-scope.mjs";
+import { createRoleWriteGate, verifyMemberRoleConcurrency } from "./cloudflare-member-role.mjs";
+import { verifyDeviceRevocation } from "./cloudflare-device-revoke.mjs";
+import { verifyControlCors } from "./cloudflare-control-cors.mjs";
 import { verifyStatusCounts } from "./cloudflare-status-count.mjs";
 import { verifyUploadQuotaScans } from "./cloudflare-upload-quota.mjs";
 import { verifyBackendResolutionScans } from "./cloudflare-backend-resolution.mjs";
+import { createRevokeGate, verifyDeviceRotationRace } from "./cloudflare-device-rotation.mjs";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const require = createRequire(join(root, "control/package.json"));
@@ -34,7 +39,9 @@ const limits = Object.fromEntries([5, 10, 20, 30, 60, 120].map((n) => [
   `RATE_LIMIT_${n}`, { simple: { limit: n, period: 60 } },
 ]));
 let mf;
+const revokeGate = createRevokeGate();
 const sockets = [];
+const roleWriteGate = createRoleWriteGate();
 
 function sqlStatements(sql) {
   const statements = [];
@@ -64,6 +71,22 @@ function jwt(sub = "u1") {
   return `${data}.${createHmac("sha256", secret).update(data).digest("base64url")}`;
 }
 
+// Native limits use wall-clock minute buckets. Repeat the whole scenario on a
+// fresh client IP if it crosses a reset; assertions remain strict in a stable
+// window, and every attempt seeds its own valid pending capability.
+async function withinRateLimitWindow(run) {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const windowID = Math.floor(Date.now() / 60_000);
+    try {
+      await run(attempt);
+      if (windowID === Math.floor(Date.now() / 60_000)) return;
+    } catch (error) {
+      if (windowID === Math.floor(Date.now() / 60_000)) throw error;
+    }
+  }
+  throw new Error("native rate limit scenario could not finish in one minute window");
+}
+
 try {
   for (const module of ["control", "service"]) {
     const moduleRequire = createRequire(join(root, module, "package.json"));
@@ -86,7 +109,11 @@ try {
     readFileSync(join(root, "tests/cloudflare-presence-index-worker.mjs"), "utf8"));
   writeFileSync(join(output, "service/file-list.mjs"),
     readFileSync(join(root, "tests/cloudflare-file-list-worker.mjs"), "utf8"));
+  writeFileSync(join(output, "service/member-role.mjs"),
+    readFileSync(join(root, "tests/cloudflare-member-role-worker.mjs"), "utf8"));
   writeFileSync(join(output, "control/control-under-test.mjs"), readFileSync(join(output, "control/index.js"), "utf8"));
+  writeFileSync(join(output, "control/connectivity-scope.mjs"), readFileSync(join(root, "tests/cloudflare-connectivity-scope-worker.mjs"), "utf8"));
+  writeFileSync(join(output, "control/device-revoke.mjs"), readFileSync(join(root, "tests/cloudflare-device-revoke-worker.mjs"), "utf8"));
   writeFileSync(join(output, "control/status-count.mjs"), readFileSync(join(root, "tests/cloudflare-status-count-worker.mjs"), "utf8"));
   writeFileSync(join(output, "service/upload-quota.mjs"),
     readFileSync(join(root, "tests/cloudflare-upload-quota-worker.mjs"), "utf8"));
@@ -103,6 +130,40 @@ try {
         ? { durableObjects: { SIGNAL: { className: "SignalDO", useSQLite: true } } }
         : { r2Buckets: ["FILES"], unsafeDirectSockets: [{ host: "127.0.0.1", port: 0 }] }),
     })), {
+      name: "control-connectivity", modules: true, modulesRoot: join(output, "control"),
+      scriptPath: join(output, "control/connectivity-scope.mjs"),
+      compatibilityDate: "2024-01-01", compatibilityFlags: ["nodejs_compat"],
+      bindings: { ENVIRONMENT: "production", JWT_SECRET: secret, SERVICE_URL: "https://service.scope.test", SERVICE_INTERNAL_TOKEN: secret },
+      d1Databases: { DB: "local-control-connectivity" }, ratelimits: limits,
+      outboundService: "service-connectivity",
+    }, {
+      name: "service-connectivity", modules: true, modulesRoot: join(output, "service"),
+      scriptPath: join(output, "service/index.js"),
+      compatibilityDate: "2024-01-01", compatibilityFlags: ["nodejs_compat"],
+      bindings: { ENVIRONMENT: "production", JWT_SECRET: secret, SERVICE_INTERNAL_TOKEN: secret },
+      d1Databases: { DB: "local-service-connectivity" },
+    }, {
+      name: "service-member-role", modules: true, modulesRoot: join(output, "service"),
+      scriptPath: join(output, "service/member-role.mjs"),
+      compatibilityDate: "2024-01-01", compatibilityFlags: ["nodejs_compat"],
+      bindings: { ENVIRONMENT: "production", JWT_SECRET: secret },
+      d1Databases: { DB: "local-member-role" },
+      outboundService: () => roleWriteGate.fetch(),
+    }, {
+      name: "control-device-revoke", modules: true, modulesRoot: join(output, "control"),
+      scriptPath: join(output, "control/device-revoke.mjs"),
+      compatibilityDate: "2024-01-01", compatibilityFlags: ["nodejs_compat"],
+      bindings: { ENVIRONMENT: "production", JWT_SECRET: secret },
+      d1Databases: { DB: "local-control" }, ratelimits: limits,
+      outboundService: () => revokeGate.fetch(),
+    }, {
+      name: "control-cors", modules: true, modulesRoot: join(output, "control"),
+      scriptPath: join(output, "control/index.js"),
+      compatibilityDate: "2024-01-01", compatibilityFlags: ["nodejs_compat"],
+      // Development email delivery is local logging only; native rate gates remain enabled.
+      bindings: { ENVIRONMENT: "development", JWT_SECRET: secret, ADMIN_USER_IDS: "cors-operator" },
+      d1Databases: { DB: "local-control-cors" }, kvNamespaces: { KV: "local-control-cors" }, ratelimits: limits,
+    }, {
       name: "control-status-count", modules: true, modulesRoot: join(output, "control"),
       scriptPath: join(output, "control/status-count.mjs"),
       compatibilityDate: "2024-01-01", compatibilityFlags: ["nodejs_compat"],
@@ -162,6 +223,9 @@ try {
     db.prepare("INSERT INTO file_policies(lobby_id,max_temp_files,user_server_enabled,lobby_server_enabled) VALUES ('L1',0,0,0)"),
   ]);
   const service = await mf.getWorker("service");
+  const roleDB = await mf.getD1Database("DB", "service-member-role");
+  await migrate(roleDB, "service");
+  await verifyMemberRoleConcurrency({ db: roleDB, service: await mf.getWorker("service-member-role"), gate: roleWriteGate, jwt });
   const quotaDB = await mf.getD1Database("DB", "service-upload-quota");
   await migrate(quotaDB, "service");
   await verifyUploadQuotaScans({ db: quotaDB, service: await mf.getWorker("service-upload-quota"), jwt });
@@ -394,11 +458,20 @@ try {
   const controlDB = await mf.getD1Database("DB", "control");
   await migrate(controlDB, "control");
   const control = await mf.getWorker("control");
+  const scopeDB = await mf.getD1Database("DB", "control-connectivity");
+  const scopeServiceDB = await mf.getD1Database("DB", "service-connectivity");
+  await migrate(scopeDB, "control"); await migrate(scopeServiceDB, "service");
+  await verifyConnectivityScope({ control: await mf.getWorker("control-connectivity"), db: scopeDB, serviceDB: scopeServiceDB, jwt });
+  await verifyDeviceRevocation({ db: controlDB, control: await mf.getWorker("control-device-revoke"), jwt });
+  const corsDB = await mf.getD1Database("DB", "control-cors");
+  await migrate(corsDB, "control");
+  await verifyControlCors({ control: await mf.getWorker("control-cors"), db: corsDB, kv: await mf.getKVNamespace("KV", "control-cors"), jwt });
   await verifyErrorBoundaries({ mf, service, db, controlDB, jwt });
   const statusCountDB = await mf.getD1Database("DB", "control-status-count");
   await migrate(statusCountDB, "control");
   await verifyStatusCounts({ db: statusCountDB, control: await mf.getWorker("control-status-count"), jwt });
   await verifyProfileBatches({ control, controlDB, service, db, jwt });
+  await verifyDeviceRotationRace({ db: controlDB, control: await mf.getWorker("control-device-revoke"), gate: revokeGate, jwt });
   await verifyProfileNameLimit({ control, controlDB, jwt });
   const kv = await mf.getKVNamespace("KV", "control");
   const verifier = "v".repeat(43);
@@ -439,52 +512,58 @@ try {
   console.log("PASS workerd: abandoned desktop codes cleaned in bounded batches; valid PKCE exchange remains one-time");
   // This public endpoint ordinarily executes four D1 queries. Once blocked,
   // the native limiter rejects it before any queries or KV counters.
-  const statuses = [];
-  for (let i = 0; i < 65; i++) {
-    statuses.push((await control.fetch("https://control.test/api/control/status")).status);
-  }
-  assert(statuses.includes(200));
-  assert(statuses.includes(429));
-  assert.equal((await kv.list({ prefix: "ratelimit:" })).keys.length, 0);
+  await withinRateLimitWindow(async (attempt) => {
+    const statuses = [];
+    for (let i = 0; i < 65; i++) {
+      statuses.push((await control.fetch("https://control.test/api/control/status", { headers: { "CF-Connecting-IP": `192.0.2.${20 + attempt}` } })).status);
+    }
+    assert(statuses.includes(200));
+    assert(statuses.includes(429));
+    assert.equal((await kv.list({ prefix: "ratelimit:" })).keys.length, 0);
+  });
   console.log("PASS workerd: native rate limiter returns 429 without KV writes");
 
-  const confirmationURL = "https://control.test/api/auth/desktop/magic/confirm";
-  const confirmationCall = (token, ip = "192.0.2.10") => control.fetch(confirmationURL, {
-    method: "POST", redirect: "manual", headers: { "CF-Connecting-IP": ip },
-    body: new URLSearchParams({ token }),
+  await withinRateLimitWindow(async (attempt) => {
+    const blockedIP = `192.0.2.${30 + attempt * 2}`;
+    const allowedIP = `192.0.2.${31 + attempt * 2}`;
+    const confirmationURL = "https://control.test/api/auth/desktop/magic/confirm";
+    const confirmationCall = (token, ip = blockedIP) => control.fetch(confirmationURL, {
+      method: "POST", redirect: "manual", headers: { "CF-Connecting-IP": ip },
+      body: new URLSearchParams({ token }),
+    });
+    const confirmationStatuses = [];
+    for (let i = 0; i < 32; i++) {
+      confirmationStatuses.push((await confirmationCall(i.toString(16).padStart(64, "0"))).status);
+    }
+    assert(confirmationStatuses.includes(400));
+    assert(confirmationStatuses.includes(429), "random confirmation tokens must encounter the native storage gate");
+    const confirmationToken = "e".repeat(64);
+    const confirmationVerifier = "w".repeat(43);
+    const confirmationKey = `desktop_magic:${createHash("sha256").update(confirmationToken).digest("base64url")}`;
+    const pendingCapability = JSON.stringify({
+      email: "confirmation@example.test",
+      challenge: createHash("sha256").update(confirmationVerifier).digest("base64url"),
+    });
+    await kv.put(confirmationKey, pendingCapability, { expirationTtl: 600 });
+    const blockedConfirmation = await confirmationCall(confirmationToken);
+    assert.equal(blockedConfirmation.status, 429);
+    assert.equal(blockedConfirmation.headers.get("Retry-After"), "60");
+    assert.equal(await kv.get(confirmationKey), pendingCapability, "throttling must not consume a valid pending login");
+    const preview = await control.fetch(`${confirmationURL}?token=${confirmationToken}`, {
+      headers: { "CF-Connecting-IP": blockedIP },
+    });
+    assert.equal(preview.status, 200);
+    assert.equal(await kv.get(confirmationKey), pendingCapability);
+    const allowedConfirmation = await confirmationCall(confirmationToken, allowedIP);
+    assert.equal(allowedConfirmation.status, 303);
+    assert.equal(await kv.get(confirmationKey), null);
+    const confirmedCode = new URL(allowedConfirmation.headers.get("Location")).searchParams.get("code");
+    const exchangedConfirmation = await control.fetch("https://control.test/api/auth/desktop/exchange", {
+      method: "POST", headers: { "Content-Type": "application/json", "CF-Connecting-IP": allowedIP },
+      body: JSON.stringify({ code: confirmedCode, code_verifier: confirmationVerifier }),
+    });
+    assert.equal(exchangedConfirmation.status, 200);
   });
-  const confirmationStatuses = [];
-  for (let i = 0; i < 32; i++) {
-    confirmationStatuses.push((await confirmationCall(i.toString(16).padStart(64, "0"))).status);
-  }
-  assert(confirmationStatuses.includes(400));
-  assert(confirmationStatuses.includes(429), "random confirmation tokens must encounter the native storage gate");
-  const confirmationToken = "e".repeat(64);
-  const confirmationVerifier = "w".repeat(43);
-  const confirmationKey = `desktop_magic:${createHash("sha256").update(confirmationToken).digest("base64url")}`;
-  const pendingCapability = JSON.stringify({
-    email: "confirmation@example.test",
-    challenge: createHash("sha256").update(confirmationVerifier).digest("base64url"),
-  });
-  await kv.put(confirmationKey, pendingCapability, { expirationTtl: 600 });
-  const blockedConfirmation = await confirmationCall(confirmationToken);
-  assert.equal(blockedConfirmation.status, 429);
-  assert.equal(blockedConfirmation.headers.get("Retry-After"), "60");
-  assert.equal(await kv.get(confirmationKey), pendingCapability, "throttling must not consume a valid pending login");
-  const preview = await control.fetch(`${confirmationURL}?token=${confirmationToken}`, {
-    headers: { "CF-Connecting-IP": "192.0.2.10" },
-  });
-  assert.equal(preview.status, 200);
-  assert.equal(await kv.get(confirmationKey), pendingCapability);
-  const allowedConfirmation = await confirmationCall(confirmationToken, "192.0.2.11");
-  assert.equal(allowedConfirmation.status, 303);
-  assert.equal(await kv.get(confirmationKey), null);
-  const confirmedCode = new URL(allowedConfirmation.headers.get("Location")).searchParams.get("code");
-  const exchangedConfirmation = await control.fetch("https://control.test/api/auth/desktop/exchange", {
-    method: "POST", headers: { "Content-Type": "application/json", "CF-Connecting-IP": "192.0.2.11" },
-    body: JSON.stringify({ code: confirmedCode, code_verifier: confirmationVerifier }),
-  });
-  assert.equal(exchangedConfirmation.status, 200);
   console.log("PASS workerd: confirmation probes limited, blocked token preserved, preview and valid PKCE login succeed");
 
   const namespace = await mf.getDurableObjectNamespace("SIGNAL", "control");

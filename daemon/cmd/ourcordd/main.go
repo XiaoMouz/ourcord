@@ -564,8 +564,13 @@ func (d *daemon) startVoiceLocked(vpn4 netip.Addr, muted, deafened bool) (*media
 	if hangover == 0 {
 		hangover = 300 * time.Millisecond
 	}
+	counters, err := media.ReserveCounters(d.stateDir, d.keyPair.Public)
+	if err != nil {
+		return nil, fmt.Errorf("reserve voice nonce counters: %w", err)
+	}
 	return media.Start(media.Config{
 		SelfKey:      d.keyPair.Private,
+		Counters:     counters,
 		VPN4:         vpn4,
 		NetworkID:    d.activeRoom,
 		Devices:      media.AudioSelection{CaptureID: d.voiceCaptureID, PlaybackID: d.voicePlaybackID},
@@ -988,7 +993,7 @@ func (d *daemon) connect(ctx context.Context) error {
 		}
 		return fmt.Errorf("fetch initial config: %w", err)
 	}
-	if err := applyConfig(tunIf, table, d.keyPair.Private, cfg); err != nil {
+	if err := applyConfig(tunIf, table, d.keyPair.Private, cfg, d.iceMgr.PeerValidated); err != nil {
 		_ = tunIf.Close()
 		d.derpMgr = nil
 		d.iceMgr = nil
@@ -1081,7 +1086,7 @@ func (d *daemon) enterRoom(ctx context.Context, roomID string) error {
 	if err != nil {
 		return fmt.Errorf("fetch room config: %w", err)
 	}
-	if err := applyConfig(d.tunIf, d.table, d.keyPair.Private, cfg); err != nil {
+	if err := applyConfig(d.tunIf, d.table, d.keyPair.Private, cfg, d.iceMgr.PeerValidated); err != nil {
 		return fmt.Errorf("apply room config: %w", err)
 	}
 	d.syncDERPSuppressionLocked(d.table.All())
@@ -1105,7 +1110,7 @@ func (d *daemon) leaveRoom(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("fetch user config: %w", err)
 	}
-	if err := applyConfig(d.tunIf, d.table, d.keyPair.Private, cfg); err != nil {
+	if err := applyConfig(d.tunIf, d.table, d.keyPair.Private, cfg, d.iceMgr.PeerValidated); err != nil {
 		return fmt.Errorf("apply user config: %w", err)
 	}
 	d.syncDERPSuppressionLocked(d.table.All())
@@ -1799,7 +1804,7 @@ func (d *daemon) meshLoop(ctx context.Context) {
 				continue
 			}
 			before := peerKeySet(table.All())
-			if err := applyConfig(tunIf, table, d.keyPair.Private, cfg); err != nil {
+			if err := applyConfig(tunIf, table, d.keyPair.Private, cfg, d.iceMgr.PeerValidated); err != nil {
 				log.Printf("mesh apply: %v", err)
 			}
 			// A new peer joining can open a direct path that was previously
@@ -1824,7 +1829,7 @@ func (d *daemon) meshLoop(ctx context.Context) {
 // and pushes the WireGuard UAPI snapshot into the kernel device. The control
 // plane is the source of truth; we replace, not merge, so removed peers fall
 // out naturally.
-func applyConfig(iface tunIface, table *routing.Table, priv wgtypes.Key, cfg *control.PeerConfig) error {
+func applyConfig(iface tunIface, table *routing.Table, priv wgtypes.Key, cfg *control.PeerConfig, peerValidated func(string) bool) error {
 	var v4Addrs []netip.Addr
 	defaultDERPURL := firstRelayURL(cfg.Relays)
 	routes := make([]*routing.PeerRoute, 0, len(cfg.Peers))
@@ -1877,7 +1882,14 @@ func applyConfig(iface tunIface, table *routing.Table, priv wgtypes.Key, cfg *co
 			v4Addrs = append(v4Addrs, ip4)
 		}
 	}
-	table.Replace(routes)
+	newPeers := table.Replace(routes)
+	// An inbound ICE session can validate before the first config listing that
+	// peer arrives. Its one-time ready callback could not update a missing route.
+	for _, pk := range newPeers {
+		if peerValidated(pk.String()) {
+			table.SetICEReady(pk, true)
+		}
+	}
 	if err := iface.ConfigureIPC(table.BuildIPCConfig(priv)); err != nil {
 		return err
 	}

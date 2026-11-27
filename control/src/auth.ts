@@ -91,10 +91,12 @@ export async function checkBodySize(request: Request, maxBytes: number): Promise
   }
 }
 
+// Browser clients use bearer headers across origins, without cookie credentials.
+// Actual JSON responses need the same origin policy as the OPTIONS preflight.
 export function json(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
     status,
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
   });
 }
 
@@ -181,10 +183,7 @@ export async function authMiddleware(
 export async function requireAuth(request: Request, env: Env): Promise<TokenPayload | Response> {
   const payload = await authMiddleware(request, env);
   if (!payload) {
-    return new Response(JSON.stringify({ error: "Unauthorized" }), {
-      status: 401,
-      headers: { "Content-Type": "application/json" },
-    });
+    return json({ error: "Unauthorized" }, 401);
   }
   // X1: enforce active user-bans even for tokens issued before the ban.
   // We deliberately respond with 401/Unauthorized (not 403/banned) so the
@@ -193,10 +192,7 @@ export async function requireAuth(request: Request, env: Env): Promise<TokenPayl
   // the standard "re-authenticate" path applies — at which point the OTP
   // and OAuth issuers refuse the ban explicitly.
   if (await isUserBanned(payload.sub, env.DB)) {
-    return new Response(JSON.stringify({ error: "Unauthorized" }), {
-      status: 401,
-      headers: { "Content-Type": "application/json" },
-    });
+    return json({ error: "Unauthorized" }, 401);
   }
   return payload;
 }
@@ -208,10 +204,7 @@ export async function requireAdmin(request: Request, env: Env): Promise<TokenPay
   if (payload instanceof Response) return payload;
   const admins = (env.ADMIN_USER_IDS ?? "").split(",").map((s) => s.trim()).filter(Boolean);
   if (!admins.includes(payload.sub)) {
-    return new Response(JSON.stringify({ error: "Admin required" }), {
-      status: 403,
-      headers: { "Content-Type": "application/json" },
-    });
+    return json({ error: "Admin required" }, 403);
   }
   return payload;
 }
