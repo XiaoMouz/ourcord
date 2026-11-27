@@ -38,6 +38,58 @@ describe("createNameCache", () => {
     expect(cache.get("u1")).toBe("ok");
   });
 
+  it.each([90, 91, 180, 181])("bounds batches for %i names and retains all results", async (count) => {
+    const ids = Array.from({ length: count }, (_, i) => `user-${i}`);
+    const calls: string[][] = [];
+    const cache = createNameCache(async (batch) => {
+      calls.push(batch);
+      if (batch.length > 90) throw new Error("HTTP 400: at most 90 ids");
+      return batch.map((id) => ({ id, display_name: id }));
+    });
+    expect(await cache.ensure([...ids, ...ids])).toBe(true);
+    expect(calls.flat()).toEqual(ids);
+    expect(calls.every((batch) => batch.length <= 90)).toBe(true);
+    expect(ids.map((id) => cache.get(id))).toEqual(ids);
+    expect(await cache.ensure(ids)).toBe(false);
+  });
+
+  it("preserves completed batches and stops issuing requests after an error", async () => {
+    const ids = Array.from({ length: 181 }, (_, i) => `user-${i}`);
+    const calls: string[][] = [];
+    let failing = true;
+    const cache = createNameCache(async (batch) => {
+      calls.push(batch);
+      if (batch.length > 90 || failing && batch.includes(ids[90])) throw new Error("unavailable");
+      return batch.map((id) => ({ id, display_name: id }));
+    });
+    expect(await cache.ensure(ids)).toBe(true);
+    expect(calls.map((batch) => batch.length)).toEqual([90, 90]);
+    expect(cache.get(ids[89])).toBe(ids[89]);
+    expect(cache.get(ids[90])).toBeUndefined();
+    failing = false;
+    expect(await cache.ensure(ids)).toBe(true);
+    expect(calls.slice(2).flat()).toEqual(ids.slice(90));
+  });
+
+  it("reserves queued ids so overlapping consumers do not send them again", async () => {
+    const ids = Array.from({ length: 181 }, (_, i) => `user-${i}`);
+    const calls: string[][] = [];
+    let release!: () => void;
+    const blocked = new Promise<void>((done) => { release = done; });
+    const cache = createNameCache(async (batch) => {
+      calls.push(batch);
+      if (calls.length === 1) await blocked;
+      return batch.map((id) => ({ id, display_name: id }));
+    });
+    const pending = cache.ensure(ids);
+    expect(await cache.ensure(ids.slice(90))).toBe(false);
+    expect(calls).toHaveLength(1);
+    release();
+    expect(await pending).toBe(true);
+    expect(calls.map((batch) => batch.length)).toEqual([90, 90, 1]);
+    expect(calls.flat()).toEqual(ids);
+  });
+
   it("ignores empty ids", async () => {
     let called = false;
     const cache = createNameCache(async () => { called = true; return []; });

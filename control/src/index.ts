@@ -5,16 +5,22 @@ import { getStunServers, addStunServer } from "./stun";
 import { registerRelay, getRelayMap, getBannedKeys, denyPeerOnRelay, allowPeerOnRelay } from "./relay";
 import { createBan, removeBan, checkBan } from "./ban";
 import { getFleetStatus } from "./ops";
-import { requestOTP, verifyOTP, oauthRedirect, oauthCallback, requestDesktopMagic, confirmDesktopMagicPage, confirmDesktopMagic, exchangeDesktopCode } from "./authHandler";
+import { getPublicStatus } from "./status";
+import { requestOTP, verifyOTP, oauthRedirect, oauthCallback, requestDesktopMagic, confirmDesktopMagicPage, confirmDesktopMagic, exchangeDesktopCode, cleanupExpiredDesktopCodes } from "./authHandler";
 import { getMe, updateMe, lookupProfiles } from "./profile";
 import { enrollDevice, exchangeDeviceToken, listDevices, revokeDevice } from "./devices";
 import { checkRateLimit } from "./ratelimit";
 import { log, newRequestId } from "./log";
-import { json as jsonBase } from "./auth";
+import { json } from "./auth";
 
 export { SignalDO } from "./signal";
 
 export default {
+  async scheduled(_controller: ScheduledController, env: Env): Promise<void> {
+    const deleted = await cleanupExpiredDesktopCodes(env);
+    log({ event: "desktop_auth_codes.cleanup", deleted });
+  },
+
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const requestId = newRequestId();
     // CORS preflight
@@ -35,88 +41,104 @@ export default {
 
     log({ event: "request.start", request_id: requestId, method, path });
 
+    // Await routed handlers so their rejections stay inside this error boundary.
     try {
       // ── Auth ───────────────────────────────────────────────────────────────
       if (method === "POST" && path === "/api/auth/otp/request") {
         const rl = await checkRateLimit(request, env, "otp-req", 5, 60);
         if (rl) return rl;
-        return requestOTP(request, env);
+        return await requestOTP(request, env);
       }
       if (method === "POST" && path === "/api/auth/otp/verify") {
         const rl = await checkRateLimit(request, env, "otp-verify", 10, 60);
         if (rl) return rl;
-        return verifyOTP(request, env);
+        return await verifyOTP(request, env);
       }
       if (method === "GET" && path.startsWith("/api/auth/oauth/")) {
+        const rl = await checkRateLimit(request, env, "oauth", 20, 60);
+        if (rl) return rl;
         const parts = path.split("/").filter(Boolean); // ["api","auth","oauth","google"]
         const provider = parts[3];
-        if (parts[4] === "callback") return oauthCallback(request, env, provider);
-        return oauthRedirect(request, env, provider);
+        if (parts[4] === "callback") return await oauthCallback(request, env, provider);
+        return await oauthRedirect(request, env, provider);
       }
       if (method === "POST" && path === "/api/auth/desktop/magic") {
         const rl = await checkRateLimit(request, env, "desktop-magic", 5, 60);
         if (rl) return rl;
-        return requestDesktopMagic(request, env);
+        return await requestDesktopMagic(request, env);
       }
       if (path === "/api/auth/desktop/magic/confirm") {
-        if (method === "GET") return confirmDesktopMagicPage(request);
-        if (method === "POST") return confirmDesktopMagic(request, env);
+        if (method === "GET") return await confirmDesktopMagicPage(request);
+        if (method === "POST") {
+          const rl = await checkRateLimit(request, env, "desktop-confirm", 20, 60);
+          if (rl) return rl;
+          return await confirmDesktopMagic(request, env);
+        }
       }
       if (method === "POST" && path === "/api/auth/desktop/exchange") {
         const rl = await checkRateLimit(request, env, "desktop-exchange", 20, 60);
         if (rl) return rl;
-        return exchangeDesktopCode(request, env);
+        return await exchangeDesktopCode(request, env);
       }
       if (method === "GET" && path.startsWith("/api/auth/desktop/oauth/")) {
+        const rl = await checkRateLimit(request, env, "oauth", 20, 60);
+        if (rl) return rl;
         const provider = path.split("/").filter(Boolean)[4];
-        return oauthRedirect(request, env, provider);
+        return await oauthRedirect(request, env, provider);
       }
 
       // ── User profile ──────────────────────────────────────────────────────
-      if (path === "/api/me" && method === "GET") return getMe(request, env);
-      if (path === "/api/me" && method === "PATCH") return updateMe(request, env);
-      if (path === "/api/profiles/lookup" && method === "POST") return lookupProfiles(request, env);
+      if (path === "/api/me" && method === "GET") return await getMe(request, env);
+      if (path === "/api/me" && method === "PATCH") return await updateMe(request, env);
+      if (path === "/api/profiles/lookup" && method === "POST") return await lookupProfiles(request, env);
       // Device-credential exchange is unauthenticated (it IS the auth step) —
       // rate-limit tighter than peer traffic to blunt brute force on top of
       // the 256-bit secret space.
       if (method === "POST" && path === "/api/auth/device") {
         const rl = await checkRateLimit(request, env, "auth-device", 20, 60);
         if (rl) return rl;
-        return exchangeDeviceToken(request, env, ctx);
+        return await exchangeDeviceToken(request, env, ctx);
       }
 
       // ── Devices ────────────────────────────────────────────────────────────
       if (method === "POST" && path === "/api/devices/enroll") {
         const rl = await checkRateLimit(request, env, "devices-enroll", 10, 60);
         if (rl) return rl;
-        return enrollDevice(request, env);
+        return await enrollDevice(request, env);
       }
-      if (method === "GET" && path === "/api/devices") return listDevices(request, env);
+      if (method === "GET" && path === "/api/devices") return await listDevices(request, env);
       if (method === "DELETE" && path.startsWith("/api/devices/")) {
         const deviceId = path.slice("/api/devices/".length);
-        if (deviceId && !deviceId.includes("/")) return revokeDevice(request, env, deviceId);
+        if (deviceId && !deviceId.includes("/")) return await revokeDevice(request, env, deviceId);
       }
 
       // ── Peers ──────────────────────────────────────────────────────────────
       if (method === "POST" && path === "/api/peers/register") {
         const rl = await checkRateLimit(request, env, "peers-reg", 10, 60);
         if (rl) return rl;
-        return registerPeer(request, env);
+        return await registerPeer(request, env);
       }
       if (method === "POST" && path === "/api/peers/lookup") {
         const rl = await checkRateLimit(request, env, "peers-lookup", 60, 60);
         if (rl) return rl;
-        return lookupPeers(request, env);
+        return await lookupPeers(request, env);
       }
       if (method === "POST" && path === "/api/peers/connectivity") {
         const rl = await checkRateLimit(request, env, "peers-connectivity", 120, 60);
         if (rl) return rl;
-        return reportPeerConnectivity(request, env);
+        return await reportPeerConnectivity(request, env);
       }
-      if (method === "GET" && path === "/api/peers/config") return getPeerConfig(request, env);
+      if (method === "GET" && path === "/api/peers/config") {
+        const rl = await checkRateLimit(request, env, "peers-config", 120, 60);
+        if (rl) return rl;
+        return await getPeerConfig(request, env);
+      }
 
       // ── Hole-punching signal (WebSocket via Durable Object) ─────────────────
       if (path.startsWith("/api/signal/")) {
+        if (method !== "GET" || request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
+          return json({ error: "Expected WebSocket upgrade" }, 426);
+        }
         const rl = await checkRateLimit(request, env, "signal", 60, 60);
         if (rl) return rl;
         const rawRoomId = path.split("/")[3];
@@ -134,7 +156,7 @@ export default {
         const pk = url.searchParams.get("pk");
         if (!token || !pk) return json({ error: "token and pk required" }, 401);
 
-        const { verifyToken, getJwtSecret } = await import("./auth");
+        const { verifyToken, getJwtSecret, isUserBanned } = await import("./auth");
         let claims;
         try {
           claims = await verifyToken(token, getJwtSecret(env));
@@ -149,6 +171,7 @@ export default {
           .bind(pk, claims.sub)
           .first();
         if (!owned) return json({ error: "peer not owned by user" }, 403);
+        if (await isUserBanned(claims.sub, env.DB)) return json({ error: "Unauthorized" }, 401);
 
         // H1: gate the SignalDO on room membership. Two roomId conventions:
         //   1. "pair:<keyA>.<keyB>" (base64url/no-padding WG keys, sorted) — 1:1 hole-punch
@@ -163,6 +186,11 @@ export default {
           if (!parsed) return json({ error: "malformed pair roomId" }, 400);
           const [a, b] = parsed;
           if (pk !== a && pk !== b) return json({ error: "pk not part of this pair" }, 403);
+          // An owned key plus random other keys must not allocate unlimited
+          // persistent DOs. Both endpoints of a pair must be registered peers.
+          const other = await env.DB.prepare("SELECT 1 FROM peers WHERE public_key = ?")
+            .bind(pk === a ? b : a).first();
+          if (!other) return json({ error: "pair peer not found" }, 404);
         } else {
           if (!env.SERVICE_URL || !env.SERVICE_INTERNAL_TOKEN) {
             return json({ error: "service layer not configured; room signaling unavailable" }, 503);
@@ -194,60 +222,49 @@ export default {
 
         const doId = env.SIGNAL.idFromName(roomId);
         const doStub = env.SIGNAL.get(doId);
-        return doStub.fetch(request);
+        return await doStub.fetch(request);
       }
 
       // ── STUN ───────────────────────────────────────────────────────────────
-      if (method === "GET" && path === "/api/stun/servers") return getStunServers(request, env);
-      if (method === "POST" && path === "/api/stun/servers") return addStunServer(request, env);
+      if (method === "GET" && path === "/api/stun/servers") return await getStunServers(request, env);
+      if (method === "POST" && path === "/api/stun/servers") return await addStunServer(request, env);
 
       // ── Relay ──────────────────────────────────────────────────────────────
-      if (method === "POST" && path === "/api/relay/register") return registerRelay(request, env);
-      if (method === "GET" && path === "/api/relay/map") return getRelayMap(request, env);
-      if (method === "GET" && path === "/api/relay/banned-keys") return getBannedKeys(request, env);
+      if (method === "POST" && path === "/api/relay/register") {
+        const rl = await checkRateLimit(request, env, "relay-register", 120, 60);
+        if (rl) return rl;
+        return await registerRelay(request, env);
+      }
+      if (method === "GET" && path === "/api/relay/map") return await getRelayMap(request, env);
+      if (method === "GET" && path === "/api/relay/banned-keys") return await getBannedKeys(request, env);
       // Per-relay denylist (relay owner only)
       if (path.startsWith("/api/relay/") && path.includes("/deny")) {
         const parts = path.split("/").filter(Boolean); // ["api","relay",":id","deny",":pk?"]
         const relayId = parts[2];
         if (method === "POST" && parts[3] === "deny" && parts.length === 4) {
-          return denyPeerOnRelay(request, env, relayId);
+          return await denyPeerOnRelay(request, env, relayId);
         }
         if (method === "DELETE" && parts[3] === "deny" && parts.length === 5) {
-          return allowPeerOnRelay(request, env, relayId, decodeURIComponent(parts[4]));
+          return await allowPeerOnRelay(request, env, relayId, decodeURIComponent(parts[4]));
         }
       }
 
       // ── Control status ─────────────────────────────────────────────────────
       if (method === "GET" && path === "/api/control/status") {
-        const now = Math.floor(Date.now() / 1000);
-        const [users, peers, relays, bans] = await Promise.all([
-          env.DB.prepare("SELECT COUNT(*) AS c FROM users").first<{ c: number }>(),
-          env.DB.prepare("SELECT COUNT(*) AS c FROM peers WHERE last_seen > ?").bind(now - 300).first<{ c: number }>(),
-          env.DB.prepare("SELECT COUNT(*) AS c FROM relay_servers WHERE active = 1 AND last_heartbeat > ?").bind(now - 120).first<{ c: number }>(),
-          env.DB.prepare("SELECT COUNT(*) AS c FROM bans WHERE expires_at IS NULL OR expires_at > ?").bind(now).first<{ c: number }>(),
-        ]);
-        return json({
-          status: "ok",
-          environment: env.ENVIRONMENT ?? "unknown",
-          counts: {
-            users: users?.c ?? 0,
-            active_peers_5m: peers?.c ?? 0,
-            active_relays: relays?.c ?? 0,
-            active_bans: bans?.c ?? 0,
-          },
-          ts: Date.now(),
-        });
+        const rl = await checkRateLimit(request, env, "control-status", 60, 60);
+        if (rl) return rl;
+        return await getPublicStatus(request, env, ctx);
       }
 
       // Admin-gated operator fleet view (relay detail + backend health rollup).
-      if (method === "GET" && path === "/api/control/fleet") return getFleetStatus(request, env);
+      if (method === "GET" && path === "/api/control/fleet") return await getFleetStatus(request, env);
 
       // ── Ban management ─────────────────────────────────────────────────────
-      if (method === "POST" && path === "/api/ban") return createBan(request, env);
-      if (method === "GET" && path === "/api/ban") return checkBan(request, env);
+      if (method === "POST" && path === "/api/ban") return await createBan(request, env);
+      if (method === "GET" && path === "/api/ban") return await checkBan(request, env);
       if (method === "DELETE" && path.startsWith("/api/ban/")) {
         const banId = path.split("/")[3];
-        return removeBan(request, env, banId);
+        return await removeBan(request, env, banId);
       }
 
       // ── Admin: init DB schema ──────────────────────────────────────────────
@@ -303,14 +320,6 @@ export default {
     }
   },
 } satisfies ExportedHandler<Env>;
-
-// Wraps auth.ts's json() to add the CORS header required by browser clients
-// hitting the control plane directly. Behavior otherwise identical.
-function json(data: unknown, status = 200): Response {
-  const res = jsonBase(data, status);
-  res.headers.set("Access-Control-Allow-Origin", "*");
-  return res;
-}
 
 function parsePairRoom(roomId: string): [string, string] | null {
   const body = roomId.slice("pair:".length);

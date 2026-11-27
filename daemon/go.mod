@@ -13,6 +13,7 @@ require (
 	github.com/tailscale/go-winio v0.0.0-20231025203758-c4f33415bf55
 	github.com/zalando/go-keyring v0.2.8
 	golang.org/x/crypto v0.50.0
+	golang.org/x/sync v0.20.0
 	golang.org/x/sys v0.43.0
 	golang.zx2c4.com/wireguard v0.0.0-20250521234502-f333402bd9cb
 	golang.zx2c4.com/wireguard/wgctrl v0.0.0-20241231184526-a9ab2273dd10
@@ -61,7 +62,6 @@ require (
 	go4.org/netipx v0.0.0-20231129151722-fdeea329fbba // indirect
 	golang.org/x/exp v0.0.0-20250620022241-b7579e27df2b // indirect
 	golang.org/x/net v0.53.0 // indirect
-	golang.org/x/sync v0.20.0 // indirect
 	golang.org/x/text v0.36.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
 	golang.zx2c4.com/wintun v0.0.0-20230126152724-0fa3db229ce2 // indirect

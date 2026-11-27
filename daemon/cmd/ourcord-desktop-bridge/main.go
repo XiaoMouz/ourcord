@@ -14,6 +14,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"math"
 	"mime"
 	"net/http"
 	"net/url"
@@ -23,11 +24,13 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/ourcord/ourcord/daemon/pkg/client"
 	"github.com/ourcord/ourcord/daemon/pkg/ipc"
 	"github.com/ourcord/ourcord/daemon/pkg/wg"
 	"github.com/zalando/go-keyring"
+	"golang.org/x/sync/singleflight"
 )
 
 const (
@@ -62,11 +65,17 @@ type bridge struct {
 	fileHTTP    *http.Client // no client-level timeout; file transfers are context-bounded
 	socketPath  string
 	stateDir    string
+	downloadDir string // optional destination override; defaults to the OS downloads directory
 	credentials credentialStore
+	clock       func() time.Time // defaults to time.Now
 
-	daemonMu sync.Mutex
-	daemon   *client.Client
-	authMu   sync.Mutex
+	daemonMu        sync.Mutex
+	daemon          *client.Client
+	authMu          sync.Mutex
+	authRefresh     singleflight.Group
+	refreshCooldown *deviceRefreshCooldown // guarded by authMu
+	sessionMu       sync.RWMutex
+	pendingLoginMu  sync.Mutex
 }
 
 func main() {
@@ -140,6 +149,21 @@ func (b *bridge) handle(req request) (out response) {
 }
 
 func (b *bridge) dispatch(method string, raw json.RawMessage) (any, error) {
+	// Account requests may refresh credentials or enroll the daemon. Let them
+	// finish before logout retires that identity and clears its credentials.
+	// Ordinary requests still run concurrently. File transfers guard their short
+	// credential exchanges separately so logout never waits for a full stream.
+	if method == "auth.logout" {
+		b.sessionMu.Lock()
+		defer b.sessionMu.Unlock()
+	} else if method != "files.upload" && method != "files.download" {
+		family, _, _ := strings.Cut(method, ".")
+		switch family {
+		case "auth", "profile", "profiles", "lobbies", "rooms", "messages", "presence", "devices", "files":
+			b.sessionMu.RLock()
+			defer b.sessionMu.RUnlock()
+		}
+	}
 	params := map[string]any{}
 	if len(raw) > 0 && string(raw) != "null" {
 		if err := json.Unmarshal(raw, &params); err != nil {
@@ -147,14 +171,17 @@ func (b *bridge) dispatch(method string, raw json.RawMessage) (any, error) {
 		}
 	}
 	switch method {
+	case "auth.begin", "auth.magic", "auth.exchange":
+		b.pendingLoginMu.Lock()
+		defer b.pendingLoginMu.Unlock()
+	}
+	switch method {
 	case "auth.begin":
-		verifier, challenge, err := newPKCE()
+		pending, err := b.beginPendingLogin(boolParam(params, "restart"), boolParam(params, "activate"), b.now())
 		if err != nil {
 			return nil, err
 		}
-		if err := b.credentialStore().Set(credentialService, pkceCredential, verifier); err != nil {
-			return nil, fmt.Errorf("store login state: %w", err)
-		}
+		challenge := pkceChallenge(pending.Verifier)
 		return map[string]string{
 			"google_url": b.controlURL + "/api/auth/desktop/oauth/google?code_challenge=" + challenge,
 			"github_url": b.controlURL + "/api/auth/desktop/oauth/github?code_challenge=" + challenge,
@@ -164,11 +191,11 @@ func (b *bridge) dispatch(method string, raw json.RawMessage) (any, error) {
 		if email == "" {
 			return nil, errors.New("email required")
 		}
-		verifier, err := b.credentialStore().Get(credentialService, pkceCredential)
+		pending, err := b.beginPendingLogin(false, true, b.now())
 		if err != nil {
-			return nil, errors.New("start login again")
+			return nil, err
 		}
-		challenge := pkceChallenge(verifier)
+		challenge := pkceChallenge(pending.Verifier)
 		data, err := b.api(http.MethodPost, b.controlURL, "/api/auth/desktop/magic", "", map[string]string{"email": email, "code_challenge": challenge})
 		if err != nil {
 			return nil, err
@@ -176,11 +203,11 @@ func (b *bridge) dispatch(method string, raw json.RawMessage) (any, error) {
 		return decodeMagicResponse(data)
 	case "auth.exchange":
 		code := stringParam(params, "code")
-		verifier, err := b.credentialStore().Get(credentialService, pkceCredential)
-		if err != nil {
+		pending, err := b.readPendingLogin(b.now())
+		if err != nil || pending.ControlURL != b.controlURL || pending.ExpiresAt <= b.now().Unix() {
 			return nil, errors.New("login session expired")
 		}
-		data, err := b.api(http.MethodPost, b.controlURL, "/api/auth/desktop/exchange", "", map[string]string{"code": code, "code_verifier": verifier})
+		data, err := b.api(http.MethodPost, b.controlURL, "/api/auth/desktop/exchange", "", map[string]string{"code": code, "code_verifier": pending.Verifier})
 		if err != nil {
 			return nil, err
 		}
@@ -246,6 +273,7 @@ func (b *bridge) dispatch(method string, raw json.RawMessage) (any, error) {
 		}
 		_ = b.credentialStore().Delete(credentialService, jwtCredential)
 		_ = b.credentialStore().Delete(credentialService, deviceCredential)
+		_ = b.credentialStore().Delete(credentialService, pkceCredential)
 		_ = os.Remove(filepath.Join(b.clientStateDir(), "device.token"))
 		return map[string]bool{"authenticated": false}, nil
 	case "profile.update":
@@ -283,6 +311,18 @@ func (b *bridge) dispatch(method string, raw json.RawMessage) (any, error) {
 		if _, ok := params["position"]; ok {
 			payload["position"] = int(numberParam(params, "position", 0))
 		}
+		// Preserve the complete compare-and-swap contract, including zero.
+		for _, key := range []string{"swap_with", "expected_position"} {
+			if value, ok := params[key]; ok {
+				payload[key] = value
+			}
+		}
+		// Older services must reject the swap, not silently apply half of it.
+		_, hasSwap := params["swap_with"]
+		_, hasExpectedPosition := params["expected_position"]
+		if hasSwap || hasExpectedPosition {
+			path += "/reorder"
+		}
 		return b.authedJSON(http.MethodPatch, b.serviceURL, path, payload)
 	case "rooms.delete":
 		path := "/api/rooms/" + pathSegment(stringParam(params, "room_id"))
@@ -293,7 +333,17 @@ func (b *bridge) dispatch(method string, raw json.RawMessage) (any, error) {
 	case "files.download":
 		return b.downloadFile(stringParam(params, "room_id"), stringParam(params, "file_id"), stringParam(params, "filename"))
 	case "messages.list":
-		path := messagesPath(stringParam(params, "room_id"), stringParam(params, "before"), int(numberParam(params, "limit", 50)))
+		before := stringParam(params, "before")
+		var beforeCreatedAt *int64
+		if raw, supplied := params["before_created_at"]; supplied {
+			value, number := raw.(float64)
+			if !number || before == "" || value < 0 || value > 9007199254740991 || math.Trunc(value) != value {
+				return nil, errors.New("before_created_at must be a non-negative safe integer with before")
+			}
+			seconds := int64(value)
+			beforeCreatedAt = &seconds
+		}
+		path := messagesPath(stringParam(params, "room_id"), before, int(numberParam(params, "limit", 50)), beforeCreatedAt)
 		return b.authedJSON(http.MethodGet, b.serviceURL, path, nil)
 	case "messages.send":
 		path := "/api/rooms/" + pathSegment(stringParam(params, "room_id")) + "/messages"
@@ -501,10 +551,6 @@ func (b *bridge) uploadFile(roomID, path string) (any, error) {
 	if roomID == "" || path == "" {
 		return nil, errors.New("room_id and path required")
 	}
-	token, err := b.token()
-	if err != nil {
-		return nil, errors.New("not authenticated")
-	}
 	info, err := os.Stat(path)
 	if err != nil || info.IsDir() {
 		return nil, errors.New("file not found")
@@ -512,7 +558,7 @@ func (b *bridge) uploadFile(roomID, path string) (any, error) {
 	filename := safeFilename(filepath.Base(path))
 	initPath := "/api/rooms/" + pathSegment(roomID) + "/files"
 	initBody := map[string]any{"filename": filepath.Base(path), "mime_type": detectMIME(path), "size_bytes": info.Size()}
-	initData, err := b.api(http.MethodPost, b.serviceURL, initPath, token, initBody)
+	initData, err := b.fileAPI(http.MethodPost, initPath, initBody)
 	if err != nil {
 		return nil, err
 	}
@@ -529,7 +575,9 @@ func (b *bridge) uploadFile(roomID, path string) (any, error) {
 
 	if init.StorageLocation == "r2" {
 		// R2 proxy PUT is authed and enforces an exact byte count.
-		if err := b.putFile(strings.TrimRight(b.serviceURL, "/")+init.UploadURL, token, path, info.Size()); err != nil {
+		if err := b.fileAccountRequest(func(token string) error {
+			return b.putFile(strings.TrimRight(b.serviceURL, "/")+init.UploadURL, token, path, info.Size())
+		}); err != nil {
 			return nil, err
 		}
 	} else {
@@ -538,7 +586,7 @@ func (b *bridge) uploadFile(roomID, path string) (any, error) {
 			return nil, err
 		}
 		if init.CompleteURL != "" {
-			if _, err := b.api(http.MethodPost, b.serviceURL, init.CompleteURL, token, map[string]string{"upload_token": init.UploadToken}); err != nil {
+			if _, err := b.fileAPI(http.MethodPost, init.CompleteURL, map[string]string{"upload_token": init.UploadToken}); err != nil {
 				return nil, fmt.Errorf("finalize upload: %w", err)
 			}
 		}
@@ -570,7 +618,7 @@ func (b *bridge) putFile(url, token, path string, size int64) error {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("upload failed (%d)", resp.StatusCode)
+		return &httpStatusError{status: resp.StatusCode, message: fmt.Sprintf("upload failed (%d)", resp.StatusCode)}
 	}
 	return nil
 }
@@ -597,19 +645,28 @@ func (b *bridge) downloadFile(roomID, fileID, filename string) (any, error) {
 	if roomID == "" || fileID == "" {
 		return nil, errors.New("room_id and file_id required")
 	}
-	token, err := b.token()
-	if err != nil {
-		return nil, errors.New("not authenticated")
-	}
 	url := strings.TrimRight(b.serviceURL, "/") + "/api/rooms/" + pathSegment(roomID) + "/files/" + pathSegment(fileID) + "/download"
-	body, contentType, err := b.fetchStream(http.MethodGet, url, token)
+	var body io.ReadCloser
+	var headers http.Header
+	err := b.fileAccountRequest(func(token string) error {
+		var requestErr error
+		body, headers, requestErr = b.fetchStream(http.MethodGet, url, token)
+		return requestErr
+	})
 	if err != nil {
 		return nil, err
 	}
 	defer body.Close()
-	// Backend-hosted files answer with a JSON redirect; follow it unauthenticated.
-	if strings.HasPrefix(contentType, "application/json") {
-		data, _ := io.ReadAll(io.LimitReader(body, 1<<20))
+	// R2 objects retain their original MIME type, including application/json.
+	// The service marks raw file bytes as an attachment; only its unmarked
+	// JSON response is a backend download descriptor.
+	contentType, _, _ := mime.ParseMediaType(headers.Get("Content-Type"))
+	disposition, _, _ := mime.ParseMediaType(headers.Get("Content-Disposition"))
+	if contentType == "application/json" && disposition != "attachment" {
+		data, err := io.ReadAll(io.LimitReader(body, 1<<20))
+		if err != nil {
+			return nil, errors.New("download unavailable")
+		}
 		var redirect struct {
 			URL string `json:"url"`
 		}
@@ -628,12 +685,12 @@ func (b *bridge) downloadFile(roomID, fileID, filename string) (any, error) {
 
 // fetchStream issues a GET and returns the still-open body for streaming. The
 // caller must Close it.
-func (b *bridge) fetchStream(method, url, token string) (io.ReadCloser, string, error) {
+func (b *bridge) fetchStream(method, url, token string) (io.ReadCloser, http.Header, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	req, err := http.NewRequestWithContext(ctx, method, url, nil)
 	if err != nil {
 		cancel()
-		return nil, "", err
+		return nil, nil, err
 	}
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
@@ -641,19 +698,67 @@ func (b *bridge) fetchStream(method, url, token string) (io.ReadCloser, string, 
 	resp, err := b.fileHTTP.Do(req)
 	if err != nil {
 		cancel()
-		return nil, "", errors.New("download failed")
+		return nil, nil, errors.New("download failed")
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		resp.Body.Close()
 		cancel()
-		return nil, "", fmt.Errorf("download failed (%d)", resp.StatusCode)
+		return nil, nil, &httpStatusError{status: resp.StatusCode, message: fmt.Sprintf("download failed (%d)", resp.StatusCode)}
 	}
-	return &cancelReadCloser{ReadCloser: resp.Body, cancel: cancel}, resp.Header.Get("Content-Type"), nil
+	return &cancelReadCloser{ReadCloser: resp.Body, cancel: cancel}, resp.Header, nil
 }
 
 type cancelReadCloser struct {
 	io.ReadCloser
 	cancel context.CancelFunc
+}
+
+// fileAccountRequest is only for our service, never capability URLs on a file
+// backend. Reopen PUT files on retry, and release rejected GET bodies before
+// returning a status error. Credential writes are protected from logout without
+// holding sessionMu across a potentially long upload or download.
+func (b *bridge) fileAccountRequest(send func(string) error) error {
+	b.sessionMu.RLock()
+	token, err := b.token()
+	if err != nil {
+		token, err = b.exchangeStoredDeviceCredential(token)
+	}
+	b.sessionMu.RUnlock()
+	if err != nil {
+		if errors.Is(err, keyring.ErrNotFound) || isHTTPStatus(err, http.StatusUnauthorized) {
+			return errors.New("not authenticated")
+		}
+		return err
+	}
+
+	requestErr := send(token)
+	if !isHTTPStatus(requestErr, http.StatusUnauthorized) {
+		return requestErr
+	}
+	b.sessionMu.RLock()
+	// A logout may have completed while the stream was in flight. Do not
+	// revive its identity from a delayed 401 or a disk credential fallback.
+	if _, err = b.token(); err == nil {
+		token, err = b.exchangeStoredDeviceCredential(token)
+	}
+	b.sessionMu.RUnlock()
+	if err != nil {
+		if errors.Is(err, keyring.ErrNotFound) || isHTTPStatus(err, http.StatusUnauthorized) {
+			return requestErr
+		}
+		return err
+	}
+	return send(token)
+}
+
+func (b *bridge) fileAPI(method, path string, body any) ([]byte, error) {
+	var data []byte
+	err := b.fileAccountRequest(func(token string) error {
+		var requestErr error
+		data, requestErr = b.api(method, b.serviceURL, path, token, body)
+		return requestErr
+	})
+	return data, err
 }
 
 func (c *cancelReadCloser) Close() error {
@@ -662,30 +767,59 @@ func (c *cancelReadCloser) Close() error {
 	return err
 }
 
-// saveDownload writes a stream to <downloads>/<filename>, avoiding overwrite by
-// suffixing the file id, and returns the saved path.
+// saveDownload writes a complete stream to a new file and returns its path.
 func (b *bridge) saveDownload(filename, fileID string, src io.Reader) (any, error) {
+	// Match service initiateUpload's MAX_DECLARED_BYTES ceiling, including
+	// self-hosted files whose lobby policy permits more than the R2 limit.
+	return b.saveDownloadWithLimit(filename, fileID, src, 5<<30)
+}
+
+func (b *bridge) saveDownloadWithLimit(filename, fileID string, src io.Reader, limit int64) (any, error) {
 	name := safeFilename(filename)
 	if name == "" {
 		name = "ourcord-" + pathSegment(fileID)
 	}
-	dir := downloadsDir()
-	target := filepath.Join(dir, name)
-	if _, err := os.Stat(target); err == nil {
-		ext := filepath.Ext(name)
-		target = filepath.Join(dir, strings.TrimSuffix(name, ext)+"-"+pathSegment(fileID)+ext)
+	dir := b.downloadDir
+	if dir == "" {
+		dir = downloadsDir()
 	}
-	out, err := os.Create(target)
+	target := filepath.Join(dir, name)
+	out, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if errors.Is(err, os.ErrExist) {
+		ext := filepath.Ext(name)
+		stem := strings.TrimSuffix(name, ext) + "-" + pathSegment(fileID)
+		target = filepath.Join(dir, stem+ext)
+		out, err = os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+		if errors.Is(err, os.ErrExist) {
+			// CreateTemp also uses exclusive creation, so concurrent downloads
+			// and existing symlinks can never redirect or overwrite this copy.
+			out, err = os.CreateTemp(dir, stem+"-*"+ext)
+			if err == nil {
+				target = out.Name()
+			}
+		}
+	}
 	if err != nil {
 		return nil, fmt.Errorf("save file: %w", err)
 	}
-	if _, err := io.Copy(out, io.LimitReader(src, 512<<20)); err != nil {
-		out.Close()
+	saved := false
+	defer func() {
+		_ = out.Close()
+		if !saved {
+			_ = os.Remove(target)
+		}
+	}()
+	written, err := io.Copy(out, io.LimitReader(src, limit+1))
+	if err != nil {
 		return nil, fmt.Errorf("save file: %w", err)
+	}
+	if written > limit {
+		return nil, fmt.Errorf("download exceeds size limit (%d bytes)", limit)
 	}
 	if err := out.Close(); err != nil {
 		return nil, fmt.Errorf("save file: %w", err)
 	}
+	saved = true
 	return map[string]string{"saved_path": target}, nil
 }
 
@@ -709,16 +843,25 @@ func safeFilename(name string) string {
 	name = strings.NewReplacer("/", "_", "\\", "_", "\x00", "").Replace(name)
 	name = strings.TrimLeft(name, ".")
 	if len(name) > 180 {
-		name = name[len(name)-180:]
+		// Keep the suffix/extension within the byte budget without splitting
+		// a UTF-8 character or changing the path during JSON serialization.
+		start := len(name) - 180
+		for start < len(name) && !utf8.RuneStart(name[start]) {
+			start++
+		}
+		name = name[start:]
 	}
 	return name
 }
 
 // messagesPath builds the room message-history path with optional pagination.
-func messagesPath(roomID, before string, limit int) string {
+func messagesPath(roomID, before string, limit int, beforeCreatedAt *int64) string {
 	query := url.Values{}
 	if before != "" {
 		query.Set("before", before)
+		if beforeCreatedAt != nil {
+			query.Set("before_created_at", strconv.FormatInt(*beforeCreatedAt, 10))
+		}
 	}
 	if limit > 0 {
 		query.Set("limit", strconv.Itoa(limit))
@@ -747,6 +890,7 @@ func (b *bridge) authedJSON(method, base, path string, body any) (any, error) {
 type httpStatusError struct {
 	status  int
 	message string
+	retryAt time.Time
 }
 
 func (e *httpStatusError) Error() string { return e.message }
@@ -759,7 +903,7 @@ func isHTTPStatus(err error, status int) bool {
 func (b *bridge) apiWithAccount(method, base, path string, body any) ([]byte, string, error) {
 	token, err := b.token()
 	if err != nil {
-		token, err = b.exchangeStoredDeviceCredential()
+		token, err = b.exchangeStoredDeviceCredential(token)
 		if err != nil {
 			if errors.Is(err, keyring.ErrNotFound) || isHTTPStatus(err, http.StatusUnauthorized) {
 				return nil, "", errors.New("not authenticated")
@@ -771,7 +915,7 @@ func (b *bridge) apiWithAccount(method, base, path string, body any) ([]byte, st
 	if !isHTTPStatus(err, http.StatusUnauthorized) {
 		return data, token, err
 	}
-	token, refreshErr := b.exchangeStoredDeviceCredential()
+	token, refreshErr := b.exchangeStoredDeviceCredential(token)
 	if refreshErr != nil {
 		if errors.Is(refreshErr, keyring.ErrNotFound) || isHTTPStatus(refreshErr, http.StatusUnauthorized) {
 			return nil, "", err
@@ -817,7 +961,10 @@ func (b *bridge) api(method, base, path, token string, body any) ([]byte, error)
 		if failure.Error == "" {
 			failure.Error = http.StatusText(resp.StatusCode)
 		}
-		return nil, &httpStatusError{status: resp.StatusCode, message: failure.Error}
+		return nil, &httpStatusError{
+			status: resp.StatusCode, message: failure.Error,
+			retryAt: parseRetryAfter(resp.Header.Get("Retry-After"), b.now()),
+		}
 	}
 	return data, nil
 }
@@ -841,7 +988,8 @@ func (b *bridge) token() (string, error) {
 }
 
 func (b *bridge) authStatus() (any, error) {
-	if token, err := b.token(); err == nil {
+	token, err := b.token()
+	if err == nil {
 		if profile, err := b.fetchProfile(token); err == nil {
 			b.ensureDaemonEnrollment(token, profile)
 			return map[string]any{"authenticated": true, "profile": profile}, nil
@@ -850,7 +998,7 @@ func (b *bridge) authStatus() (any, error) {
 		}
 	}
 
-	token, err := b.exchangeStoredDeviceCredential()
+	token, err = b.exchangeStoredDeviceCredential(token)
 	if errors.Is(err, keyring.ErrNotFound) || isHTTPStatus(err, http.StatusUnauthorized) {
 		token, err = b.exchangeDaemonSession()
 	}
@@ -871,6 +1019,16 @@ func (b *bridge) authStatus() (any, error) {
 func (b *bridge) exchangeDaemonSession() (string, error) {
 	daemon, err := b.daemonClient()
 	if err != nil {
+		return "", keyring.ErrNotFound
+	}
+	profile, err := daemon.LocalProfile()
+	b.dropDaemon(daemon, err)
+	if err != nil {
+		return "", err
+	}
+	// A running daemon without a device token is normal on first launch and
+	// after logout. Do not turn that state into a failed auth.status request.
+	if !profile.Enrolled {
 		return "", keyring.ErrNotFound
 	}
 	session, err := daemon.RefreshSession()
@@ -921,11 +1079,29 @@ func (b *bridge) fetchProfile(token string) (any, error) {
 	return profile, nil
 }
 
-func (b *bridge) exchangeStoredDeviceCredential() (string, error) {
+func (b *bridge) exchangeStoredDeviceCredential(staleToken string) (string, error) {
+	// Share failures as well as successful refreshes with overlapping callers.
+	// Only an explicit server Retry-After delays later requests.
+	value, err, _ := b.authRefresh.Do(staleToken, func() (any, error) {
+		return b.refreshStoredDeviceCredential(staleToken)
+	})
+	if err != nil {
+		return "", err
+	}
+	return value.(string), nil
+}
+
+func (b *bridge) refreshStoredDeviceCredential(staleToken string) (string, error) {
 	b.authMu.Lock()
 	defer b.authMu.Unlock()
 
 	store := b.credentialStore()
+	// A concurrent request may have refreshed this same rejected JWT while
+	// we waited. Reuse its replacement instead of spending another device
+	// exchange (and another D1 read/write) for the same expiration.
+	if current, err := store.Get(credentialService, jwtCredential); err == nil && current != "" && current != staleToken {
+		return current, nil
+	}
 	deviceToken, err := store.Get(credentialService, deviceCredential)
 	if err != nil {
 		data, readErr := os.ReadFile(filepath.Join(b.clientStateDir(), "device.token"))
@@ -940,8 +1116,23 @@ func (b *bridge) exchangeStoredDeviceCredential() (string, error) {
 	if !strings.HasPrefix(deviceToken, "dt_") {
 		return "", keyring.ErrNotFound
 	}
+	fingerprint := sha256.Sum256([]byte(deviceToken))
+	if cooldown := b.refreshCooldown; cooldown != nil &&
+		cooldown.baseURL == b.controlURL && cooldown.credential == fingerprint &&
+		b.now().Before(cooldown.until) {
+		return "", cooldown.err
+	}
+	b.refreshCooldown = nil
 	data, err := b.api(http.MethodPost, b.controlURL, "/api/auth/device", "", map[string]string{"device_token": deviceToken})
 	if err != nil {
+		var responseErr *httpStatusError
+		if errors.As(err, &responseErr) &&
+			(responseErr.status == http.StatusTooManyRequests || responseErr.status == http.StatusServiceUnavailable) &&
+			responseErr.retryAt.After(b.now()) {
+			b.refreshCooldown = &deviceRefreshCooldown{
+				baseURL: b.controlURL, credential: fingerprint, until: responseErr.retryAt, err: err,
+			}
+		}
 		return "", err
 	}
 	var exchanged struct {

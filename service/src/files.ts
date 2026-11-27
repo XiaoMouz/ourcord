@@ -4,6 +4,22 @@ import { resolveFileBackend, backendFileURL } from "./backends";
 import { log } from "./log";
 
 const UPLOAD_TOKEN_TTL_SEC = 30 * 60;
+// Keep below the deletion queue's 660-second grace period (migration 0006).
+const R2_UPLOAD_TIMEOUT_MS = 10 * 60 * 1000;
+
+function r2Budget(env: Env) {
+  const read = (raw: string | undefined, fallback: number) => {
+    if (raw === undefined) return fallback;
+    const value = Number(raw);
+    if (!Number.isSafeInteger(value) || value < 0) throw new Error("Invalid R2 budget configuration");
+    return value;
+  };
+  return {
+    bytes: read(env.R2_MAX_BYTES, 10 * 1024 ** 3),
+    files: read(env.R2_MAX_FILES, 1000),
+    perFile: read(env.R2_MAX_FILE_BYTES, 100 * 1024 ** 2),
+  };
+}
 
 function b64url(bytes: Uint8Array): string {
   let s = "";
@@ -23,8 +39,9 @@ async function hashUploadToken(token: string): Promise<string> {
 }
 
 async function markUploadFailed(env: Env, fileId: string, msg: string): Promise<void> {
+  // A late verifier must not demote a file another request already published.
   await env.DB
-    .prepare("UPDATE files SET upload_status = 'failed', last_upload_error = ? WHERE id = ?")
+    .prepare("UPDATE files SET upload_status = 'failed', last_upload_error = ? WHERE id = ? AND upload_status = 'pending'")
     .bind(msg.slice(0, 255), fileId)
     .run();
 }
@@ -43,7 +60,7 @@ function newFixedLengthStream(length: number): { readable: ReadableStream<Uint8A
 // POST /api/rooms/:roomId/files — initiate file upload
 // Client sends metadata; server returns a pre-signed URL or storage target
 export async function initiateUpload(request: Request, env: Env, roomId: string): Promise<Response> {
-  const tooBig = checkBodySize(request, 4 * 1024);
+  const tooBig = await checkBodySize(request, 4 * 1024);
   if (tooBig) return tooBig;
   const auth = await requireAuth(request, env);
   if (auth instanceof Response) return auth;
@@ -95,10 +112,10 @@ export async function initiateUpload(request: Request, env: Env, roomId: string)
   if (
     typeof body.filename !== "string" ||
     body.filename.length < 1 ||
-    body.filename.length > 255 ||
+    new TextEncoder().encode(body.filename).byteLength > 255 ||
     /[\x00-\x1f\x7f"\\]|^\.\.?$|\//.test(body.filename)
   ) {
-    return err("filename contains invalid characters or has invalid length");
+    return err("filename contains invalid characters or has invalid length (max 255 UTF-8 bytes)");
   }
   // J6: positive-integer size_bytes. The previous `!body.size_bytes` check
   // accepted negative values (truthy in JS) which then sailed past the
@@ -124,28 +141,21 @@ export async function initiateUpload(request: Request, env: Env, roomId: string)
   // forever) counts toward max_total_files; finite retention counts toward
   // max_temp_files. A 0 in either field means unlimited.
   const isTemp = policy.retain_days > 0;
-  if (isTemp && policy.max_temp_files > 0) {
+  const quota = isTemp ? policy.max_temp_files : policy.max_total_files;
+  // Only decide whether the quota is full. Stop after that many matches and
+  // seek the retention class directly in the room/expiry index.
+  const quotaCountSQL = `SELECT COUNT(*) AS n FROM (
+    SELECT 1 FROM rooms r JOIN files f ON f.room_id = r.id
+    WHERE r.lobby_id = ? AND f.expires_at IS ${isTemp ? "NOT NULL" : "NULL"}
+    LIMIT ?
+  )`;
+  if (quota > 0) {
     const count = await env.DB
-      .prepare(
-        `SELECT COUNT(*) AS n FROM files f JOIN rooms r ON f.room_id = r.id
-         WHERE r.lobby_id = ? AND f.expires_at IS NOT NULL`
-      )
-      .bind(room.lobby_id)
+      .prepare(quotaCountSQL)
+      .bind(room.lobby_id, quota)
       .first<{ n: number }>();
-    if ((count?.n ?? 0) >= policy.max_temp_files) {
-      return err(`Temporary file quota reached (${policy.max_temp_files})`, 409);
-    }
-  }
-  if (!isTemp && policy.max_total_files > 0) {
-    const count = await env.DB
-      .prepare(
-        `SELECT COUNT(*) AS n FROM files f JOIN rooms r ON f.room_id = r.id
-         WHERE r.lobby_id = ? AND f.expires_at IS NULL`
-      )
-      .bind(room.lobby_id)
-      .first<{ n: number }>();
-    if ((count?.n ?? 0) >= policy.max_total_files) {
-      return err(`Permanent file quota reached (${policy.max_total_files})`, 409);
+    if ((count?.n ?? 0) >= quota) {
+      return err(`${isTemp ? "Temporary" : "Permanent"} file quota reached (${quota})`, 409);
     }
   }
 
@@ -155,6 +165,10 @@ export async function initiateUpload(request: Request, env: Env, roomId: string)
   const resolved = await resolveFileBackend(env, auth.sub, room.lobby_id, policy, body.storage_preference);
   if (!resolved) return err("No storage tier available for this lobby", 503);
   const { location: storageLocation, backend } = resolved;
+  const budget = r2Budget(env);
+  if (storageLocation === "r2" && body.size_bytes > budget.perFile) {
+    return err("File exceeds the operator R2 size limit", 413);
+  }
 
   const id = generateId();
   const now = Math.floor(Date.now() / 1000);
@@ -167,6 +181,7 @@ export async function initiateUpload(request: Request, env: Env, roomId: string)
   let uploadExpiresAt: number | null = null;
 
   if (storageLocation === "r2") {
+    uploadExpiresAt = now + UPLOAD_TOKEN_TTL_SEC;
     storageKey = `files/${room.lobby_id}/${roomId}/${id}/${body.filename}`;
     // Generate a pre-signed upload URL (via R2 presigned URL)
     // Note: CF R2 presigned URLs require Workers R2 + account-level API
@@ -184,19 +199,31 @@ export async function initiateUpload(request: Request, env: Env, roomId: string)
     uploadExpiresAt = now + UPLOAD_TOKEN_TTL_SEC;
   }
 
-  await env.DB
+  // Check and reserve within one SQLite statement: concurrent initiations
+  // cannot all win the final slot. r2_usage includes queued deletion bytes.
+  const inserted = await env.DB
     .prepare(
       `INSERT INTO files (
          id, room_id, uploader_id, filename, size_bytes, mime_type,
          storage_location, storage_key, backend_id, expires_at, created_at,
          upload_status, upload_token_hash, upload_expires_at
        )
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+       SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?
+       WHERE (? = 0 OR (${quotaCountSQL}) < ?)
+       AND (? <> 'r2' OR EXISTS (
+         SELECT 1 FROM r2_usage WHERE id = 1
+         AND reserved_bytes <= ? - ? AND reserved_files < ?
+       ))`
     )
     .bind(id, roomId, auth.sub, body.filename, body.size_bytes, mimeType,
       storageLocation, storageKey, backend?.id ?? null, expiresAt, now,
-      "pending", uploadTokenHash, uploadExpiresAt)
+      "pending", uploadTokenHash, uploadExpiresAt,
+      quota, room.lobby_id, quota, quota,
+      storageLocation, budget.bytes, body.size_bytes, budget.files)
     .run();
+  // D1 includes trigger writes in meta.changes (the usage reservation adds
+  // another changed row), unlike SQLite's changes() for the outer statement.
+  if (inserted.meta.changes === 0) return err("File quota or operator R2 budget reached", 409);
 
   return json({
     id,
@@ -225,9 +252,21 @@ export async function uploadToR2(
   if (!file) return err("File record not found or access denied", 404);
   if (file.storage_location !== "r2") return err("File not stored in R2", 400);
   if (file.upload_status && file.upload_status !== "pending") return err("File upload is not pending", 409);
+  const now = Math.floor(Date.now() / 1000);
+  if ((file.upload_expires_at ?? file.created_at + UPLOAD_TOKEN_TTL_SEC) <= now
+      || (file.expires_at != null && file.expires_at <= now)) {
+    return err("Upload reservation expired", 409);
+  }
 
   const body = request.body;
   if (!body) return err("No body", 400);
+  const claimed = await env.DB.prepare(
+    `UPDATE files SET upload_started_at = ?
+     WHERE id = ? AND upload_status = 'pending' AND upload_started_at IS NULL
+       AND COALESCE(upload_expires_at, created_at + ?) > ?
+       AND (expires_at IS NULL OR expires_at > ?)`,
+  ).bind(now, file.id, UPLOAD_TOKEN_TTL_SEC, now, now).run();
+  if (claimed.meta.changes !== 1) return err("Upload already started or reservation expired", 409);
 
   // I1: enforce that the actual streamed bytes match files.size_bytes recorded
   // in initiateUpload. Without this, a client can declare 1 KiB to bypass the
@@ -239,12 +278,20 @@ export async function uploadToR2(
   let received = 0;
   let uploadErr: "overflow" | "underflow" | null = null;
   const fixed = newFixedLengthStream(declared);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(new Error("Upload timed out")), R2_UPLOAD_TIMEOUT_MS);
+  const reader = body.getReader();
+  const writer = fixed.writable.getWriter();
+  const abort = () => {
+    void reader.cancel(controller.signal.reason).catch(() => {});
+    void writer.abort(controller.signal.reason).catch(() => {});
+  };
+  controller.signal.addEventListener("abort", abort, { once: true });
   const pump = (async () => {
-    const reader = body.getReader();
-    const writer = fixed.writable.getWriter();
     try {
       for (;;) {
         const { value, done } = await reader.read();
+        controller.signal.throwIfAborted();
         if (done) break;
         if (!value) continue;
         received += value.byteLength;
@@ -260,6 +307,7 @@ export async function uploadToR2(
       }
       await writer.close();
     } catch (e) {
+      try { await reader.cancel(e); } catch { /* noop */ }
       try { await writer.abort(e); } catch { /* noop */ }
       throw e;
     } finally {
@@ -271,10 +319,12 @@ export async function uploadToR2(
     await Promise.all([
       env.FILES.put(file.storage_key, fixed.readable, {
         httpMetadata: { contentType: file.mime_type },
-      }),
+      }).catch((e: unknown) => { controller.abort(e); throw e; }),
       pump,
     ]);
   } catch (e) {
+    controller.abort(e);
+    await pump.catch(() => {});
     if (uploadErr === "overflow") {
       // Best-effort cleanup; ignore secondary errors.
       try { await env.FILES.delete(file.storage_key); } catch { /* noop */ }
@@ -286,18 +336,32 @@ export async function uploadToR2(
       await markUploadFailed(env, file.id, `Upload short: expected ${declared}, got ${received}`);
       return err(`Upload short: expected ${declared}, got ${received}`, 400);
     }
+    await markUploadFailed(env, file.id, "R2 upload failed");
     throw e;
+  } finally {
+    clearTimeout(timeout);
+    controller.signal.removeEventListener("abort", abort);
   }
 
-  const now = Math.floor(Date.now() / 1000);
-  await env.DB
+  const uploaded = await env.DB
     .prepare(
       `UPDATE files
        SET upload_status = 'uploaded', uploaded_at = ?, actual_size_bytes = ?, last_upload_error = NULL
        WHERE id = ?`,
     )
-    .bind(now, received, file.id)
+    .bind(Math.floor(Date.now() / 1000), received, file.id)
     .run();
+  if (uploaded.meta.changes !== 1) {
+    // An R2 operation can acknowledge completion after its room was deleted.
+    // Re-enqueue even if a previous cleanup already ran. Refresh the deadline
+    // so a concurrent cleanup cannot delete this new queue generation.
+    await env.DB.prepare(
+      `INSERT INTO r2_deletion_queue (storage_key, size_bytes, not_before)
+       VALUES (?, ?, ?)
+       ON CONFLICT(storage_key) DO UPDATE SET not_before = excluded.not_before`,
+    ).bind(file.storage_key, file.size_bytes, Math.floor(Date.now() / 1000) + 60).run();
+    return err("Upload reservation removed", 409);
+  }
 
   return json({ uploaded: true, key: file.storage_key, bytes: received });
 }
@@ -310,7 +374,7 @@ export async function completeExternalUpload(
   roomId: string,
   fileId: string,
 ): Promise<Response> {
-  const tooBig = checkBodySize(request, 1024);
+  const tooBig = await checkBodySize(request, 1024);
   if (tooBig) return tooBig;
   const auth = await requireAuth(request, env);
   if (auth instanceof Response) return auth;
@@ -333,7 +397,7 @@ export async function completeExternalUpload(
   if (file.upload_status !== "pending") return err("File upload is not pending", 409);
   if (!file.upload_token_hash || !file.upload_expires_at) return err("File upload token is missing", 409);
   const now = Math.floor(Date.now() / 1000);
-  if (file.upload_expires_at < now) {
+  if (file.upload_expires_at <= now) {
     await markUploadFailed(env, file.id, "upload token expired");
     return err("upload token expired", 403);
   }
@@ -351,15 +415,15 @@ export async function completeExternalUpload(
   const url = await backendFileURL(backend, file.storage_key, "get", 60);
   let resp: Response;
   try {
-    resp = await fetch(url, { method: "HEAD" });
+    resp = await fetch(url, { method: "HEAD", signal: AbortSignal.timeout(5000) });
   } catch (e) {
     const msg = `backend HEAD failed: ${String(e).slice(0, 160)}`;
-    await env.DB.prepare("UPDATE files SET last_upload_error = ? WHERE id = ?").bind(msg, file.id).run();
+    await env.DB.prepare("UPDATE files SET last_upload_error = ? WHERE id = ? AND upload_status = 'pending'").bind(msg, file.id).run();
     return err(msg, 502);
   }
   if (!resp.ok) {
     const msg = `backend HEAD returned ${resp.status}`;
-    await env.DB.prepare("UPDATE files SET last_upload_error = ? WHERE id = ?").bind(msg, file.id).run();
+    await env.DB.prepare("UPDATE files SET last_upload_error = ? WHERE id = ? AND upload_status = 'pending'").bind(msg, file.id).run();
     return err(msg, 409);
   }
   const contentLength = resp.headers.get("content-length");
@@ -370,7 +434,8 @@ export async function completeExternalUpload(
     return err(msg, 409);
   }
 
-  await env.DB
+  const completedAt = Math.floor(Date.now() / 1000);
+  const published = await env.DB
     .prepare(
       `UPDATE files
        SET upload_status = 'uploaded',
@@ -379,10 +444,14 @@ export async function completeExternalUpload(
            uploaded_at = ?,
            actual_size_bytes = ?,
            last_upload_error = NULL
-       WHERE id = ?`,
+       WHERE id = ? AND upload_status = 'pending' AND upload_token_hash = ?
+         AND upload_expires_at > ?`,
     )
-    .bind(now, actual, file.id)
+    .bind(completedAt, actual, file.id, file.upload_token_hash, completedAt)
     .run();
+  if (published.meta.changes === 0) {
+    return err("Upload reservation removed, expired or already completed", 409);
+  }
   return json({
     uploaded: true,
     bytes: actual,
@@ -409,7 +478,7 @@ export async function listFiles(request: Request, env: Env, roomId: string): Pro
   const files = await env.DB
     .prepare(
       `SELECT * FROM files
-       WHERE room_id = ? AND COALESCE(upload_status, 'uploaded') = 'uploaded'
+       WHERE room_id = ? AND upload_status = 'uploaded'
        ORDER BY created_at DESC LIMIT 100`,
     )
     .bind(roomId)
@@ -503,7 +572,7 @@ export async function getFilePolicy(request: Request, env: Env, lobbyId: string)
 
 // PUT /api/lobbies/:lobbyId/file-policy — update file policy (owner/admin only)
 export async function updateFilePolicy(request: Request, env: Env, lobbyId: string): Promise<Response> {
-  const tooBig = checkBodySize(request, 2 * 1024);
+  const tooBig = await checkBodySize(request, 2 * 1024);
   if (tooBig) return tooBig;
   const auth = await requireAuth(request, env);
   if (auth instanceof Response) return auth;
@@ -516,6 +585,7 @@ export async function updateFilePolicy(request: Request, env: Env, lobbyId: stri
   }
 
   const body = await request.json<Partial<FilePolicy>>();
+  if (!body || typeof body !== "object" || Array.isArray(body)) return err("Invalid file policy");
   // I3: column-name allowlist. Previously the SQL was built by interpolating
   // Object.keys(body) directly, letting a malicious admin/owner inject arbitrary
   // SQL via JSON keys (e.g. "max_size_bytes = 1, banned_at = 0 --"). Keep an
@@ -534,6 +604,11 @@ export async function updateFilePolicy(request: Request, env: Env, lobbyId: stri
   for (const k of ALLOWED) {
     const v = body[k];
     if (v !== undefined) {
+      const isFlag = k.endsWith("_enabled");
+      if (typeof v !== "number" || !Number.isSafeInteger(v) || v < 0 || (isFlag && v !== 0 && v !== 1)
+          || (k === "retain_days" && v > 3650)) {
+        return err(`Invalid ${k}`);
+      }
       fields.push(`${k} = ?`);
       values.push(v);
     }
@@ -549,34 +624,47 @@ export async function updateFilePolicy(request: Request, env: Env, lobbyId: stri
   return json({ updated: true });
 }
 
-// runR2Cleanup deletes R2-stored files whose expires_at has passed.
-// Triggered by the Workers cron (see wrangler.toml [triggers]) and exposed
-// as POST /api/admin/cleanup-r2 for manual runs in development.
-//
-// Strategy: select up to `batchSize` expired R2 rows, delete the R2 object
-// then the DB row. If the R2 delete fails we leave the DB row alone so the
-// next run retries. This trades a tiny window of orphaned DB rows on R2
-// outages for never silently dropping files we can't actually evict.
+// Metadata deletion durably enqueues R2 keys (including room/lobby cascades).
+// Keep reservations until R2 confirms deletion; a failed delete remains queued.
 export async function runR2Cleanup(env: Env, batchSize = 200): Promise<{ deleted: number; failed: number }> {
   const now = Math.floor(Date.now() / 1000);
-  const rows = await env.DB
-    .prepare(
-      `SELECT id, storage_key FROM files
+  const limit = Number.isInteger(batchSize) ? Math.max(1, Math.min(batchSize, 200)) : 200;
+  await env.DB.prepare(
+    `DELETE FROM files WHERE id IN (
+       SELECT id FROM files
        WHERE storage_location = 'r2' AND expires_at IS NOT NULL AND expires_at <= ?
-       LIMIT ?`
-    )
-    .bind(now, batchSize)
-    .all<{ id: string; storage_key: string }>();
+       ORDER BY expires_at LIMIT ?
+     )`,
+  ).bind(now, limit).run();
+  await env.DB.prepare(
+    `DELETE FROM files WHERE id IN (
+       SELECT id FROM files WHERE upload_status = 'pending'
+         AND upload_expires_at <= ? ORDER BY upload_expires_at LIMIT ?
+     )`,
+  ).bind(now, limit).run();
+  await env.DB.prepare(
+    `DELETE FROM files WHERE id IN (
+       SELECT id FROM files WHERE upload_status = 'failed' LIMIT ?
+     )`,
+  ).bind(limit).run();
 
+  const rows = await env.DB.prepare(
+    `SELECT storage_key, not_before FROM r2_deletion_queue
+     WHERE not_before <= ? ORDER BY not_before LIMIT ?`,
+  ).bind(now, limit).all<{ storage_key: string; not_before: number }>();
   let deleted = 0;
   let failed = 0;
   for (const row of rows.results ?? []) {
     try {
       await env.FILES.delete(row.storage_key);
-      await env.DB.prepare("DELETE FROM files WHERE id = ?").bind(row.id).run();
+      await env.DB.prepare("DELETE FROM r2_deletion_queue WHERE storage_key = ? AND not_before = ?")
+        .bind(row.storage_key, row.not_before).run();
       deleted++;
     } catch (e) {
-      log({ event: "r2_cleanup.delete_failed", level: "error", file_id: row.id, error: String(e) });
+      // Rotate failures so an unavailable object cannot starve the queue.
+      await env.DB.prepare("UPDATE r2_deletion_queue SET not_before = ? WHERE storage_key = ? AND not_before = ?")
+        .bind(now + 3600, row.storage_key, row.not_before).run();
+      log({ event: "r2_cleanup.delete_failed", level: "error", error: String(e) });
       failed++;
     }
   }
