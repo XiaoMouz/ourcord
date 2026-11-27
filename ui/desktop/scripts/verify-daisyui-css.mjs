@@ -11,4 +11,9 @@ for (const directive of ["@plugin", "@tailwind", "@theme"]) {
   if (css.includes(directive)) throw new Error(`unprocessed Tailwind directive in build: ${directive}`);
 }
 
+const composer = css.match(/\.message-composer textarea\{([^}]+)\}/)?.[1];
+if (!composer?.includes("resize:vertical") || !composer.includes("max-height:")) {
+  throw new Error("chat composer must allow bounded vertical resizing");
+}
+
 console.log("daisyUI CSS verified");

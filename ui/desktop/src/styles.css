@@ -155,7 +155,7 @@ button:disabled { cursor: default; }
 .message-body p { max-width: 70ch; font-size: 15px; line-height: 1.55; color: #e1e3ed; white-space: pre-wrap; overflow-wrap: anywhere; }
 .message-composer { display: flex; align-items: flex-end; flex: none; gap: 5px; margin: 7px var(--gutter) 16px; padding: 6px; border: 1px solid #494b59; border-radius: 9px; background: #353743; }
 .message-composer:focus-within { border-color: #9096d8; }
-.message-composer textarea { flex: 1; min-width: 0; min-height: 33px; max-height: 104px; field-sizing: content; resize: none; padding: 5px 0; color: #f2f3f8; line-height: 23px; }
+.message-composer textarea { flex: 1; min-width: 0; min-height: 33px; max-height: 104px; field-sizing: content; resize: vertical; padding: 5px 0; color: #f2f3f8; line-height: 23px; }
 .message-composer textarea::placeholder { color: #b7bac8; }
 .message-composer .btn, .send-message { display: grid; place-items: center; height: 33px; min-height: 33px; width: 32px; padding: 0; }
 .send-message { color: #b4b9ff; border-radius: 6px; }
