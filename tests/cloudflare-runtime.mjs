@@ -19,6 +19,7 @@ import { verifyMessageRevisions } from "./cloudflare-message-revisions.mjs";
 import { verifyBackendHealthScan } from "./cloudflare-backend-health.mjs";
 import { verifyProfileNameLimit } from "./cloudflare-profile-limits.mjs";
 import { verifyFileListScan } from "./cloudflare-file-list.mjs";
+import { verifyUploadQuotaScans } from "./cloudflare-upload-quota.mjs";
 import { verifyBackendResolutionScans } from "./cloudflare-backend-resolution.mjs";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -83,6 +84,8 @@ try {
     readFileSync(join(root, "tests/cloudflare-presence-index-worker.mjs"), "utf8"));
   writeFileSync(join(output, "service/file-list.mjs"),
     readFileSync(join(root, "tests/cloudflare-file-list-worker.mjs"), "utf8"));
+  writeFileSync(join(output, "service/upload-quota.mjs"),
+    readFileSync(join(root, "tests/cloudflare-upload-quota-worker.mjs"), "utf8"));
   writeFileSync(join(output, "service/backend-resolution.mjs"),
     readFileSync(join(root, "tests/cloudflare-backend-resolution-worker.mjs"), "utf8"));
   mf = new Miniflare({
@@ -96,6 +99,12 @@ try {
         ? { durableObjects: { SIGNAL: { className: "SignalDO", useSQLite: true } } }
         : { r2Buckets: ["FILES"], unsafeDirectSockets: [{ host: "127.0.0.1", port: 0 }] }),
     })), {
+      name: "service-upload-quota", modules: true, modulesRoot: join(output, "service"),
+      scriptPath: join(output, "service/upload-quota.mjs"),
+      compatibilityDate: "2024-01-01", compatibilityFlags: ["nodejs_compat"],
+      bindings: { ENVIRONMENT: "production", JWT_SECRET: secret },
+      d1Databases: { DB: "local-upload-quota" }, ratelimits: limits,
+    }, {
       name: "service-backend-resolution", modules: true, modulesRoot: join(output, "service"),
       scriptPath: join(output, "service/backend-resolution.mjs"),
       compatibilityDate: "2024-01-01", compatibilityFlags: ["nodejs_compat"],
@@ -143,6 +152,9 @@ try {
     db.prepare("INSERT INTO file_policies(lobby_id,max_temp_files,user_server_enabled,lobby_server_enabled) VALUES ('L1',0,0,0)"),
   ]);
   const service = await mf.getWorker("service");
+  const quotaDB = await mf.getD1Database("DB", "service-upload-quota");
+  await migrate(quotaDB, "service");
+  await verifyUploadQuotaScans({ db: quotaDB, service: await mf.getWorker("service-upload-quota"), jwt });
   await verifyMessageRevisions({ db, service: await mf.getWorker("service-presence-cost"), jwt });
   await verifyBackendResolutionScans({ db, service: await mf.getWorker("service-backend-resolution"), jwt });
   await verifyJSONBodyLimits({ mf, db, jwt });
