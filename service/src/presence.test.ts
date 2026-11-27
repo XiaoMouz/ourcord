@@ -25,6 +25,7 @@ function mockDB(plan: DBStep[]) {
   const sql: string[] = [];
   const bindings: unknown[][] = [];
   const db = {
+    batch: async (statements: D1PreparedStatement[]) => Promise.all(statements.map((statement) => statement.run())),
     prepare: vi.fn((query: string) => {
       const step = plan[index++] ?? {};
       sql.push(query);

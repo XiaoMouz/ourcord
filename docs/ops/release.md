@@ -42,6 +42,13 @@ the same steps can be run locally with the `pnpm` scripts below.
 
 ## Deploy
 
+The checked-in Worker configurations support Workers Free. Do not add
+`limits.cpu_ms` on Free: the API rejects deployment with error 100328, even
+though a local dry run succeeds. Free retains its platform CPU limit; request
+rate limits and storage quotas are unchanged. Before intentionally switching
+to Paid, configure a reviewed CPU cap in both Worker configurations, following
+[the cost controls](cloudflare-cost-audit.md).
+
 Preferred: run the **Deploy** workflow (`workflow_dispatch`) with target
 `both` / `service` / `control`. It installs deps, then per worker runs
 `pnpm run migrate` (D1 `--remote`) followed by `pnpm run deploy`.

@@ -477,8 +477,14 @@ async fn bridge_call(
     Err("desktop bridge failed".into())
 }
 
+#[tauri::command]
+fn desktop_updater_available(app: AppHandle) -> bool {
+    cfg!(not(debug_assertions)) && app.config().plugins.0.contains_key("updater")
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let context = tauri::generate_context!();
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _, _| {
             if let Some(window) = app.get_webview_window("main") {
@@ -494,7 +500,11 @@ pub fn run() {
     // Release builds receive the signed updater configuration from CI. Dev
     // builds intentionally skip the plugin so local UI work needs no key.
     #[cfg(not(debug_assertions))]
-    let builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
+    let builder = if context.config().plugins.0.contains_key("updater") {
+        builder.plugin(tauri_plugin_updater::Builder::new().build())
+    } else {
+        builder
+    };
     builder
         .manage(BridgeState::default())
         .setup(|_app| {
@@ -506,8 +516,8 @@ pub fn run() {
             }
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![bridge_call])
-        .run(tauri::generate_context!())
+        .invoke_handler(tauri::generate_handler![bridge_call, desktop_updater_available])
+        .run(context)
         .expect("error while running OurCord desktop");
 }
 

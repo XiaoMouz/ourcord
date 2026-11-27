@@ -1,13 +1,31 @@
 // Local-only workerd integration: no Cloudflare account or production resources.
 // Uses the Miniflare version already installed with control's pinned Wrangler.
+import { verifyPresenceRetirement } from "./cloudflare-presence-cost.mjs";
 import assert from "node:assert/strict";
+import { verifyErrorBoundaries } from "./cloudflare-error-boundaries.mjs";
+import { verifyJSONBodyLimits } from "./cloudflare-json-limits.mjs";
 import { createRequire } from "node:module";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { verifyProfileBatches } from "./cloudflare-profile-batches.mjs";
 import { tmpdir } from "node:os";
+import { verifyPresenceIndex } from "./cloudflare-presence-index.mjs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash, createHmac } from "node:crypto";
+import { verifyExternalUploadFinalization } from "./cloudflare-external-uploads.mjs";
+import { verifyRoomReorder } from "./cloudflare-room-reorder.mjs";
+import { verifyInternalReplay } from "./cloudflare-internal-replay.mjs";
+import { verifyMessageRevisions } from "./cloudflare-message-revisions.mjs";
+import { verifyBackendHealthScan } from "./cloudflare-backend-health.mjs";
+import { verifyProfileNameLimit } from "./cloudflare-profile-limits.mjs";
+import { verifyFileListScan } from "./cloudflare-file-list.mjs";
+import { verifyDeviceRevocation } from "./cloudflare-device-revoke.mjs";
+import { verifyControlCors } from "./cloudflare-control-cors.mjs";
+import { verifyStatusCounts } from "./cloudflare-status-count.mjs";
+import { verifyUploadQuotaScans } from "./cloudflare-upload-quota.mjs";
+import { verifyBackendResolutionScans } from "./cloudflare-backend-resolution.mjs";
+import { createRevokeGate, verifyDeviceRotationRace } from "./cloudflare-device-rotation.mjs";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const require = createRequire(join(root, "control/package.json"));
@@ -19,6 +37,7 @@ const limits = Object.fromEntries([5, 10, 20, 30, 60, 120].map((n) => [
   `RATE_LIMIT_${n}`, { simple: { limit: n, period: 60 } },
 ]));
 let mf;
+const revokeGate = createRevokeGate();
 const sockets = [];
 
 function sqlStatements(sql) {
@@ -49,6 +68,22 @@ function jwt(sub = "u1") {
   return `${data}.${createHmac("sha256", secret).update(data).digest("base64url")}`;
 }
 
+// Native limits use wall-clock minute buckets. Repeat the whole scenario on a
+// fresh client IP if it crosses a reset; assertions remain strict in a stable
+// window, and every attempt seeds its own valid pending capability.
+async function withinRateLimitWindow(run) {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const windowID = Math.floor(Date.now() / 60_000);
+    try {
+      await run(attempt);
+      if (windowID === Math.floor(Date.now() / 60_000)) return;
+    } catch (error) {
+      if (windowID === Math.floor(Date.now() / 60_000)) throw error;
+    }
+  }
+  throw new Error("native rate limit scenario could not finish in one minute window");
+}
+
 try {
   for (const module of ["control", "service"]) {
     const moduleRequire = createRequire(join(root, module, "package.json"));
@@ -59,20 +94,102 @@ try {
       cwd: join(root, module), stdio: "pipe", env: { ...process.env, WRANGLER_SEND_METRICS: "false" },
     });
   }
+  writeFileSync(join(output, "service/room-append-race.mjs"),
+    readFileSync(join(root, "tests/cloudflare-room-append-worker.mjs"), "utf8"));
+  writeFileSync(join(output, "service/presence-cost.mjs"),
+    readFileSync(join(root, "tests/cloudflare-presence-cost-worker.mjs"), "utf8"));
+  writeFileSync(join(output, "service/service-under-test.mjs"),
+    readFileSync(join(output, "service/index.js"), "utf8"));
+  writeFileSync(join(output, "service/backend-health.mjs"),
+    readFileSync(join(root, "tests/cloudflare-backend-health-worker.mjs"), "utf8"));
+  writeFileSync(join(output, "service/presence-index.mjs"),
+    readFileSync(join(root, "tests/cloudflare-presence-index-worker.mjs"), "utf8"));
+  writeFileSync(join(output, "service/file-list.mjs"),
+    readFileSync(join(root, "tests/cloudflare-file-list-worker.mjs"), "utf8"));
+  writeFileSync(join(output, "control/control-under-test.mjs"), readFileSync(join(output, "control/index.js"), "utf8"));
+  writeFileSync(join(output, "control/device-revoke.mjs"), readFileSync(join(root, "tests/cloudflare-device-revoke-worker.mjs"), "utf8"));
+  writeFileSync(join(output, "control/status-count.mjs"), readFileSync(join(root, "tests/cloudflare-status-count-worker.mjs"), "utf8"));
+  writeFileSync(join(output, "service/upload-quota.mjs"),
+    readFileSync(join(root, "tests/cloudflare-upload-quota-worker.mjs"), "utf8"));
+  writeFileSync(join(output, "service/backend-resolution.mjs"),
+    readFileSync(join(root, "tests/cloudflare-backend-resolution-worker.mjs"), "utf8"));
   mf = new Miniflare({
     cf: false,
-    workers: ["control", "service"].map((name) => ({
+    workers: [...["control", "service"].map((name) => ({
       name, modules: true, modulesRoot: join(output, name), scriptPath: join(output, name, "index.js"),
       compatibilityDate: "2024-01-01", compatibilityFlags: ["nodejs_compat"],
-      bindings: { ENVIRONMENT: "production", JWT_SECRET: secret, R2_MAX_BYTES: "10485760", R2_MAX_FILES: "2" },
+      bindings: { ENVIRONMENT: "production", JWT_SECRET: secret, SERVICE_INTERNAL_TOKEN: secret, R2_MAX_BYTES: "10485760", R2_MAX_FILES: "2" },
       d1Databases: { DB: `local-${name}` }, kvNamespaces: ["KV"], ratelimits: limits,
       ...(name === "control"
         ? { durableObjects: { SIGNAL: { className: "SignalDO", useSQLite: true } } }
-        : { r2Buckets: ["FILES"] }),
-    })),
+        : { r2Buckets: ["FILES"], unsafeDirectSockets: [{ host: "127.0.0.1", port: 0 }] }),
+    })), {
+      name: "control-device-revoke", modules: true, modulesRoot: join(output, "control"),
+      scriptPath: join(output, "control/device-revoke.mjs"),
+      compatibilityDate: "2024-01-01", compatibilityFlags: ["nodejs_compat"],
+      bindings: { ENVIRONMENT: "production", JWT_SECRET: secret },
+      d1Databases: { DB: "local-control" }, ratelimits: limits,
+      outboundService: () => revokeGate.fetch(),
+    }, {
+      name: "control-cors", modules: true, modulesRoot: join(output, "control"),
+      scriptPath: join(output, "control/index.js"),
+      compatibilityDate: "2024-01-01", compatibilityFlags: ["nodejs_compat"],
+      // Development email delivery is local logging only; native rate gates remain enabled.
+      bindings: { ENVIRONMENT: "development", JWT_SECRET: secret, ADMIN_USER_IDS: "cors-operator" },
+      d1Databases: { DB: "local-control-cors" }, kvNamespaces: { KV: "local-control-cors" }, ratelimits: limits,
+    }, {
+      name: "control-status-count", modules: true, modulesRoot: join(output, "control"),
+      scriptPath: join(output, "control/status-count.mjs"),
+      compatibilityDate: "2024-01-01", compatibilityFlags: ["nodejs_compat"],
+      bindings: { ENVIRONMENT: "production", JWT_SECRET: secret, ADMIN_USER_IDS: "status-operator" },
+      d1Databases: { DB: "local-control-status-count" }, ratelimits: limits,
+    }, {
+      name: "service-upload-quota", modules: true, modulesRoot: join(output, "service"),
+      scriptPath: join(output, "service/upload-quota.mjs"),
+      compatibilityDate: "2024-01-01", compatibilityFlags: ["nodejs_compat"],
+      bindings: { ENVIRONMENT: "production", JWT_SECRET: secret },
+      d1Databases: { DB: "local-upload-quota" }, ratelimits: limits,
+    }, {
+      name: "service-backend-resolution", modules: true, modulesRoot: join(output, "service"),
+      scriptPath: join(output, "service/backend-resolution.mjs"),
+      compatibilityDate: "2024-01-01", compatibilityFlags: ["nodejs_compat"],
+      bindings: { ENVIRONMENT: "development", JWT_SECRET: secret },
+      d1Databases: { DB: "local-service" }, r2Buckets: ["FILES"],
+    }, {
+      name: "service-backend-health", modules: true, modulesRoot: join(output, "service"),
+      scriptPath: join(output, "service/backend-health.mjs"),
+      compatibilityDate: "2024-01-01", compatibilityFlags: ["nodejs_compat"],
+      d1Databases: { DB: "local-service" }, r2Buckets: ["FILES"],
+      outboundService: () => new Response(null, { status: 200 }),
+    }, {
+      name: "service-file-list", modules: true, modulesRoot: join(output, "service"),
+      scriptPath: join(output, "service/file-list.mjs"),
+      compatibilityDate: "2024-01-01", compatibilityFlags: ["nodejs_compat"],
+      bindings: { ENVIRONMENT: "production", JWT_SECRET: secret },
+      d1Databases: { DB: "local-service" },
+    }, {
+      name: "service-presence-cost", modules: true, modulesRoot: join(output, "service"),
+      scriptPath: join(output, "service/presence-cost.mjs"),
+      compatibilityDate: "2024-01-01", compatibilityFlags: ["nodejs_compat"],
+      bindings: { ENVIRONMENT: "production", JWT_SECRET: secret },
+      d1Databases: { DB: "local-service" },
+    }, {
+      name: "service-room-append-race", modules: true, modulesRoot: join(output, "service"),
+      scriptPath: join(output, "service/room-append-race.mjs"),
+      compatibilityDate: "2024-01-01", compatibilityFlags: ["nodejs_compat"],
+      bindings: { ENVIRONMENT: "production", JWT_SECRET: secret },
+      d1Databases: { DB: "local-service" }, ratelimits: limits,
+    }, {
+      name: "service-presence-index", modules: true, modulesRoot: join(output, "service"),
+      scriptPath: join(output, "service/presence-index.mjs"),
+      compatibilityDate: "2024-01-01", compatibilityFlags: ["nodejs_compat"],
+      bindings: { ENVIRONMENT: "production", JWT_SECRET: secret },
+      d1Databases: { DB: "local-service" }, ratelimits: limits,
+    }],
   });
   const db = await mf.getD1Database("DB", "service");
   await migrate(db, "service");
+  await verifyBackendHealthScan({ db, worker: await mf.getWorker("service-backend-health") });
   await db.batch([
     db.prepare("INSERT INTO lobbies VALUES ('L1','test','u1',NULL,1)"),
     db.prepare("INSERT INTO rooms(id,lobby_id,name) VALUES ('R1','L1','files'), ('R2','L1','general')"),
@@ -80,6 +197,16 @@ try {
     db.prepare("INSERT INTO file_policies(lobby_id,max_temp_files,user_server_enabled,lobby_server_enabled) VALUES ('L1',0,0,0)"),
   ]);
   const service = await mf.getWorker("service");
+  const quotaDB = await mf.getD1Database("DB", "service-upload-quota");
+  await migrate(quotaDB, "service");
+  await verifyUploadQuotaScans({ db: quotaDB, service: await mf.getWorker("service-upload-quota"), jwt });
+  await verifyMessageRevisions({ db, service: await mf.getWorker("service-presence-cost"), jwt });
+  await verifyBackendResolutionScans({ db, service: await mf.getWorker("service-backend-resolution"), jwt });
+  await verifyJSONBodyLimits({ mf, db, jwt });
+  await verifyFileListScan({ db, service, metered: await mf.getWorker("service-file-list"), jwt });
+  await verifyPresenceIndex({ db, service: await mf.getWorker("service-presence-index"), jwt });
+  await verifyInternalReplay({ service, db, secret });
+  await verifyRoomReorder({ service, db, jwt });
   const call = (path, method = "GET", body) => service.fetch(`https://service.test${path}`, {
     method, headers: { Authorization: `Bearer ${jwt()}`, "Content-Type": "application/json" }, body,
   });
@@ -92,6 +219,59 @@ try {
   assert.deepEqual(deletions.map((response) => response.status).sort(), [200, 400]);
   assert.equal((await db.prepare("SELECT COUNT(*) AS n FROM rooms WHERE lobby_id = 'Ldelete'").first()).n, 1);
   console.log("PASS workerd: concurrent owner room deletion preserves the last room");
+  await db.prepare("INSERT INTO rooms(id,lobby_id,name,position) VALUES ('Rpatch','L1','original',0)").run();
+  // Deterministically inject a rename after the handler's SELECT but before
+  // its position write. A full-row write would overwrite this intervening edit.
+  await db.prepare(`CREATE TRIGGER test_room_patch_interleaving BEFORE UPDATE OF position ON rooms
+    WHEN OLD.id = 'Rpatch'
+    BEGIN UPDATE rooms SET name = 'renamed' WHERE id = OLD.id; END`).run();
+  const reordered = await call("/api/rooms/Rpatch", "PATCH", JSON.stringify({ position: 7 }));
+  assert.equal(reordered.status, 200);
+  const reorderedRoom = await reordered.json();
+  assert.equal(reorderedRoom.name, "renamed");
+  assert.equal(reorderedRoom.position, 7);
+  assert.deepEqual(
+    await db.prepare("SELECT name,position FROM rooms WHERE id = 'Rpatch'").first(),
+    { name: "renamed", position: 7 },
+  );
+  await db.prepare("DROP TRIGGER test_room_patch_interleaving").run();
+  const renamed = await call("/api/rooms/Rpatch", "PATCH", JSON.stringify({ name: "final" }));
+  assert.equal(renamed.status, 200);
+  assert.equal((await renamed.json()).position, 7);
+  const unchanged = await call("/api/rooms/Rpatch", "PATCH", "{}");
+  assert.equal(unchanged.status, 200);
+  assert.equal((await unchanged.json()).name, "final");
+  assert.equal((await call("/api/rooms/Rpatch", "DELETE")).status, 200);
+  console.log("PASS workerd: partial room PATCH preserves intervening edits and returns stored values");
+  await db.batch([
+    db.prepare("INSERT INTO lobbies VALUES ('Lappend','append race','u1',NULL,1)"),
+    db.prepare("INSERT INTO lobby_members(lobby_id,user_id,role,joined_at) VALUES ('Lappend','u1','owner',1), ('Lappend','u2','admin',1)"),
+    db.prepare("INSERT INTO rooms(id,lobby_id,name,position) VALUES ('Rappend','Lappend','general',0)"),
+  ]);
+  let lastAppendPosition = 0;
+  const roomAppendService = await mf.getWorker("service-room-append-race");
+  for (const type of ["text", "voice"]) {
+    const responses = await Promise.all(["u1", "u2"].map((user) => roomAppendService.fetch("https://service.test/api/lobbies/Lappend/rooms", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${jwt(user)}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ name: `${type}-${user}`, type }),
+    })));
+    assert.deepEqual(responses.map((response) => response.status), [201, 201]);
+    const rooms = await Promise.all(responses.map((response) => response.json()));
+    assert.deepEqual(rooms.map((room) => room.position).sort((a, b) => a - b),
+      [lastAppendPosition + 1, lastAppendPosition + 2]);
+    for (const room of rooms) {
+      assert.equal((await db.prepare("SELECT position FROM rooms WHERE id = ?").bind(room.id).first()).position, room.position);
+      if (type === "voice") assert.equal(room.vpn_namespace, `lobby-Lappend-${room.id}-voice`);
+      else assert.equal(room.vpn_namespace, undefined);
+    }
+    lastAppendPosition += 2;
+  }
+  const explicitRoom = await call("/api/lobbies/Lappend/rooms", "POST",
+    JSON.stringify({ name: "explicit", type: "text", position: 0 }));
+  assert.equal(explicitRoom.status, 201);
+  assert.equal((await explicitRoom.json()).position, 0);
+  console.log("PASS workerd: concurrent room appends return distinct stored positions; explicit zero remains supported");
   await db.prepare("INSERT INTO rooms(id,lobby_id,name) VALUES ('Rlimits','L1','limits')").run();
   await db.batch(Array.from({ length: 105 }, (_, index) => db.prepare(
     "INSERT INTO messages(id,room_id,user_id,content,created_at) VALUES (?, 'Rlimits', 'u1', 'page bound', 100)"
@@ -132,6 +312,44 @@ try {
     assert.deepEqual((await response.json()).messages, []);
   }
   console.log("PASS workerd: same-second message pagination, chronological ordering and room-scoped cursors");
+  await db.prepare("INSERT INTO rooms(id,lobby_id,name) VALUES ('Rindex','L1','index bounds')").run();
+  const burstIDs = Array.from({ length: 120 }, (_, i) => `burst-${String(i).padStart(3, "0")}`);
+  await db.batch(burstIDs.map((id) => db.prepare(
+    "INSERT INTO messages(id,room_id,user_id,content,created_at) VALUES (?,'Rindex','u1','burst',100)",
+  ).bind(id)));
+  // Measure the history SQL separately from authorization reads. The SQLite
+  // query-plan tests also inspect the actual handler's generated statements.
+  const historyQueries = [
+    ["", "SELECT * FROM messages WHERE room_id = ? ORDER BY created_at DESC, id DESC LIMIT ?", ["Rindex", 50], 70],
+    ["?before=burst-060&before_created_at=100", "SELECT * FROM messages WHERE room_id = ? AND (created_at, id) < (?, ?) ORDER BY created_at DESC, id DESC LIMIT ?", ["Rindex", 100, "burst-060", 50], 10],
+    ["?before=burst-060", "SELECT * FROM messages WHERE room_id = ? AND (created_at, id) < ((SELECT created_at FROM messages WHERE id = ? AND room_id = ?), ?) ORDER BY created_at DESC, id DESC LIMIT ?", ["Rindex", "burst-060", "Rindex", "burst-060", 50], 10],
+  ];
+  for (const [query, sql, params, start] of historyQueries) {
+    const result = await db.prepare(sql).bind(...params).all();
+    console.log(`D1 history ${query || "latest"}: ${result.meta.rows_read} rows read for ${result.results.length} results`);
+    assert(result.meta.rows_read <= 55, "a 50-message page must seek through the full cursor index");
+    assert.deepEqual(result.results.map((message) => message.id).reverse(), burstIDs.slice(start, start + 50));
+    const response = await call(`/api/rooms/Rindex/messages${query}`);
+    assert.equal(response.status, 200);
+    assert.deepEqual((await response.json()).messages.map((message) => message.id), burstIDs.slice(start, start + 50));
+  }
+  assert.equal((await call("/api/rooms/Rindex", "DELETE")).status, 200);
+  console.log("PASS workerd: same-second message pages use bounded D1 reads and match API ordering");
+  const cursorPage = await (await call("/api/rooms/R2/messages?limit=50")).json();
+  const boundaryMessage = cursorPage.messages[0];
+  assert.equal(boundaryMessage.id, historyIDs[55]);
+  assert.equal((await call(`/api/rooms/R2/messages/${boundaryMessage.id}`, "DELETE")).status, 200);
+  const afterDeletion = await call(`/api/rooms/R2/messages?limit=50&before=${boundaryMessage.id}&before_created_at=${boundaryMessage.created_at}`);
+  assert.equal(afterDeletion.status, 200);
+  const olderAfterDeletion = (await afterDeletion.json()).messages;
+  assert.deepEqual(olderAfterDeletion.map((message) => message.id), historyIDs.slice(5, 55));
+  const tailBoundary = olderAfterDeletion[0];
+  const historyTail = await call(`/api/rooms/R2/messages?limit=50&before=${tailBoundary.id}&before_created_at=${tailBoundary.created_at}`);
+  assert.deepEqual((await historyTail.json()).messages.map((message) => message.id), ["older", ...historyIDs.slice(0, 5)]);
+  for (const timestamp of ["-1", "1.5", "9007199254740992"]) {
+    assert.equal((await call(`/api/rooms/R2/messages?before=${boundaryMessage.id}&before_created_at=${timestamp}`)).status, 400);
+  }
+  console.log("PASS workerd: deleted message cursor retains older history, including same-second boundaries and page limits");
   const initiated = await call("/api/rooms/R1/files", "POST", JSON.stringify({
     filename: "smoke.bin", size_bytes: 1024 * 1024, mime_type: "application/octet-stream",
   }));
@@ -211,6 +429,17 @@ try {
   const controlDB = await mf.getD1Database("DB", "control");
   await migrate(controlDB, "control");
   const control = await mf.getWorker("control");
+  await verifyDeviceRevocation({ db: controlDB, control: await mf.getWorker("control-device-revoke"), jwt });
+  const corsDB = await mf.getD1Database("DB", "control-cors");
+  await migrate(corsDB, "control");
+  await verifyControlCors({ control: await mf.getWorker("control-cors"), db: corsDB, kv: await mf.getKVNamespace("KV", "control-cors"), jwt });
+  await verifyErrorBoundaries({ mf, service, db, controlDB, jwt });
+  const statusCountDB = await mf.getD1Database("DB", "control-status-count");
+  await migrate(statusCountDB, "control");
+  await verifyStatusCounts({ db: statusCountDB, control: await mf.getWorker("control-status-count"), jwt });
+  await verifyProfileBatches({ control, controlDB, service, db, jwt });
+  await verifyDeviceRotationRace({ db: controlDB, control: await mf.getWorker("control-device-revoke"), gate: revokeGate, jwt });
+  await verifyProfileNameLimit({ control, controlDB, jwt });
   const kv = await mf.getKVNamespace("KV", "control");
   const verifier = "v".repeat(43);
   const challenge = createHash("sha256").update(verifier).digest("base64url");
@@ -250,52 +479,58 @@ try {
   console.log("PASS workerd: abandoned desktop codes cleaned in bounded batches; valid PKCE exchange remains one-time");
   // This public endpoint ordinarily executes four D1 queries. Once blocked,
   // the native limiter rejects it before any queries or KV counters.
-  const statuses = [];
-  for (let i = 0; i < 65; i++) {
-    statuses.push((await control.fetch("https://control.test/api/control/status")).status);
-  }
-  assert(statuses.includes(200));
-  assert(statuses.includes(429));
-  assert.equal((await kv.list({ prefix: "ratelimit:" })).keys.length, 0);
+  await withinRateLimitWindow(async (attempt) => {
+    const statuses = [];
+    for (let i = 0; i < 65; i++) {
+      statuses.push((await control.fetch("https://control.test/api/control/status", { headers: { "CF-Connecting-IP": `192.0.2.${20 + attempt}` } })).status);
+    }
+    assert(statuses.includes(200));
+    assert(statuses.includes(429));
+    assert.equal((await kv.list({ prefix: "ratelimit:" })).keys.length, 0);
+  });
   console.log("PASS workerd: native rate limiter returns 429 without KV writes");
 
-  const confirmationURL = "https://control.test/api/auth/desktop/magic/confirm";
-  const confirmationCall = (token, ip = "192.0.2.10") => control.fetch(confirmationURL, {
-    method: "POST", redirect: "manual", headers: { "CF-Connecting-IP": ip },
-    body: new URLSearchParams({ token }),
+  await withinRateLimitWindow(async (attempt) => {
+    const blockedIP = `192.0.2.${30 + attempt * 2}`;
+    const allowedIP = `192.0.2.${31 + attempt * 2}`;
+    const confirmationURL = "https://control.test/api/auth/desktop/magic/confirm";
+    const confirmationCall = (token, ip = blockedIP) => control.fetch(confirmationURL, {
+      method: "POST", redirect: "manual", headers: { "CF-Connecting-IP": ip },
+      body: new URLSearchParams({ token }),
+    });
+    const confirmationStatuses = [];
+    for (let i = 0; i < 32; i++) {
+      confirmationStatuses.push((await confirmationCall(i.toString(16).padStart(64, "0"))).status);
+    }
+    assert(confirmationStatuses.includes(400));
+    assert(confirmationStatuses.includes(429), "random confirmation tokens must encounter the native storage gate");
+    const confirmationToken = "e".repeat(64);
+    const confirmationVerifier = "w".repeat(43);
+    const confirmationKey = `desktop_magic:${createHash("sha256").update(confirmationToken).digest("base64url")}`;
+    const pendingCapability = JSON.stringify({
+      email: "confirmation@example.test",
+      challenge: createHash("sha256").update(confirmationVerifier).digest("base64url"),
+    });
+    await kv.put(confirmationKey, pendingCapability, { expirationTtl: 600 });
+    const blockedConfirmation = await confirmationCall(confirmationToken);
+    assert.equal(blockedConfirmation.status, 429);
+    assert.equal(blockedConfirmation.headers.get("Retry-After"), "60");
+    assert.equal(await kv.get(confirmationKey), pendingCapability, "throttling must not consume a valid pending login");
+    const preview = await control.fetch(`${confirmationURL}?token=${confirmationToken}`, {
+      headers: { "CF-Connecting-IP": blockedIP },
+    });
+    assert.equal(preview.status, 200);
+    assert.equal(await kv.get(confirmationKey), pendingCapability);
+    const allowedConfirmation = await confirmationCall(confirmationToken, allowedIP);
+    assert.equal(allowedConfirmation.status, 303);
+    assert.equal(await kv.get(confirmationKey), null);
+    const confirmedCode = new URL(allowedConfirmation.headers.get("Location")).searchParams.get("code");
+    const exchangedConfirmation = await control.fetch("https://control.test/api/auth/desktop/exchange", {
+      method: "POST", headers: { "Content-Type": "application/json", "CF-Connecting-IP": allowedIP },
+      body: JSON.stringify({ code: confirmedCode, code_verifier: confirmationVerifier }),
+    });
+    assert.equal(exchangedConfirmation.status, 200);
   });
-  const confirmationStatuses = [];
-  for (let i = 0; i < 32; i++) {
-    confirmationStatuses.push((await confirmationCall(i.toString(16).padStart(64, "0"))).status);
-  }
-  assert(confirmationStatuses.includes(400));
-  assert(confirmationStatuses.includes(429), "random confirmation tokens must encounter the native storage gate");
-  const confirmationToken = "e".repeat(64);
-  const confirmationVerifier = "w".repeat(43);
-  const confirmationKey = `desktop_magic:${createHash("sha256").update(confirmationToken).digest("base64url")}`;
-  const pendingCapability = JSON.stringify({
-    email: "confirmation@example.test",
-    challenge: createHash("sha256").update(confirmationVerifier).digest("base64url"),
-  });
-  await kv.put(confirmationKey, pendingCapability, { expirationTtl: 600 });
-  const blockedConfirmation = await confirmationCall(confirmationToken);
-  assert.equal(blockedConfirmation.status, 429);
-  assert.equal(blockedConfirmation.headers.get("Retry-After"), "60");
-  assert.equal(await kv.get(confirmationKey), pendingCapability, "throttling must not consume a valid pending login");
-  const preview = await control.fetch(`${confirmationURL}?token=${confirmationToken}`, {
-    headers: { "CF-Connecting-IP": "192.0.2.10" },
-  });
-  assert.equal(preview.status, 200);
-  assert.equal(await kv.get(confirmationKey), pendingCapability);
-  const allowedConfirmation = await confirmationCall(confirmationToken, "192.0.2.11");
-  assert.equal(allowedConfirmation.status, 303);
-  assert.equal(await kv.get(confirmationKey), null);
-  const confirmedCode = new URL(allowedConfirmation.headers.get("Location")).searchParams.get("code");
-  const exchangedConfirmation = await control.fetch("https://control.test/api/auth/desktop/exchange", {
-    method: "POST", headers: { "Content-Type": "application/json", "CF-Connecting-IP": "192.0.2.11" },
-    body: JSON.stringify({ code: confirmedCode, code_verifier: confirmationVerifier }),
-  });
-  assert.equal(exchangedConfirmation.status, 200);
   console.log("PASS workerd: confirmation probes limited, blocked token preserved, preview and valid PKCE login succeed");
 
   const namespace = await mf.getDurableObjectNamespace("SIGNAL", "control");
@@ -346,6 +581,8 @@ try {
   assert.match(jsonDownloaded.headers.get("Content-Disposition"), /^attachment;/);
   assert.equal(await jsonDownloaded.text(), jsonContent);
   console.log("PASS workerd: R2 JSON attachments retain their bytes and attachment disposition");
+  await verifyExternalUploadFinalization(db, call, service);
+  await verifyPresenceRetirement({ db, service: await mf.getWorker("service-presence-cost"), jwt });
 } finally {
   for (const ws of sockets) { try { ws.close(1000, "test complete"); } catch {} }
   await mf?.dispose();
