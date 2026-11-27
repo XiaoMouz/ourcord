@@ -87,6 +87,21 @@ describe("ChatPane composer", () => {
     expect(vi.mocked(bridge).mock.calls.filter(([method]) => method === "messages.send")).toHaveLength(0);
   });
 
+  it("waits for a fresh Enter press after the held IME confirmation key repeats", async () => {
+    await edit("中文候选");
+    const key = (extra: KeyboardEventInit) => new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true, ...extra });
+    const repeat = key({ repeat: true });
+    await act(async () => {
+      input().dispatchEvent(key({ isComposing: true }));
+      input().dispatchEvent(new CompositionEvent("compositionend", { bubbles: true }));
+      input().dispatchEvent(repeat);
+    });
+    expect(bridge).not.toHaveBeenCalledWith("messages.send", expect.anything());
+    expect(repeat.defaultPrevented).toBe(true);
+    await act(async () => { input().dispatchEvent(key({})); });
+    expect(bridge).toHaveBeenCalledWith("messages.send", { room_id: "room", content: "中文候选" });
+  });
+
   it("preserves text typed while an earlier message is in flight", async () => {
     await edit("First message");
     await act(async () => submit());

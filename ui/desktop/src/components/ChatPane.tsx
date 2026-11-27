@@ -211,7 +211,11 @@ export default function ChatPane({ room, myUserID, canModerate, getName, ensureN
       </IconButton>
       <textarea className="textarea min-h-12 max-h-40 min-w-0 flex-1 resize-y" rows={2} value={draft}
         onChange={(e) => { draftRevision.current += 1; setDraft(e.target.value); }}
-        onKeyDown={(e) => { if (shouldSendMessage(e.nativeEvent)) { e.preventDefault(); void send(); } }}
+          onKeyDown={(e) => {
+            if (!shouldSendMessage(e.nativeEvent)) return;
+            e.preventDefault();
+            if (!e.repeat) void send();
+          }}
         aria-label={`发送到 #${room.name}`} title="Enter 发送，Shift+Enter 换行"
         placeholder={uploading ? "上传中…" : `发送到 #${room.name}（Shift+Enter 换行）`} maxLength={4000} disabled={uploading} />
       <button className="btn btn-primary" type="submit" disabled={sending || uploading || !draft.trim()}>
