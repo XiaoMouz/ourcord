@@ -31,6 +31,7 @@ func TestChangingAudioDevicesPreservesPrivacyState(t *testing.T) {
 			}
 			d := &daemon{
 				keyPair: key, table: routing.NewTable(),
+				stateDir:    t.TempDir(),
 				assignedIP4: "127.0.0.1", activeRoom: "device-change-test",
 			}
 			d.vpnActive.Store(true)
