@@ -101,6 +101,30 @@ describe("R2 budget and lifecycle (real SQLite)", () => {
     expect(usage()).toMatchObject({ reserved_files: 1, reserved_bytes: 6 });
   });
 
+  it.each([0, 30])("shares the last retention-class slot across rooms (retain_days=%s)", async (days) => {
+    db.prepare("UPDATE file_policies SET retain_days = ?, max_total_files = 2, max_temp_files = 2 WHERE lobby_id = 'L1'").run(days);
+    const expires = days === 0 ? null : 9999999999;
+    const opposite = days === 0 ? 9999999999 : null;
+    db.prepare(`INSERT INTO files(id,room_id,uploader_id,filename,storage_location,storage_key,created_at,expires_at,upload_status)
+      VALUES ('same-class','R2','u1','test.txt','user_server','files/same',1,?,'pending'),
+             ('other-lobby','R3','u1','test.txt','user_server','files/foreign',1,?,'uploaded')`).run(expires, expires);
+    db.prepare(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<50)
+      INSERT INTO files(id,room_id,uploader_id,filename,storage_location,storage_key,created_at,expires_at)
+      SELECT 'opposite-'||i,'R1','u1','test.txt','user_server','files/'||i,i,? FROM n`).run(opposite);
+    const responses = await Promise.all([initiate("R1", 1), initiate("R2", 1)]);
+    expect(responses.map((r) => r.status).sort()).toEqual([201, 409]);
+    expect(usage()).toMatchObject({ reserved_files: 1, reserved_bytes: 1 });
+  });
+
+  it.each([0, 30])("rejects a lowered quota without requiring an exact historical count (retain_days=%s)", async (days) => {
+    db.prepare("UPDATE file_policies SET retain_days = ?, max_total_files = 0, max_temp_files = 0 WHERE lobby_id = 'L1'").run(days);
+    await reservation("R1");
+    await reservation("R2");
+    expect((await updateFilePolicy(req("PUT", JSON.stringify({ max_total_files: 1, max_temp_files: 1 })), env, "L1")).status).toBe(200);
+    expect((await initiate("R1", 1)).status).toBe(409);
+    expect(usage()).toMatchObject({ reserved_files: 2 });
+  });
+
   it("enforces file count independently of byte capacity and lobby policies", async () => {
     env.R2_MAX_FILES = "1";
     db.exec("UPDATE file_policies SET max_temp_files = 0");
