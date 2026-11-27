@@ -10,6 +10,7 @@ import { EmptyState, IconButton, InitialAvatar, Tooltip, cx } from "./ui";
 
 const PAGE_SIZE = 50;
 const POLL_MS = 3000;
+const MAX_POLL_RETRY_MS = 60_000;
 type MessagePage = { messages: Message[]; deletion_revision?: number };
 
 function formatTime(createdAt: number): string {
@@ -74,7 +75,7 @@ export default function ChatPane({ room, myUserID, canModerate, getName, ensureN
     try {
       const data = await bridge<MessagePage>("messages.list", { room_id: room.id, limit: PAGE_SIZE });
       const revision = acceptRevision(data.deletion_revision, readEpoch);
-      if (revision === "stale") return;
+      if (revision === "stale") return true;
       const incoming = (data.messages ?? []).filter((message) => !deleted.has(message.id));
       if (revision === "changed") {
         setReachedStart(false);
@@ -82,7 +83,8 @@ export default function ChatPane({ room, myUserID, canModerate, getName, ensureN
       }
       setMessages((current) => mergeMessages(revision === "changed" ? [] : current, incoming));
       void ensureNames(senderIDs(incoming));
-    } catch { /* transient poll failure; the next tick retries */ }
+      return true;
+    } catch { return false; }
     finally {
       pendingMessageReads.current.delete(deleted);
       setLoaded(true);
@@ -90,16 +92,21 @@ export default function ChatPane({ room, myUserID, canModerate, getName, ensureN
   }, [room.id, ensureNames, acceptRevision]);
 
   useEffect(() => {
-    let polling = false;
+    let active = true;
+    let retryDelay = POLL_MS;
+    let timer: number;
     const pollBackground = async () => {
-      if (polling) return;
-      polling = true;
-      try { await poll(); }
-      finally { polling = false; }
+      const succeeded = await poll();
+      if (!active) return;
+      const delay = succeeded ? POLL_MS : retryDelay;
+      retryDelay = succeeded ? POLL_MS : Math.min(delay * 2, MAX_POLL_RETRY_MS);
+      timer = window.setTimeout(() => void pollBackground(), delay);
     };
     void pollBackground();
-    const timer = window.setInterval(() => void pollBackground(), POLL_MS);
-    return () => clearInterval(timer);
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+    };
   }, [poll]);
 
   // Resolve attachment ids to file metadata lazily: only hit files.list when a
