@@ -21,6 +21,7 @@ import { verifyBackendHealthScan } from "./cloudflare-backend-health.mjs";
 import { verifyProfileNameLimit } from "./cloudflare-profile-limits.mjs";
 import { verifyFileListScan } from "./cloudflare-file-list.mjs";
 import { verifyConnectivityScope } from "./cloudflare-connectivity-scope.mjs";
+import { createRoleWriteGate, verifyMemberRoleConcurrency } from "./cloudflare-member-role.mjs";
 import { verifyDeviceRevocation } from "./cloudflare-device-revoke.mjs";
 import { verifyControlCors } from "./cloudflare-control-cors.mjs";
 import { verifyStatusCounts } from "./cloudflare-status-count.mjs";
@@ -40,6 +41,7 @@ const limits = Object.fromEntries([5, 10, 20, 30, 60, 120].map((n) => [
 let mf;
 const revokeGate = createRevokeGate();
 const sockets = [];
+const roleWriteGate = createRoleWriteGate();
 
 function sqlStatements(sql) {
   const statements = [];
@@ -107,6 +109,8 @@ try {
     readFileSync(join(root, "tests/cloudflare-presence-index-worker.mjs"), "utf8"));
   writeFileSync(join(output, "service/file-list.mjs"),
     readFileSync(join(root, "tests/cloudflare-file-list-worker.mjs"), "utf8"));
+  writeFileSync(join(output, "service/member-role.mjs"),
+    readFileSync(join(root, "tests/cloudflare-member-role-worker.mjs"), "utf8"));
   writeFileSync(join(output, "control/control-under-test.mjs"), readFileSync(join(output, "control/index.js"), "utf8"));
   writeFileSync(join(output, "control/connectivity-scope.mjs"), readFileSync(join(root, "tests/cloudflare-connectivity-scope-worker.mjs"), "utf8"));
   writeFileSync(join(output, "control/device-revoke.mjs"), readFileSync(join(root, "tests/cloudflare-device-revoke-worker.mjs"), "utf8"));
@@ -138,6 +142,13 @@ try {
       compatibilityDate: "2024-01-01", compatibilityFlags: ["nodejs_compat"],
       bindings: { ENVIRONMENT: "production", JWT_SECRET: secret, SERVICE_INTERNAL_TOKEN: secret },
       d1Databases: { DB: "local-service-connectivity" },
+    }, {
+      name: "service-member-role", modules: true, modulesRoot: join(output, "service"),
+      scriptPath: join(output, "service/member-role.mjs"),
+      compatibilityDate: "2024-01-01", compatibilityFlags: ["nodejs_compat"],
+      bindings: { ENVIRONMENT: "production", JWT_SECRET: secret },
+      d1Databases: { DB: "local-member-role" },
+      outboundService: () => roleWriteGate.fetch(),
     }, {
       name: "control-device-revoke", modules: true, modulesRoot: join(output, "control"),
       scriptPath: join(output, "control/device-revoke.mjs"),
@@ -212,6 +223,9 @@ try {
     db.prepare("INSERT INTO file_policies(lobby_id,max_temp_files,user_server_enabled,lobby_server_enabled) VALUES ('L1',0,0,0)"),
   ]);
   const service = await mf.getWorker("service");
+  const roleDB = await mf.getD1Database("DB", "service-member-role");
+  await migrate(roleDB, "service");
+  await verifyMemberRoleConcurrency({ db: roleDB, service: await mf.getWorker("service-member-role"), gate: roleWriteGate, jwt });
   const quotaDB = await mf.getD1Database("DB", "service-upload-quota");
   await migrate(quotaDB, "service");
   await verifyUploadQuotaScans({ db: quotaDB, service: await mf.getWorker("service-upload-quota"), jwt });

@@ -531,10 +531,22 @@ export async function updateMemberRole(
     return err("only owner can change admin role", 403);
   }
 
-  await env.DB
-    .prepare("UPDATE lobby_members SET role = ? WHERE lobby_id = ? AND user_id = ?")
-    .bind(body.role, lobbyId, targetUserId)
+  // Roles may change while the preflight reads are in flight. Enforce the
+  // same policy atomically with the write, scoped to this lobby.
+  const updated = await env.DB
+    .prepare(`UPDATE lobby_members SET role = ?
+      WHERE lobby_id = ? AND user_id = ? AND role != 'owner'
+        AND EXISTS (
+          SELECT 1 FROM lobby_members AS caller
+          WHERE caller.lobby_id = lobby_members.lobby_id AND caller.user_id = ?
+            AND (caller.role = 'owner' OR
+              (caller.role = 'admin' AND lobby_members.role != 'admin'))
+        )`)
+    .bind(body.role, lobbyId, targetUserId, auth.sub)
     .run();
+  if ((updated.meta?.changes ?? 0) === 0) {
+    return err("Membership or permissions changed", 403);
+  }
 
   return json({ updated: true });
 }
