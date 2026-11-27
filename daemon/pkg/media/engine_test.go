@@ -154,6 +154,38 @@ func TestTwoEnginesEndToEndVoice(t *testing.T) {
 	}
 }
 
+func TestEngineStartsWithPrivacyControls(t *testing.T) {
+	fab := newFabric()
+	addr := netip.MustParseAddr("198.19.0.10")
+	e, err := Start(Config{
+		SelfKey: mustKey(t), VPN4: addr, Conn: fab.endpoint(addr),
+		CaptureSource: make(chan []int16), InputMode: InputModeOpenMic,
+		Muted: true, Deafened: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer e.Stop()
+	if status := e.Status(); !status.Muted || !status.Deafened || status.Transmitting {
+		t.Fatalf("new engine lost initial privacy controls: %+v", status)
+	}
+	frame := make([]int16, FrameSamples)
+	for i := range frame {
+		frame[i] = 1000
+	}
+	if frames := e.captureFrames(frame); len(frames) != 0 {
+		t.Fatal("new muted engine allowed its first capture frame through")
+	}
+	e.SetMute(false)
+	e.SetDeafen(false)
+	if frames := e.captureFrames(frame); len(frames) == 0 {
+		t.Fatal("explicit unmute did not resume capture")
+	}
+	if status := e.Status(); status.Muted || status.Deafened {
+		t.Fatalf("explicit controls did not clear initial privacy state: %+v", status)
+	}
+}
+
 func TestWrongKeyPeerCannotDecrypt(t *testing.T) {
 	fab := newFabric()
 	keyA, keyB, keyEve := mustKey(t), mustKey(t), mustKey(t)

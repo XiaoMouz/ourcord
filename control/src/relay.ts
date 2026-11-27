@@ -10,7 +10,7 @@ import { requireAuth, requireAdmin, generateId, checkBodySize, constantTimeEqual
 // caller to be in ADMIN_USER_IDS. Lobby-owner-issued registration is a
 // Phase-2 feature behind the service worker's permission system.
 export async function registerRelay(request: Request, env: Env): Promise<Response> {
-  const tooBig = checkBodySize(request, 4 * 1024);
+  const tooBig = await checkBodySize(request, 4 * 1024);
   if (tooBig) return tooBig;
   // Peek body first to know which auth gate to apply, then re-process with
   // the appropriate one. We can't read the body twice, so we clone for the
@@ -229,7 +229,7 @@ export async function getBannedKeys(request: Request, env: Env): Promise<Respons
 // POST /api/relay/:relay_id/deny — relay owner adds a peer-key to its denylist.
 // Body: { public_key, reason? }
 export async function denyPeerOnRelay(request: Request, env: Env, relayId: string): Promise<Response> {
-  const tooBig = checkBodySize(request, 1024);
+  const tooBig = await checkBodySize(request, 1024);
   if (tooBig) return tooBig;
   const authResult = await requireAuth(request, env);
   if (authResult instanceof Response) return authResult;
