@@ -70,6 +70,13 @@ func daemonCommand() (*exec.Cmd, error) {
 }
 
 func main() {
+	if len(os.Args) == 2 && os.Args[1] == "--configure-service" {
+		if err := configureInstalledService(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	interactive, err := svc.IsAnInteractiveSession()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
