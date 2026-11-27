@@ -3,6 +3,7 @@ package client
 import (
 	"archive/zip"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -39,17 +40,26 @@ func CollectDiagnostics(socketPath, logFile, outputPath string) error {
 	return writeDiagnosticsArchive(outputPath, socketPath, logFile, status, peers)
 }
 
-func writeDiagnosticsArchive(outputPath, socketPath, logFile string, status, peers any) error {
-	f, err := os.OpenFile(outputPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+func writeDiagnosticsArchive(outputPath, socketPath, logFile string, status, peers any) (err error) {
+	f, err := createPrivateTempOutput(filepath.Dir(outputPath))
 	if err != nil {
 		return err
 	}
-	defer f.Close()
-	if err := f.Chmod(0o600); err != nil {
+	defer func() {
+		if err != nil {
+			err = errors.Join(err, os.Remove(f.Name()))
+		}
+	}()
+	writeErr := writeDiagnosticsZIP(f, socketPath, logFile, status, peers)
+	if err := errors.Join(writeErr, f.Close()); err != nil {
 		return err
 	}
-	zw := zip.NewWriter(f)
-	defer zw.Close()
+	return replaceDiagnosticsOutput(f.Name(), outputPath)
+}
+
+func writeDiagnosticsZIP(output io.Writer, socketPath, logFile string, status, peers any) (err error) {
+	zw := zip.NewWriter(output)
+	defer func() { err = errors.Join(err, zw.Close()) }()
 
 	manifest := map[string]any{
 		"created_at":        time.Now().UTC().Format(time.RFC3339Nano),

@@ -1,0 +1,550 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>OurCord · 频道设计稿</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: #111216;
+        color: #f0f1f6;
+        font:
+          15px/1.5 "Segoe UI",
+          "Microsoft YaHei UI",
+          sans-serif;
+      }
+      .board {
+        width: 1200px;
+        height: 750px;
+        margin: 0 auto 32px;
+        display: grid;
+        grid-template-columns: 66px 218px 1fr;
+        grid-template-rows: 34px minmax(0, 1fr);
+        overflow: hidden;
+        background: #262831;
+      }
+      header,
+      .row,
+      .channel,
+      .person,
+      .top,
+      .actions,
+      .account,
+      .compose,
+      .dock,
+      .entry {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+      header {
+        grid-column: 1/-1;
+        justify-content: space-between;
+        padding: 0 16px;
+        background: #15161c;
+        color: #c3c6d4;
+        font-size: 12px;
+        font-weight: 650;
+      }
+      svg {
+        width: 19px;
+        height: 19px;
+        flex: none;
+        fill: none;
+        stroke: currentColor;
+        stroke-width: 1.8;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+      .bar {
+        display: inline-flex;
+        align-items: center;
+        gap: 2px;
+        margin-right: 6px;
+      }
+      .bar i {
+        width: 4px;
+        height: 9px;
+        border-radius: 3px;
+        background: #afb3ff;
+      }
+      .bar i:nth-child(2) {
+        height: 17px;
+      }
+      .bar i:nth-child(3) {
+        height: 12px;
+      }
+      .rail {
+        background: #191a21;
+        border-right: 1px solid #343540;
+        padding: 12px 9px;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 11px;
+      }
+      .server,
+      .control {
+        display: grid;
+        place-items: center;
+        border-radius: 15px;
+        background: #32343e;
+        color: #d4d5e1;
+      }
+      .server {
+        width: 44px;
+        height: 44px;
+        font-weight: 700;
+      }
+      .server.active {
+        background: #7479eb;
+        color: #fff;
+        position: relative;
+      }
+      .server.active:before {
+        content: "";
+        position: absolute;
+        width: 4px;
+        height: 26px;
+        background: white;
+        border-radius: 0 3px 3px 0;
+        left: -11px;
+      }
+      .rule {
+        background: #3c3e4a;
+        width: 26px;
+        height: 1px;
+      }
+      .tree {
+        background: #21232b;
+        display: flex;
+        flex-direction: column;
+        border-right: 1px solid #383a45;
+      }
+      .top {
+        height: 55px;
+        flex: none;
+        border-bottom: 1px solid #3a3c47;
+        padding: 0 18px;
+      }
+      .top b {
+        font-size: 18px;
+      }
+      .grow {
+        flex: 1;
+      }
+      .list {
+        padding: 16px 10px;
+      }
+      .group {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 10px;
+        color: #afb2c1;
+        font-size: 13px;
+        font-weight: 650;
+      }
+      .channel {
+        height: 36px;
+        padding: 0 10px;
+        border-radius: 7px;
+        color: #c5c7d3;
+      }
+      .channel.active {
+        background: #393b49;
+        color: #fff;
+      }
+      .channel svg {
+        color: #aeb1c2;
+      }
+      .roster {
+        margin: 3px 0 12px 19px;
+        border-left: 1px solid #464855;
+        padding-left: 12px;
+      }
+      .person {
+        margin: 7px 0;
+        font-size: 13px;
+      }
+      .av {
+        display: inline-grid;
+        place-items: center;
+        width: 32px;
+        height: 32px;
+        flex: none;
+        border-radius: 50%;
+        background: #9677c4;
+        color: #fff;
+        font-weight: 650;
+      }
+      .av.alt {
+        background: #428a82;
+      }
+      .av.warm {
+        background: #a96c52;
+      }
+      .roster .av {
+        width: 24px;
+        height: 24px;
+      }
+      .speaking {
+        outline: 2px solid #67dba3;
+        outline-offset: 2px;
+      }
+      .call {
+        margin-top: auto;
+        padding: 12px;
+        border-top: 1px solid #3c3e48;
+        background: #1c2525;
+      }
+      .connected {
+        color: #76e2ac;
+        font-weight: 650;
+      }
+      .muted {
+        color: #b1b5c5;
+      }
+      .small {
+        font-size: 12px;
+      }
+      .actions {
+        margin-top: 9px;
+        gap: 7px;
+      }
+      .control {
+        width: 38px;
+        height: 33px;
+        border-radius: 8px;
+      }
+      .danger {
+        background: #5d333d;
+        color: #ffafb6;
+      }
+      .account {
+        height: 58px;
+        padding: 10px 12px;
+        background: #1c1d24;
+        border-top: 1px solid #363843;
+      }
+      main {
+        display: flex;
+        flex-direction: column;
+        min-width: 0;
+      }
+      .top .tools {
+        margin-left: auto;
+        display: flex;
+        gap: 14px;
+      }
+      .tools span {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        font-size: 13px;
+      }
+      .work {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 288px;
+        min-height: 0;
+        flex: 1;
+      }
+      #conversation .work {
+        grid-template-columns: 1fr 194px;
+      }
+      .stage {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: #1d1f26;
+        padding: 20px;
+      }
+      .seats {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 12px;
+        width: 100%;
+      }
+      .seat {
+        height: 189px;
+        position: relative;
+        display: grid;
+        place-items: center;
+        border-radius: 12px;
+        background: #302e40;
+      }
+      .seat.live {
+        background: #253a37;
+        outline: 2px solid #6acb9b;
+      }
+      .seat .av {
+        width: 65px;
+        height: 65px;
+        font-size: 24px;
+      }
+      .seat.live .av {
+        box-shadow: 0 0 0 7px #324b45;
+      }
+      .seat .name {
+        position: absolute;
+        left: 12px;
+        bottom: 11px;
+        font-size: 14px;
+        font-weight: 650;
+      }
+      .seat small {
+        position: absolute;
+        right: 12px;
+        bottom: 12px;
+        color: #9ee9bd;
+        font-size: 12px;
+      }
+      .chat,
+      .members {
+        display: flex;
+        flex-direction: column;
+        min-width: 0;
+      }
+      .chat {
+        background: #292b35;
+      }
+      .side {
+        border-left: 1px solid #41434e;
+      }
+      .sub {
+        height: 49px;
+        padding: 12px 16px;
+        font-weight: 650;
+        border-bottom: 1px solid #3d3f4a;
+      }
+      .messages {
+        padding: 14px 16px;
+        flex: 1;
+      }
+      .date {
+        font-size: 11px;
+        color: #acafbd;
+        text-align: center;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .date:before,
+      .date:after {
+        content: "";
+        height: 1px;
+        background: #40424f;
+        flex: 1;
+      }
+      .entry {
+        align-items: flex-start;
+        margin: 18px 0;
+        gap: 10px;
+      }
+      .entry b {
+        font-size: 14px;
+      }
+      .entry p {
+        margin: 3px 0;
+        color: #e1e3ec;
+        line-height: 1.6;
+      }
+      time {
+        font-size: 11px;
+        color: #aaadbc;
+        margin-left: 6px;
+      }
+      .compose {
+        background: #353743;
+        border: 1px solid #484b58;
+        border-radius: 9px;
+        margin: 6px 12px 15px;
+        padding: 10px;
+        color: #b3b7c6;
+        font-size: 13px;
+      }
+      .compose svg:last-child {
+        color: #a8aaff;
+      }
+      .members {
+        background: #22242c;
+        padding: 15px 17px;
+      }
+      .members b {
+        font-size: 13px;
+        color: #c0c4d1;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="boards"></div>
+    <script>
+      const paths = {
+        voice: '<path d="M3 9h4l5-4v14l-5-4H3zM16 8a6 6 0 0 1 0 8m3-11a10 10 0 0 1 0 14"/>',
+        text: '<path d="M10 3 6 21m12-18-4 18M4 8h17M3 16h17"/>',
+        mic: '<rect x="9" y="2" width="6" height="13" rx="3"/><path d="M5 11a7 7 0 0 0 14 0m-7 7v4m-4 0h8"/>',
+        phones:
+          '<path d="M3 15v-3a9 9 0 0 1 18 0v3"/><rect x="3" y="12" width="4" height="8" rx="2"/><rect x="17" y="12" width="4" height="8" rx="2"/>',
+        leave: '<path d="M3 15c4-7 14-7 18 0l-3 3-3-2v-2a13 13 0 0 0-6 0v2l-3 2z"/>',
+        people:
+          '<circle cx="9" cy="8" r="3"/><path d="M3 20v-2a6 6 0 0 1 12 0v2m1-15a3 3 0 0 1 0 6m2 3a5 5 0 0 1 3 5"/>',
+        chat: '<path d="M21 12a8 8 0 0 1-8 8H8l-5 2 1-6a8 8 0 0 1 7-12h2a8 8 0 0 1 8 8Z"/>',
+        plus: '<path d="M12 5v14M5 12h14"/>',
+        join: '<path d="M13 4h7v16h-7m-3-13 5 5-5 5m5-5H3"/>',
+        send: '<path d="m3 3 18 9-18 9 3-9zm3 9h15"/>',
+        settings:
+          '<path d="M4 7h16M4 17h16"/><circle cx="9" cy="7" r="3"/><circle cx="15" cy="17" r="3"/>',
+      };
+      function icon(id) {
+        return `<svg viewBox="0 0 24 24" aria-hidden="true">${paths[id]}</svg>`;
+      }
+
+      function avatar(name, classes = "") {
+        return `<span class="av ${classes}">${name[0]}</span>`;
+      }
+
+      function person(name, classes = "") {
+        return `<div class="person">${avatar(name, classes)}${name}</div>`;
+      }
+
+      function message(name, classes, time, text) {
+        return `
+          <div class="entry">
+            ${avatar(name, classes)}
+            <div>
+              <b>${name}</b><time>${time}</time>
+              <p>${text}</p>
+            </div>
+          </div>`;
+      }
+
+      function chat(room, isSidebar) {
+        return `
+          <div class="chat ${isSidebar ? "side" : ""}">
+            ${isSidebar ? '<div class="sub">频道聊天</div>' : ""}
+            <div class="messages">
+              <div class="date">11 月 27 日</div>
+              ${message("林野", "alt", "20:15", "我已经进房间了，今晚从哪首开始？")}
+              ${message("小岑", "", "20:16", "从上次那张现场专辑开始吧。")}
+              ${message("林野", "alt", "20:17", "可以，我来找文件。")}
+            </div>
+            <div class="compose">
+              ${icon("plus")}
+              <span class="grow">发消息到 ${room}</span>
+              ${icon("send")}
+            </div>
+          </div>`;
+      }
+
+      function channel(kind, name, active = false) {
+        return `<div class="channel ${active ? "active" : ""}">${icon(kind)}${name}</div>`;
+      }
+
+      const serverRail = `
+        <nav class="rail">
+          <div class="server active">周</div>
+          <div class="server">深</div>
+          <i class="rule"></i>
+          <div class="server">${icon("plus")}</div>
+          <div class="server">${icon("join")}</div>
+        </nav>`;
+
+      function channelTree(inVoiceRoom) {
+        return `
+          <aside class="tree">
+            <div class="top">
+              <b class="grow">周末俱乐部</b>
+              ${icon("people")}
+            </div>
+            <div class="list">
+              <div class="group">语音房间<span>＋</span></div>
+              ${channel("voice", "听音室", inVoiceRoom)}
+              <div class="roster">
+                ${person("林野", "alt speaking")}
+                ${person("小岑")}
+              </div>
+              ${channel("voice", "休息室")}
+              <div class="group">文字房间<span>＋</span></div>
+              ${channel("text", "放映室", !inVoiceRoom)}
+              ${channel("text", "分享")}
+            </div>
+            <div class="call">
+              <div class="connected">▂▅▇　语音已连接</div>
+              <div class="small muted">听音室 · 直连 · 24 ms</div>
+              <div class="actions">
+                <i class="control">${icon("mic")}</i>
+                <i class="control">${icon("phones")}</i>
+                <i class="control danger">${icon("leave")}</i>
+              </div>
+            </div>
+            <div class="account">
+              ${avatar("小岑")}
+              <b class="grow">小岑</b>
+              ${icon("settings")}
+            </div>
+          </aside>`;
+      }
+
+      const voiceStage = `
+        <div class="stage">
+          <div class="seats">
+            <div class="seat">
+              ${avatar("小岑")}
+              <span class="name">小岑（你）</span>
+            </div>
+            <div class="seat live">
+              ${avatar("林野", "alt")}
+              <span class="name">林野</span>
+              <small>说话中</small>
+            </div>
+          </div>
+        </div>`;
+
+      const members = `
+        <aside class="members">
+          <b>在线 — 2</b>
+          ${person("小岑")}
+          ${person("林野", "alt")}
+          <br>
+          <b>离线 — 1</b>
+          ${person("阿苏", "warm")}
+        </aside>`;
+
+      function board(id) {
+        const inVoiceRoom = id === "voice";
+        const room = inVoiceRoom ? "听音室" : "放映室";
+        const chatButton = `<span>${icon("chat")}聊天</span>`;
+        const messages = chat(room, inVoiceRoom);
+
+        return `
+          <section id="${id}" class="board">
+            <header>
+              <span><span class="bar"><i></i><i></i><i></i></span>OurCord</span>
+              <span>─　　 □　　 ×</span>
+            </header>
+            ${serverRail}
+            ${channelTree(inVoiceRoom)}
+            <main>
+              <div class="top">
+                ${icon(inVoiceRoom ? "voice" : "text")}
+                <b>${room}</b>
+                <div class="tools">
+                  ${inVoiceRoom ? chatButton : ""}
+                  <span>${icon("people")}成员</span>
+                </div>
+              </div>
+              <div class="work">
+                ${inVoiceRoom ? voiceStage + messages : messages + members}
+              </div>
+            </main>
+          </section>`;
+      }
+
+      document.querySelector("#boards").innerHTML = board("voice") + board("conversation");
+    </script>
+  </body>
+</html>

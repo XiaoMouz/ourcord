@@ -1,5 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 
+import { ModalFrame } from "./components/ui";
+
 export type PromptField = { name: string; label: string; placeholder?: string; initial?: string; required?: boolean; maxLength?: number };
 export type ConfirmOpts = { title: string; message?: string; confirmLabel?: string; danger?: boolean };
 export type PromptOpts = { title: string; fields: PromptField[]; confirmLabel?: string };
@@ -56,11 +58,6 @@ function DialogHost({ pending, settle }: { pending: Pending; settle: (result: bo
   const firstInput = useRef<HTMLInputElement>(null);
 
   useEffect(() => { firstInput.current?.focus(); firstInput.current?.select(); }, []);
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") settle(null); };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [settle]);
 
   const missingRequired = pending.kind === "prompt" &&
     pending.opts.fields.some((f) => f.required && !values[f.name]?.trim());
@@ -71,13 +68,12 @@ function DialogHost({ pending, settle }: { pending: Pending; settle: (result: bo
     settle(Object.fromEntries(Object.entries(values).map(([k, v]) => [k, v.trim()])));
   }
 
-  return <div className="modal modal-open" onMouseDown={(e) => e.target === e.currentTarget && settle(null)}>
-    <section className="modal-box" role="dialog" aria-modal="true">
+  return <ModalFrame label={pending.opts.title} onClose={() => settle(null)}>
       <h2 className="text-lg font-semibold">{pending.opts.title}</h2>
       {pending.kind === "confirm" && pending.opts.message && <p className="mt-3 whitespace-pre-wrap text-sm text-base-content/60">{pending.opts.message}</p>}
       {pending.kind === "prompt" && <form className="mt-4 space-y-3" onSubmit={(e) => { e.preventDefault(); submit(); }}>
         {pending.opts.fields.map((field, index) => <fieldset className="fieldset" key={field.name}><legend className="fieldset-legend">{field.label}</legend>
-          <input className="input w-full" ref={index === 0 ? firstInput : undefined} value={values[field.name] ?? ""}
+          <input className="input w-full" aria-label={field.label} ref={index === 0 ? firstInput : undefined} value={values[field.name] ?? ""}
             placeholder={field.placeholder} maxLength={field.maxLength}
             onChange={(e) => setValues((v) => ({ ...v, [field.name]: e.target.value }))} />
         </fieldset>)}
@@ -90,6 +86,5 @@ function DialogHost({ pending, settle }: { pending: Pending; settle: (result: bo
           {pending.kind === "confirm" ? (pending.opts.confirmLabel ?? "确定") : (pending.opts.confirmLabel ?? "确定")}
         </button>
       </div>
-    </section>
-  </div>;
+  </ModalFrame>;
 }

@@ -4,7 +4,7 @@ import { pathLabel } from "../quality";
 import { relativeTime, shortKey } from "../format";
 import { Spinner } from "./Skeleton";
 import { useDialog } from "../dialog";
-import { ModalHeader, Tooltip, cx } from "./ui";
+import { ModalFrame, ModalHeader, Tooltip, cx } from "./ui";
 
 // Diagnostics + device management (mirrors the TUI's peer-detail view and the
 // CLI diagnostics/devices commands, which the desktop client lacked). Reachable
@@ -77,8 +77,7 @@ export default function DiagnosticsModal({ snapshot, close, onError }: {
   const peers = snapshot.peers ?? [];
   const t = snapshot.status?.transport;
 
-  return <div className="modal modal-open" onMouseDown={(e) => e.target === e.currentTarget && close()}>
-    <section className="modal-box max-h-[90vh] max-w-4xl overflow-hidden p-0">
+  return <ModalFrame label="连接诊断" className="diagnostics-box max-h-[90vh] max-w-4xl overflow-hidden p-0" onClose={close}>
       <ModalHeader title="连接诊断" onClose={close} />
       <div className="space-y-4 overflow-y-auto p-6" style={{ maxHeight: "calc(90vh - 5rem)" }}>
         <div className="stats stats-vertical w-full bg-base-200 shadow-sm sm:stats-horizontal">
@@ -92,7 +91,7 @@ export default function DiagnosticsModal({ snapshot, close, onError }: {
         </Tooltip></div>
 
         <section className="card card-border bg-base-200"><div className="card-body gap-3 p-5">
-          <h3 className="card-title text-base">Peer <span className="badge badge-ghost badge-sm">{peers.length}</span></h3>
+          <h3 className="card-title text-base">Peer {peers.length > 0 && <span className="badge badge-ghost badge-sm">{peers.length}</span>}</h3>
           {peers.length === 0 && <div className="py-4 text-sm text-base-content/45">暂无已连接 Peer</div>}
           <ul className="list rounded-box bg-base-100">
           {peers.map((peer) => <li key={peer.public_key} className="list-row items-center gap-3">
@@ -143,7 +142,7 @@ export default function DiagnosticsModal({ snapshot, close, onError }: {
               <strong className="flex items-center gap-2 truncate">{device.name || shortKey(device.public_key)}
                 {device.public_key === profile?.public_key && <span className="badge badge-primary badge-soft badge-xs">本机</span>}
               </strong>
-              <small className="block truncate font-mono text-base-content/45">{shortKey(device.public_key)} · {relativeTime(device.last_used)}</small>
+              <small className="block truncate font-mono text-base-content/45">{device.name && `${shortKey(device.public_key)} · `}{relativeTime(device.last_used)}</small>
             </div>
             <button className="btn btn-error btn-soft btn-sm" disabled={!profile?.public_key || device.public_key === profile.public_key} onClick={() => void revoke(device)}>吊销</button>
           </li>)}
@@ -151,6 +150,5 @@ export default function DiagnosticsModal({ snapshot, close, onError }: {
           {devices && devices.filter((d) => !d.revoked_at).length === 0 && <div className="py-4 text-sm text-base-content/45">暂无设备</div>}
         </div></section>
       </div>
-    </section>
-  </div>;
+  </ModalFrame>;
 }

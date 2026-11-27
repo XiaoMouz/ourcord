@@ -39,10 +39,7 @@ func TestEnrollDevicePersistsCredentialWithoutReturningIt(t *testing.T) {
 	if err != nil || string(data) != result.DeviceToken+"\n" {
 		t.Fatalf("stored token = %q err=%v", data, err)
 	}
-	info, err := os.Stat(path)
-	if err != nil || info.Mode().Perm() != 0o600 {
-		t.Fatalf("token mode = %v err=%v", info.Mode().Perm(), err)
-	}
+	assertPrivateOutput(t, path)
 }
 
 func TestListAndRevokeDevices(t *testing.T) {
