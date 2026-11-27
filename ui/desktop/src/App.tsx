@@ -191,6 +191,7 @@ export default function App() {
           exchanged = true;
           startupAuthFailure.current = null;
           setStartupCallbackFailed(false);
+          setAuth((current) => ({ ...current, loading: true }));
           await refreshAuth();
         } catch (e) {
           if (!exchanged) authCallbacks.current.delete(link.code);
