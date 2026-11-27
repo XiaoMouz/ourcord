@@ -101,6 +101,30 @@ describe("R2 budget and lifecycle (real SQLite)", () => {
     expect(usage()).toMatchObject({ reserved_files: 1, reserved_bytes: 6 });
   });
 
+  it.each([0, 30])("shares the last retention-class slot across rooms (retain_days=%s)", async (days) => {
+    db.prepare("UPDATE file_policies SET retain_days = ?, max_total_files = 2, max_temp_files = 2 WHERE lobby_id = 'L1'").run(days);
+    const expires = days === 0 ? null : 9999999999;
+    const opposite = days === 0 ? 9999999999 : null;
+    db.prepare(`INSERT INTO files(id,room_id,uploader_id,filename,storage_location,storage_key,created_at,expires_at,upload_status)
+      VALUES ('same-class','R2','u1','test.txt','user_server','files/same',1,?,'pending'),
+             ('other-lobby','R3','u1','test.txt','user_server','files/foreign',1,?,'uploaded')`).run(expires, expires);
+    db.prepare(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<50)
+      INSERT INTO files(id,room_id,uploader_id,filename,storage_location,storage_key,created_at,expires_at)
+      SELECT 'opposite-'||i,'R1','u1','test.txt','user_server','files/'||i,i,? FROM n`).run(opposite);
+    const responses = await Promise.all([initiate("R1", 1), initiate("R2", 1)]);
+    expect(responses.map((r) => r.status).sort()).toEqual([201, 409]);
+    expect(usage()).toMatchObject({ reserved_files: 1, reserved_bytes: 1 });
+  });
+
+  it.each([0, 30])("rejects a lowered quota without requiring an exact historical count (retain_days=%s)", async (days) => {
+    db.prepare("UPDATE file_policies SET retain_days = ?, max_total_files = 0, max_temp_files = 0 WHERE lobby_id = 'L1'").run(days);
+    await reservation("R1");
+    await reservation("R2");
+    expect((await updateFilePolicy(req("PUT", JSON.stringify({ max_total_files: 1, max_temp_files: 1 })), env, "L1")).status).toBe(200);
+    expect((await initiate("R1", 1)).status).toBe(409);
+    expect(usage()).toMatchObject({ reserved_files: 2 });
+  });
+
   it("enforces file count independently of byte capacity and lobby policies", async () => {
     env.R2_MAX_FILES = "1";
     db.exec("UPDATE file_policies SET max_temp_files = 0");
@@ -190,6 +214,19 @@ describe("R2 budget and lifecycle (real SQLite)", () => {
     expect(usage()).toMatchObject({ reserved_files: 0 });
   });
 
+  it("reads the due deletion batch in index order without sorting tied deadlines", async () => {
+    const statements = vi.spyOn(env.DB, "prepare");
+    await runR2Cleanup(env);
+    const select = statements.mock.calls.find(([sql]) =>
+      sql.startsWith("SELECT") && sql.includes("FROM r2_deletion_queue"),
+    );
+    expect(select).toBeDefined();
+    const plan = db.prepare("EXPLAIN QUERY PLAN " + select![0]).all(12345, 200) as { detail: string }[];
+    const details = plan.map((row) => row.detail).join("\n");
+    expect(details).toContain("idx_r2_deletion_due");
+    expect(details).not.toContain("TEMP B-TREE");
+  });
+
   it("does not remove a queue generation refreshed during R2 deletion", async () => {
     await reservation();
     db.exec("DELETE FROM rooms WHERE id = 'R1'");
@@ -259,7 +296,7 @@ describe("R2 budget and lifecycle (real SQLite)", () => {
     env.ENVIRONMENT = "development";
     const response = await worker.fetch(new Request("https://service.test/api/admin/init-db", { method: "POST" }), env, {} as ExecutionContext);
     expect(response.status).toBe(200);
-    expect(db.prepare("SELECT name FROM sqlite_master WHERE type = 'trigger'").all()).toHaveLength(4);
+    expect(db.prepare("SELECT name FROM sqlite_master WHERE type = 'trigger' AND name GLOB 'files_r2_*'").all()).toHaveLength(4);
   });
 
   it("migrates existing R2 reservations into usage and gives old pending rows a deadline", () => {
