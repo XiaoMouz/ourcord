@@ -109,6 +109,11 @@ describe("connectivity sequence arbitration (real SQL)", () => {
     db.exec(`INSERT INTO peers (id, user_id, public_key, name, platform, last_seen, ip4, ip6, derp_node_key)
              VALUES ('p1','u1','${A_KEY}','a','linux',0,'198.18.0.2','fd::2',''),
                     ('p2','u2','${B_KEY}','b','linux',0,'198.18.0.3','fd::3','')`);
+    // Arbitration runs after the peers acquired room leases via config refresh.
+    const now = Math.floor(Date.now() / 1000);
+    for (const key of [A_KEY, B_KEY]) {
+      db.prepare("INSERT INTO peer_presence(public_key, network_id, last_seen) VALUES (?,?,?)").run(key, NET, now);
+    }
     env = { DB: d1Over(db), KV: {} as KVNamespace, SIGNAL: {} as DurableObjectNamespace, ENVIRONMENT: "production", JWT_SECRET: SECRET } as Env;
     tokenA = await makeToken("u1");
     tokenB = await makeToken("u2");
