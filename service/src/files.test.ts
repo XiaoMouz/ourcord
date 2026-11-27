@@ -139,6 +139,30 @@ function envOf(db: D1Database, files?: R2Bucket): Env {
 }
 
 describe("initiateUpload", () => {
+  it.each([
+    ["CJK boundary", "\u6587".repeat(83) + "ab.txt", 201],
+    ["emoji boundary", "\u{1f680}".repeat(62) + "abc.txt", 201],
+    ["ASCII boundary", "a".repeat(251) + ".txt", 201],
+    ["CJK over byte limit", "\u6587".repeat(84) + ".txt", 400],
+    ["emoji over byte limit", "\u{1f680}".repeat(63) + ".txt", 400],
+    ["ASCII over byte limit", "a".repeat(252) + ".txt", 400],
+  ] as const)("enforces a portable filename byte limit: %s", async (_name, filename, status) => {
+    const db = makeDB([
+      { first: { lobby_id: "L1" } },
+      { first: { 1: 1 } },
+      { first: { ...POLICY_ALL_ON } },
+    ]);
+    const response = await initiateUpload(initReq(await makeToken(), {
+      filename, size_bytes: 1, mime_type: "text/plain",
+    }), envOf(db), "R1");
+    expect(response.status).toBe(status);
+    if (status === 400) {
+      expect(vi.mocked(db.prepare).mock.calls.some(([sql]) => sql.includes("INSERT INTO files"))).toBe(false);
+    } else {
+      expect((await response.json<{ storage_key: string }>()).storage_key.endsWith(`/${filename}`)).toBe(true);
+    }
+  });
+
   it("happy path (R2 storage) returns 201 with upload_url", async () => {
     const token = await makeToken();
     const db = makeDB([

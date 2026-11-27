@@ -24,6 +24,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/ourcord/ourcord/daemon/pkg/client"
 	"github.com/ourcord/ourcord/daemon/pkg/ipc"
@@ -768,7 +769,9 @@ func (c *cancelReadCloser) Close() error {
 
 // saveDownload writes a complete stream to a new file and returns its path.
 func (b *bridge) saveDownload(filename, fileID string, src io.Reader) (any, error) {
-	return b.saveDownloadWithLimit(filename, fileID, src, 512<<20)
+	// Match service initiateUpload's MAX_DECLARED_BYTES ceiling, including
+	// self-hosted files whose lobby policy permits more than the R2 limit.
+	return b.saveDownloadWithLimit(filename, fileID, src, 5<<30)
 }
 
 func (b *bridge) saveDownloadWithLimit(filename, fileID string, src io.Reader, limit int64) (any, error) {
@@ -840,7 +843,13 @@ func safeFilename(name string) string {
 	name = strings.NewReplacer("/", "_", "\\", "_", "\x00", "").Replace(name)
 	name = strings.TrimLeft(name, ".")
 	if len(name) > 180 {
-		name = name[len(name)-180:]
+		// Keep the suffix/extension within the byte budget without splitting
+		// a UTF-8 character or changing the path during JSON serialization.
+		start := len(name) - 180
+		for start < len(name) && !utf8.RuneStart(name[start]) {
+			start++
+		}
+		name = name[start:]
 	}
 	return name
 }
