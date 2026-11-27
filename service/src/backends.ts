@@ -158,7 +158,10 @@ export async function resolveFileBackend(
 
 export async function probeBackendHealth(baseURL: string): Promise<{ status: "healthy" | "unhealthy"; error: string | null }> {
   try {
-    const resp = await fetch(backendHealthURL(baseURL), { method: "GET" });
+    const resp = await fetch(backendHealthURL(baseURL), { method: "GET", signal: AbortSignal.timeout(5000) });
+    // Only status is needed. Release the connection even if the backend sends
+    // an endless body; otherwise later probes can exhaust fetch connections.
+    await resp.body?.cancel();
     if (resp.ok) return { status: "healthy", error: null };
     return { status: "unhealthy", error: `health returned ${resp.status}` };
   } catch (e) {
@@ -240,7 +243,7 @@ export async function runBackendHealthChecks(env: Env, batchSize = 50): Promise<
 // personal (自建) backend owned by the caller; with lobby_id it becomes the
 // lobby's (大厅) backend and requires owner/admin role there.
 export async function registerBackend(request: Request, env: Env): Promise<Response> {
-  const tooBig = checkBodySize(request, 4 * 1024);
+  const tooBig = await checkBodySize(request, 4 * 1024);
   if (tooBig) return tooBig;
   const auth = await requireAuth(request, env);
   if (auth instanceof Response) return auth;
@@ -349,7 +352,7 @@ export async function deactivateBackend(request: Request, env: Env, backendId: s
 // (the 分享 tier). Owner only; lobby backends are already visible to members
 // and cannot be shared individually.
 export async function shareBackend(request: Request, env: Env, backendId: string): Promise<Response> {
-  const tooBig = checkBodySize(request, 4 * 1024);
+  const tooBig = await checkBodySize(request, 4 * 1024);
   if (tooBig) return tooBig;
   const auth = await requireAuth(request, env);
   if (auth instanceof Response) return auth;

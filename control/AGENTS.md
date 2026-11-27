@@ -33,7 +33,7 @@
 - `SignalDO`：每个 room（peer-pair hash）一个实例，承载打洞 WebSocket。
 - 命名空间在 `wrangler.toml` 的 `[[durable_objects.bindings]]` 配置。
 - DO 内**假设上游已鉴权**——`src/index.ts` 在路由层校验 JWT + `pk` 所有权后才转发。
-- DO 状态都在内存（不持久化），实例迁移会丢；信令本就短命可接受。
+- SignalDO 使用休眠 WebSocket；session / 限流状态通过 attachment 恢复，30s offer/answer replay 通过有界 SQLite 缓存恢复。不要回退到 `server.accept()`，也不要丢失休眠后的重放语义。
 
 ## 鉴权
 

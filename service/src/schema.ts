@@ -40,6 +40,9 @@ CREATE TABLE IF NOT EXISTS lobby_presence (
     REFERENCES lobby_members(lobby_id, user_id) ON DELETE CASCADE
 );
 
+CREATE INDEX IF NOT EXISTS idx_lobby_presence_voice
+  ON lobby_presence(voice_room_id) WHERE voice_room_id IS NOT NULL;
+
 CREATE TABLE IF NOT EXISTS messages (
   id TEXT PRIMARY KEY,
   room_id TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
@@ -70,7 +73,8 @@ CREATE TABLE IF NOT EXISTS files (
   upload_expires_at INTEGER,
   uploaded_at INTEGER,
   actual_size_bytes INTEGER,
-  last_upload_error TEXT);
+  last_upload_error TEXT,
+  upload_started_at INTEGER);
 
 -- Autonomous file backends (Phase 2): user-run HTTP file servers forming the
 -- storage priority chain 自建 → 分享 → 大厅 ahead of the R2 fallback.
@@ -113,7 +117,8 @@ CREATE TABLE IF NOT EXISTS file_policies (
 );
 
 CREATE INDEX IF NOT EXISTS idx_rooms_lobby ON rooms(lobby_id);
-CREATE INDEX IF NOT EXISTS idx_messages_room ON messages(room_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_messages_room_cursor ON messages(room_id, created_at, id);
+DROP INDEX IF EXISTS idx_messages_room;
 CREATE INDEX IF NOT EXISTS idx_files_room ON files(room_id, created_at);
 -- L4: runR2Cleanup scans WHERE storage_location='r2' AND expires_at <= ?
 -- on a 5-minute cron. Without this partial index that is a full table scan
@@ -147,4 +152,55 @@ CREATE TABLE IF NOT EXISTS internal_nonces (
   expires_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_internal_nonces_expires ON internal_nonces(expires_at);
+
+-- Reservations include pending uploads and objects awaiting physical deletion.
+CREATE INDEX IF NOT EXISTS idx_files_pending_expiry
+  ON files(upload_expires_at) WHERE upload_status = 'pending';
+CREATE INDEX IF NOT EXISTS idx_files_failed
+  ON files(upload_status) WHERE upload_status = 'failed';
+
+CREATE TABLE IF NOT EXISTS r2_usage (
+  id INTEGER PRIMARY KEY CHECK(id = 1),
+  reserved_bytes INTEGER NOT NULL DEFAULT 0 CHECK(reserved_bytes >= 0),
+  reserved_files INTEGER NOT NULL DEFAULT 0 CHECK(reserved_files >= 0)
+);
+INSERT OR IGNORE INTO r2_usage (id, reserved_bytes, reserved_files)
+  SELECT 1, COALESCE(SUM(size_bytes), 0), COUNT(*) FROM files WHERE storage_location = 'r2';
+
+-- No FK: this must survive deletion of the file, room, and lobby.
+CREATE TABLE IF NOT EXISTS r2_deletion_queue (
+  storage_key TEXT PRIMARY KEY,
+  size_bytes INTEGER NOT NULL,
+  not_before INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_r2_deletion_due ON r2_deletion_queue(not_before);
+
+CREATE TRIGGER IF NOT EXISTS files_r2_queue_reserve AFTER INSERT ON r2_deletion_queue
+BEGIN
+  UPDATE r2_usage SET reserved_bytes = reserved_bytes + NEW.size_bytes,
+                      reserved_files = reserved_files + 1 WHERE id = 1;
+END;
+
+CREATE TRIGGER IF NOT EXISTS files_r2_reserve AFTER INSERT ON files
+WHEN NEW.storage_location = 'r2'
+BEGIN
+  UPDATE r2_usage SET reserved_bytes = reserved_bytes + NEW.size_bytes,
+                      reserved_files = reserved_files + 1 WHERE id = 1;
+END;
+
+CREATE TRIGGER IF NOT EXISTS files_r2_enqueue AFTER DELETE ON files
+WHEN OLD.storage_location = 'r2'
+BEGIN
+  INSERT OR IGNORE INTO r2_deletion_queue (storage_key, size_bytes, not_before)
+  VALUES (OLD.storage_key, OLD.size_bytes,
+    MAX(unixepoch(), COALESCE(OLD.upload_started_at, 0) + 660));
+  UPDATE r2_usage SET reserved_bytes = reserved_bytes - OLD.size_bytes,
+                      reserved_files = reserved_files - 1 WHERE id = 1;
+END;
+
+CREATE TRIGGER IF NOT EXISTS files_r2_release AFTER DELETE ON r2_deletion_queue
+BEGIN
+  UPDATE r2_usage SET reserved_bytes = reserved_bytes - OLD.size_bytes,
+                      reserved_files = reserved_files - 1 WHERE id = 1;
+END;
 `;

@@ -12,11 +12,34 @@ declare module "node:path" {
   export function join(...parts: string[]): string;
 }
 
+declare module "node:http" {
+  interface IncomingMessage extends AsyncIterable<Uint8Array> {
+    method?: string;
+    url?: string;
+  }
+  interface ServerResponse {
+    writeHead(status: number, headers: Record<string, string>): this;
+    end(): this;
+    destroy(): this;
+  }
+  export interface Server {
+    listen(port: number, host: string, callback: () => void): this;
+    address(): { port: number } | string | null;
+    close(callback: () => void): this;
+    closeAllConnections(): void;
+  }
+  export function createServer(handler: (request: IncomingMessage, response: ServerResponse) => void): Server;
+}
+
 declare module "node:sqlite" {
   export class DatabaseSync {
     constructor(path: string);
     exec(sql: string): void;
-    prepare(sql: string): { all(): unknown[] };
+    prepare(sql: string): {
+      all(...params: unknown[]): unknown[];
+      get(...params: unknown[]): unknown;
+      run(...params: unknown[]): { changes: number | bigint };
+    };
     close(): void;
   }
 }
