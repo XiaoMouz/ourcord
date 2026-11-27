@@ -16,6 +16,8 @@ export default function DiagnosticsModal({ snapshot, close, onError }: {
 }) {
   const dialog = useDialog();
   const [profile, setProfile] = useState<LocalProfile>();
+  const [profileError, setProfileError] = useState("");
+  const [profileAttempt, setProfileAttempt] = useState(0);
   const [devices, setDevices] = useState<Device[]>();
   const [devicesError, setDevicesError] = useState("");
   const [ping, setPing] = useState<string>("");
@@ -23,9 +25,22 @@ export default function DiagnosticsModal({ snapshot, close, onError }: {
   const [forcing, setForcing] = useState("");
 
   useEffect(() => {
+    let cancelled = false;
+    setProfile(undefined);
+    setProfileError("");
     void (async () => {
-      try { const data = await bridge<{ profile: LocalProfile }>("daemon.profile"); setProfile(data.profile); } catch { /* daemon offline */ }
+      try {
+        const data = await bridge<{ profile: LocalProfile }>("daemon.profile");
+        if (!data.profile?.public_key?.trim()) throw new Error("Local device key unavailable");
+        if (!cancelled) setProfile(data.profile);
+      } catch {
+        if (!cancelled) setProfileError("无法确认本机设备，暂不能吊销设备。请重试。");
+      }
     })();
+    return () => { cancelled = true; };
+  }, [profileAttempt]);
+
+  useEffect(() => {
     void refreshDevices();
   }, []);
 
@@ -50,6 +65,8 @@ export default function DiagnosticsModal({ snapshot, close, onError }: {
   }
 
   async function revoke(device: Device) {
+    // The account's remote device list can arrive before the local identity.
+    if (!profile?.public_key) { onError("无法确认本机设备，暂不能吊销设备。请重试。"); return; }
     if (device.public_key === profile?.public_key) { onError("不能吊销当前设备"); return; }
     const ok = await dialog.confirm({ title: `吊销设备「${device.name || device.id}」`, message: "该设备将需要重新登录。", confirmLabel: "吊销", danger: true });
     if (!ok) return;
@@ -113,6 +130,11 @@ export default function DiagnosticsModal({ snapshot, close, onError }: {
 
         <section className="card card-border bg-base-200"><div className="card-body gap-3 p-5">
           <h3 className="card-title text-base">已注册设备</h3>
+          {!profile && !profileError && <Spinner label="正在确认本机设备…" />}
+          {profileError && <div role="alert" className="alert alert-warning">
+            <span>{profileError}</span>
+            <button className="btn btn-sm" onClick={() => setProfileAttempt((attempt) => attempt + 1)}>重试本机识别</button>
+          </div>}
           {!devices && !devicesError && <Spinner label="载入设备…" />}
           {devicesError && <div role="alert" className="alert alert-error"><span>{devicesError}</span></div>}
           <ul className="list rounded-box bg-base-100">
@@ -123,7 +145,7 @@ export default function DiagnosticsModal({ snapshot, close, onError }: {
               </strong>
               <small className="block truncate font-mono text-base-content/45">{shortKey(device.public_key)} · {relativeTime(device.last_used)}</small>
             </div>
-            <button className="btn btn-error btn-soft btn-sm" disabled={device.public_key === profile?.public_key} onClick={() => void revoke(device)}>吊销</button>
+            <button className="btn btn-error btn-soft btn-sm" disabled={!profile?.public_key || device.public_key === profile.public_key} onClick={() => void revoke(device)}>吊销</button>
           </li>)}
           </ul>
           {devices && devices.filter((d) => !d.revoked_at).length === 0 && <div className="py-4 text-sm text-base-content/45">暂无设备</div>}
