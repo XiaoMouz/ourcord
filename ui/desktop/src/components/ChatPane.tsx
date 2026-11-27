@@ -3,6 +3,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { bridge, type FileRecord, type Message, type Room } from "../bridge";
 import Icon from "./Icon";
 import { RoomComposer } from "../roomComposer";
+import { shouldSendMessage } from "../composer";
 import { mergeMessages, senderIDs } from "../messages";
 import { indexMissingFiles } from "../files";
 import { formatBytes, parseAttachments } from "../format";
@@ -306,10 +307,9 @@ export default function ChatPane({ room, composers, myUserID, canModerate, getNa
       <textarea aria-label={`发送到 #${room.name}`} rows={1} value={draft}
         onChange={(e) => composer.edit(e.target.value)}
         onKeyDown={(e) => {
-          if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing && e.nativeEvent.keyCode !== 229) {
-            e.preventDefault();
-            void send();
-          }
+          if (!shouldSendMessage(e.nativeEvent)) return;
+          e.preventDefault();
+          if (!e.repeat) void send();
         }}
         title="Enter 发送，Shift+Enter 换行" placeholder={uploading ? "上传中…" : `发送到 #${room.name}`} maxLength={4000} disabled={uploading} />
       <button className="send-message" type="submit" title="发送" aria-label="发送" disabled={sending || uploading || !draft.trim()}>

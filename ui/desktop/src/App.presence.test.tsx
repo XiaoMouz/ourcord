@@ -140,6 +140,23 @@ describe("App presence writes through voice controls", () => {
     expect(vi.mocked(bridge).mock.calls.some(([method]) => method === "voice.join_network")).toBe(false);
   });
 
+  it("waits for a fresh plain Enter before sending a voice-room draft", async () => {
+    voice("A");
+    await mount();
+    const input = container.querySelector<HTMLTextAreaElement>(".channel-chat textarea")!;
+    const key = (extra: KeyboardEventInit) => new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true, ...extra });
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(input, "中文候选");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    for (const modifiers of [{ isComposing: true }, { repeat: true }, { shiftKey: true }, { ctrlKey: true }, { altKey: true }, { metaKey: true }]) {
+      await act(async () => { input.dispatchEvent(key(modifiers)); });
+      expect(bridge).not.toHaveBeenCalledWith("messages.send", expect.anything());
+    }
+    await act(async () => { input.dispatchEvent(key({})); });
+    expect(bridge).toHaveBeenCalledWith("messages.send", { room_id: "A", content: "中文候选" });
+  });
+
   it("browses text during a call and returns to the active room without reconnecting", async () => {
     voice("A");
     await mount();
