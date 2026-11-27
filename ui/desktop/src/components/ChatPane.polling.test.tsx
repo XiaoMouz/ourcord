@@ -2,7 +2,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { bridge, type Message } from "../bridge";
+import { bridge, type FileRecord, type Message } from "../bridge";
 import { DialogProvider } from "../dialog";
 import ChatPane from "./ChatPane";
 
@@ -21,6 +21,7 @@ describe("ChatPane background polling under slow responses", () => {
   let root: Root;
   let nextRead: ReturnType<typeof deferred<{ messages: Message[] }>> | undefined;
   let messages: Message[];
+  const listFiles = vi.fn<() => Promise<{ files: FileRecord[] }>>();
   const onError = vi.fn();
   const reads = () => vi.mocked(bridge).mock.calls.filter(([method]) => method === "messages.list").length;
 
@@ -28,6 +29,7 @@ describe("ChatPane background polling under slow responses", () => {
     Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
     vi.useFakeTimers();
     vi.clearAllMocks();
+    listFiles.mockReset();
     messages = [];
     nextRead = undefined;
     vi.mocked(bridge).mockImplementation(async (method, args) => {
@@ -39,6 +41,7 @@ describe("ChatPane background polling under slow responses", () => {
         }
         return { messages };
       }
+      if (method === "files.list") return listFiles();
       if (method === "messages.send") {
         messages = [{ id: "sent", room_id: "room", user_id: "me", content: String(args?.content), created_at: 1 }];
         return messages[0];
@@ -64,6 +67,36 @@ describe("ChatPane background polling under slow responses", () => {
   async function tick(ms = 3000) {
     await act(async () => { await vi.advanceTimersByTimeAsync(ms); });
   }
+
+  const attachment: FileRecord = { id: "file", room_id: "room", uploader_id: "me", filename: "notes.txt", size_bytes: 10, mime_type: "text/plain", created_at: 1 };
+  const withAttachment: Message = { id: "msg", room_id: "room", user_id: "me", content: "notes", attachments: '["file"]', created_at: 1 };
+
+  it("keeps a slow attachment lookup across successful message polls", async () => {
+    messages = [withAttachment];
+    const lookup = deferred<{ files: FileRecord[] }>();
+    listFiles.mockReturnValue(lookup.promise);
+    await mount();
+    await tick(12000);
+    expect(reads()).toBeGreaterThan(1);
+    expect(listFiles).toHaveBeenCalledTimes(1);
+    await act(async () => lookup.resolve({ files: [attachment] }));
+    expect(container.textContent).toContain("notes.txt");
+    await tick();
+    expect(listFiles).toHaveBeenCalledTimes(1);
+  });
+
+  it("backs off repeated attachment failures and recovers while messages stay healthy", async () => {
+    messages = [withAttachment];
+    listFiles.mockRejectedValueOnce(new Error("offline")).mockResolvedValueOnce({ files: [] }).mockResolvedValue({ files: [attachment] });
+    await mount();
+    await tick();
+    expect(listFiles).toHaveBeenCalledTimes(2);
+    await tick();
+    expect(listFiles).toHaveBeenCalledTimes(2);
+    await tick();
+    expect(listFiles).toHaveBeenCalledTimes(3);
+    expect(container.textContent).toContain("notes.txt");
+  });
 
   it("keeps one initial read in flight across four polling ticks", async () => {
     const pending = nextRead = deferred<{ messages: Message[] }>();
