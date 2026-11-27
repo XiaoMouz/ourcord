@@ -152,6 +152,18 @@ func (m *Manager) PeerRTTMs(peerKey string) float64 {
 	return 0
 }
 
+// PeerValidated reports whether the current connection passed its sustained probe.
+// An inactive daemon has no manager and therefore no validated transport.
+func (m *Manager) PeerValidated(peerKey string) bool {
+	if m == nil {
+		return false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	s := m.sessions[peerKey]
+	return s != nil && s.conn != nil && s.validated
+}
+
 func (m *Manager) StartPeer(ctx context.Context, peerKey string) {
 	if peerKey == "" || peerKey == m.localKey {
 		return
