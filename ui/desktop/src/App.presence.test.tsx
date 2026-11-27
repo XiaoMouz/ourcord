@@ -30,9 +30,9 @@ function deferred() {
 const lobby: LobbyEntry = {
   lobby: { id: "L1", name: "Friends", owner_id: "me" },
   member: { role: "owner", joined_at: 1 },
-  rooms: ["A", "B"].map((id, position) => ({
+  rooms: [{ id: "chat", lobby_id: "L1", name: "Chat", type: "text", position: 0 }, ...["A", "B"].map((id, position) => ({
     id, lobby_id: "L1", name: `Voice ${id}`, type: "voice", position, vpn_namespace: `network-${id}`,
-  })),
+  }))],
 };
 
 describe("App presence writes through voice controls", () => {
@@ -117,6 +117,19 @@ describe("App presence writes through voice controls", () => {
     expect(button?.disabled).toBe(false);
     await act(async () => button!.click());
   }
+
+  it("browses text during a call and returns to the active room without reconnecting", async () => {
+    voice("A");
+    await mount();
+    await join("A");
+    const textRoom = container.querySelector<HTMLElement>('[title="Chat"]')!;
+    await act(async () => textRoom.click());
+    expect(container.querySelector(".room-heading h1")?.textContent).toBe("Chat");
+    expect(container.querySelector(".call-location strong")?.textContent).toBe("Voice A");
+    await join("A");
+    expect(container.querySelector(".room-heading h1")?.textContent).toBe("Voice A");
+    expect(vi.mocked(bridge).mock.calls.filter(([method]) => method === "voice.join_network")).toHaveLength(0);
+  });
 
   it.each([["", "A"], ["A", "B"], ["A", ""]])(
     "does not let a delayed %j heartbeat overwrite the action's %j presence",

@@ -11,7 +11,7 @@ describe("Login", () => {
     expect(html).toContain("OurCord");
     expect(html).toContain("欢迎回来");
     expect(html).toContain("邮箱地址");
-    expect(html).toContain('class="card card-border');
+    expect(html).toContain('<label for="login-email">邮箱地址</label>');
     expect(html).toContain('class="input');
     expect(html).toContain('class="btn btn-primary');
     expect(html).not.toContain("朋友在线");

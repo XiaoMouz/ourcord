@@ -1,10 +1,13 @@
 import { bridge, type Snapshot } from "../bridge";
-import { cx } from "./ui";
+import { connectionLabel, meanPeerLatency, voiceQuality } from "../quality";
+import SignalBars from "./SignalBars";
 
-export default function CallBar({ snapshot, busy, shortcut, onLeave, refresh, onError }: {
+export default function CallBar({ snapshot, busy, shortcut, connecting, roomName, onLeave, refresh, onError }: {
   snapshot: Snapshot;
   busy: boolean;
   shortcut: string;
+  connecting: boolean;
+  roomName?: string;
   onLeave: () => void;
   refresh: () => Promise<void>;
   onError: (message: string) => void;
@@ -13,24 +16,29 @@ export default function CallBar({ snapshot, busy, shortcut, onLeave, refresh, on
     try { await bridge(method, params); await refresh(); }
     catch (e) { onError(String(e)); }
   }
-  return <div className="pointer-events-none absolute inset-x-0 bottom-5 z-10 flex justify-center">
-    <div className="join pointer-events-auto rounded-field bg-base-200 shadow-2xl">
-    <button className={cx("btn join-item tooltip tooltip-top", snapshot.voice?.muted && "btn-error btn-soft")} data-tip={snapshot.voice?.muted ? "取消静音" : "静音"}
-      onClick={() => void toggle("voice.mute", { muted: !snapshot.voice?.muted })}>
-      ⌁ <span>{snapshot.voice?.muted ? "取消静音" : "静音"}</span>
-    </button>
-    <button className={cx("btn join-item tooltip tooltip-top", snapshot.voice?.deafened && "btn-error btn-soft")} data-tip="切换耳机静音"
-      onClick={() => void toggle("voice.deafen", { deafened: !snapshot.voice?.deafened })}>
-      ◉ <span>耳机</span>
-    </button>
-    <div className="join-item flex min-w-36 items-center gap-2 border-x border-base-300 px-4 text-xs text-base-content/55">
-      <span className={cx("status status-sm", snapshot.voice?.transmitting ? "status-success" : "status-neutral")} />
-      {snapshot.voice?.transmitting ? "正在发送" : <><span>PTT</span><kbd className="kbd kbd-xs">{shortcut}</kbd></>}
+  const voice = snapshot.voice;
+  const latency = meanPeerLatency(snapshot.peers);
+  const participants = voice?.participants ?? [];
+  const quality = voiceQuality(
+    latency || NaN,
+    Math.max(...participants.map((p) => p.loss_percent)),
+    Math.max(...participants.map((p) => p.jitter_ms)),
+  );
+  const mutedLabel = voice?.muted ? "取消静音" : "静音";
+  const disabled = !voice?.joined || connecting || busy;
+  return <footer className="call-dock" aria-label="语音通话">
+    <span className="dock-signal">{connecting ? <span className="loading loading-spinner loading-sm" /> : <SignalBars quality={quality} />}</span>
+    <div className="call-location">
+      <strong title={roomName}>{roomName || "语音通话"}</strong>
+      <small>{connecting ? "正在连接语音…" : connectionLabel(snapshot)}{latency > 0 && !connecting && ` · ${latency} ms`}</small>
     </div>
-    <button className="btn btn-error btn-soft join-item tooltip tooltip-top" data-tip="断开语音"
-      disabled={!snapshot.voice?.joined || busy} onClick={onLeave}>
-      × <span>断开</span>
-    </button>
+    {!connecting && <span className="dock-mode">{voice?.transmitting ? "正在发送" : voice?.input_mode === "push_to_talk" ? `按键说话 · ${shortcut}` : ""}</span>}
+    <div className="dock-controls">
+      <button className="btn" disabled={disabled} data-tip={mutedLabel} aria-pressed={!!voice?.muted}
+        onClick={() => void toggle("voice.mute", { muted: !voice?.muted })}>{mutedLabel}</button>
+      <button className="btn" disabled={disabled} aria-pressed={!!voice?.deafened}
+        onClick={() => void toggle("voice.deafen", { deafened: !voice?.deafened })}>{voice?.deafened ? "恢复耳机" : "耳机静音"}</button>
+      <button className="btn dock-leave" data-tip="断开语音" disabled={disabled} onClick={onLeave}>断开语音</button>
     </div>
-  </div>;
+  </footer>;
 }

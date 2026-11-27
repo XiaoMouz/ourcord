@@ -111,9 +111,9 @@ describe("App daemon snapshot races through voice controls", () => {
     await act(async () => control("断开语音").click());
     expect(bridge).toHaveBeenCalledWith("voice.leave");
     expect(bridge).toHaveBeenCalledWith("network.leave");
-    expect(control("断开语音").disabled).toBe(true);
+    expect(control("断开语音")).toBeNull();
     await act(async () => pending.resolve(stale));
-    expect(control("断开语音").disabled).toBe(true);
+    expect(control("断开语音")).toBeNull();
   });
 
   it("does not accumulate background reads while a snapshot takes longer than the poll interval", async () => {

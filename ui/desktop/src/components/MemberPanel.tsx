@@ -36,7 +36,7 @@ export default function MemberPanel({ members, loading, getName, onCopy }: {
     </li>;
   }
 
-  return <aside className="flex min-w-0 flex-col border-l border-base-300 bg-base-100">
+  return <aside className="member-directory flex min-w-0 flex-col border-l border-base-300 bg-base-100">
     <header className="navbar min-h-16 shrink-0 border-b border-base-300 px-4">
       <div className="min-w-0 flex-1">
         <h2 className="font-semibold">成员{loading ? "" : ` · ${members.length}`}</h2>

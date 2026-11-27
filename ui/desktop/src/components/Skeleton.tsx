@@ -1,8 +1,8 @@
 export function LobbyRailSkeleton() {
-  return <nav className="flex flex-col items-center gap-3 border-r border-base-300 bg-base-200 px-3 py-4">
+  return <nav className="lobby-strip" aria-label="正在载入大厅">
     <div className="skeleton h-11 w-11 rounded-box" />
-    <div className="divider my-0" />
-    {[0, 1, 2].map((i) => <div key={i} className="skeleton h-11 w-11 rounded-box" />)}
+
+    {[0, 1, 2].map((i) => <div key={i} className="skeleton h-8 w-24 rounded-field" />)}
   </nav>;
 }
 

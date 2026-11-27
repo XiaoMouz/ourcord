@@ -103,9 +103,9 @@ describe("ChatPane background polling under slow responses", () => {
     await mount();
     const pending = nextRead = deferred<{ messages: Message[] }>();
     await tick();
-    const input = container.querySelector("input")!;
+    const input = container.querySelector("textarea")!;
     await act(async () => {
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "New message");
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(input, "New message");
       input.dispatchEvent(new Event("input", { bubbles: true }));
     });
     await act(async () => container.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));

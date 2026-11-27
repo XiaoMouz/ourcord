@@ -1,7 +1,11 @@
-import { useEffect, type ButtonHTMLAttributes, type ReactNode } from "react";
+import { useEffect, useRef, type ButtonHTMLAttributes, type ReactNode } from "react";
 
 export function cx(...classes: Array<string | false | null | undefined>): string {
   return classes.filter(Boolean).join(" ");
+}
+
+export function SignalMark() {
+  return <span className="signal-mark" aria-hidden="true"><i /><i /><i /></span>;
 }
 
 export function Tooltip({ label, children, side = "top", className }: {
@@ -28,9 +32,10 @@ export function InitialAvatar({ name, size = "md", online }: {
   online?: boolean;
 }) {
   const dimensions = size === "sm" ? "h-7 w-7 text-xs" : size === "lg" ? "h-12 w-12 text-lg" : "h-9 w-9 text-sm";
-  return <div className={cx("avatar avatar-placeholder", online === true && "avatar-online", online === false && "avatar-offline")}>
+  const initial = Array.from(name || "?")[0].toUpperCase();
+  return <div data-tone={(initial.codePointAt(0) ?? 0) % 3} className={cx("avatar avatar-placeholder", online === true && "avatar-online", online === false && "avatar-offline")}>
     <div className={cx("rounded-selector bg-neutral text-neutral-content", dimensions)}>
-      <span className="font-semibold">{(name || "?").slice(0, 1).toUpperCase()}</span>
+      <span className="font-semibold">{initial}</span>
     </div>
   </div>;
 }
@@ -72,6 +77,32 @@ export function ToastHost({ toast, onDismiss }: { toast: ToastMessage | null; on
       <span className="max-w-sm break-words">{toast.message}</span>
       <button type="button" className="btn btn-ghost btn-circle btn-xs" aria-label="关闭提示" onClick={onDismiss}>×</button>
     </div>
+  </div>;
+}
+
+export function ModalFrame({ label, className, onClose, children }: {
+  label: string;
+  className?: string;
+  onClose: () => void;
+  children: ReactNode;
+}) {
+  const panel = useRef<HTMLElement>(null);
+  const controls = 'button:not(:disabled):not([hidden]), input:not(:disabled), textarea:not(:disabled), select:not(:disabled), [href], [tabindex="0"]';
+  useEffect(() => {
+    const previous = document.activeElement;
+    panel.current?.querySelector<HTMLElement>(controls)?.focus();
+    return () => { if (previous instanceof HTMLElement && previous.isConnected) previous.focus(); };
+  }, []);
+  return <div className="modal modal-open" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
+    <section ref={panel} role="dialog" aria-modal="true" aria-label={label} className={cx("modal-box", className)}
+      onKeyDown={(e) => {
+        if (e.key === "Escape") { e.stopPropagation(); onClose(); }
+        if (e.key !== "Tab") return;
+        const items = Array.from(e.currentTarget.querySelectorAll<HTMLElement>(controls));
+        const first = items[0], last = items.at(-1);
+        if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last?.focus(); }
+        if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first?.focus(); }
+      }}>{children}</section>
   </div>;
 }
 

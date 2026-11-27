@@ -109,7 +109,7 @@ describe("App startup authentication recovery", () => {
     expect(calls("auth.exchange")).toHaveLength(1);
     expect(calls("auth.begin")).toHaveLength(0);
     await act(async () => exchange.resolve());
-    expect(container.textContent).toContain("选择一个房间");
+    expect(container.textContent).toContain("加入你的第一个大厅");
     expect(calls("auth.begin")).toHaveLength(0);
   });
 
@@ -131,7 +131,7 @@ describe("App startup authentication recovery", () => {
     status = deferred();
     status.resolve({ authenticated: true });
     await act(async () => exchange.resolve({}));
-    expect(container.textContent).toContain("选择一个房间");
+    expect(container.textContent).toContain("加入你的第一个大厅");
   });
 
   it("shows a recoverable status error and retries only when clicked", async () => {
@@ -150,14 +150,14 @@ describe("App startup authentication recovery", () => {
     expect(container.textContent).toContain("正在启动 OurCord");
     expect(calls("auth.status")).toHaveLength(2);
     await act(async () => status.resolve({ authenticated: true }));
-    expect(container.textContent).toContain("选择一个房间");
+    expect(container.textContent).toContain("加入你的第一个大厅");
     expect(container.querySelector('[role="alert"]')).toBeNull();
   });
 
   it("keeps login unavailable until PKCE setup succeeds and lets a failed setup retry", async () => {
     await mount();
     await act(async () => status.resolve({ authenticated: false }));
-    expect(container.textContent).not.toContain("发送 Magic Link");
+    expect(container.textContent).not.toContain("发送登录链接");
     await act(async () => begin.reject(new Error("store login state: locked")));
     expect(container.querySelector('[role="alert"]')?.textContent).toContain("store login state: locked");
     begin = deferred();
@@ -180,7 +180,7 @@ describe("App startup authentication recovery", () => {
     status = deferred();
     await retry();
     await act(async () => status.resolve({ authenticated: true }));
-    expect(container.textContent).toContain("选择一个房间");
+    expect(container.textContent).toContain("加入你的第一个大厅");
     expect(calls("auth.status")).toHaveLength(3);
   });
 
@@ -190,13 +190,13 @@ describe("App startup authentication recovery", () => {
     status = deferred();
     status.resolve({ authenticated: true });
     await signInFromDeepLink();
-    expect(container.textContent).toContain("选择一个房间");
+    expect(container.textContent).toContain("加入你的第一个大厅");
     await act(async () => {
       if (outcome === "failure") startup.reject(new Error("old request offline"));
       else startup.resolve({ authenticated: false });
       begin.resolve(loginURLs);
     });
-    expect(container.textContent).toContain("选择一个房间");
+    expect(container.textContent).toContain("加入你的第一个大厅");
     expect(calls("auth.begin")).toHaveLength(0);
   });
 
@@ -207,7 +207,7 @@ describe("App startup authentication recovery", () => {
     status.resolve({ authenticated: true });
     await signInFromDeepLink();
     await act(async () => begin.resolve(loginURLs));
-    expect(container.textContent).toContain("选择一个房间");
+    expect(container.textContent).toContain("加入你的第一个大厅");
     expect(container.textContent).not.toContain("欢迎回来");
   });
 
@@ -225,7 +225,7 @@ describe("App startup authentication recovery", () => {
     status = deferred();
     status.resolve({ authenticated: true });
     await act(async () => exchange.resolve({}));
-    expect(container.textContent).toContain("选择一个房间");
+    expect(container.textContent).toContain("加入你的第一个大厅");
   });
 
   it("discards the replaced StrictMode startup before checking authentication", async () => {
@@ -266,7 +266,7 @@ describe("App startup authentication recovery", () => {
     expect(calls("auth.exchange")).toHaveLength(2);
     expect(calls("auth.exchange")[1][1]).toEqual(calls("auth.exchange")[0][1]);
     expect(calls("auth.begin")).toHaveLength(0);
-    expect(container.textContent).toContain("选择一个房间");
+    expect(container.textContent).toContain("加入你的第一个大厅");
   });
 
   it("retries a failed startup link read without replacing the pending verifier", async () => {
@@ -307,7 +307,7 @@ describe("App startup authentication recovery", () => {
     await retry();
     expect(calls("auth.exchange")).toHaveLength(2);
     expect(calls("auth.begin")).toHaveLength(0);
-    expect(container.textContent).toContain("选择一个房间");
+    expect(container.textContent).toContain("加入你的第一个大厅");
   });
 
   it("starts a new login after an expired callback only when explicitly requested", async () => {
@@ -378,7 +378,7 @@ describe("App startup authentication recovery", () => {
     status.resolve({ authenticated: true });
     await signInFromDeepLink();
     expect(calls("auth.exchange")).toHaveLength(2);
-    expect(container.textContent).toContain("选择一个房间");
+    expect(container.textContent).toContain("加入你的第一个大厅");
   });
 
   it.each(["Google", "GitHub"])("refreshes the pending OAuth attempt before opening %s", async (provider) => {
