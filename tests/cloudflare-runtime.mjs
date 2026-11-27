@@ -20,6 +20,7 @@ import { verifyMessageRevisions } from "./cloudflare-message-revisions.mjs";
 import { verifyBackendHealthScan } from "./cloudflare-backend-health.mjs";
 import { verifyProfileNameLimit } from "./cloudflare-profile-limits.mjs";
 import { verifyFileListScan } from "./cloudflare-file-list.mjs";
+import { verifyConnectivityScope } from "./cloudflare-connectivity-scope.mjs";
 import { createRoleWriteGate, verifyMemberRoleConcurrency } from "./cloudflare-member-role.mjs";
 import { verifyDeviceRevocation } from "./cloudflare-device-revoke.mjs";
 import { verifyControlCors } from "./cloudflare-control-cors.mjs";
@@ -111,6 +112,7 @@ try {
   writeFileSync(join(output, "service/member-role.mjs"),
     readFileSync(join(root, "tests/cloudflare-member-role-worker.mjs"), "utf8"));
   writeFileSync(join(output, "control/control-under-test.mjs"), readFileSync(join(output, "control/index.js"), "utf8"));
+  writeFileSync(join(output, "control/connectivity-scope.mjs"), readFileSync(join(root, "tests/cloudflare-connectivity-scope-worker.mjs"), "utf8"));
   writeFileSync(join(output, "control/device-revoke.mjs"), readFileSync(join(root, "tests/cloudflare-device-revoke-worker.mjs"), "utf8"));
   writeFileSync(join(output, "control/status-count.mjs"), readFileSync(join(root, "tests/cloudflare-status-count-worker.mjs"), "utf8"));
   writeFileSync(join(output, "service/upload-quota.mjs"),
@@ -128,6 +130,19 @@ try {
         ? { durableObjects: { SIGNAL: { className: "SignalDO", useSQLite: true } } }
         : { r2Buckets: ["FILES"], unsafeDirectSockets: [{ host: "127.0.0.1", port: 0 }] }),
     })), {
+      name: "control-connectivity", modules: true, modulesRoot: join(output, "control"),
+      scriptPath: join(output, "control/connectivity-scope.mjs"),
+      compatibilityDate: "2024-01-01", compatibilityFlags: ["nodejs_compat"],
+      bindings: { ENVIRONMENT: "production", JWT_SECRET: secret, SERVICE_URL: "https://service.scope.test", SERVICE_INTERNAL_TOKEN: secret },
+      d1Databases: { DB: "local-control-connectivity" }, ratelimits: limits,
+      outboundService: "service-connectivity",
+    }, {
+      name: "service-connectivity", modules: true, modulesRoot: join(output, "service"),
+      scriptPath: join(output, "service/index.js"),
+      compatibilityDate: "2024-01-01", compatibilityFlags: ["nodejs_compat"],
+      bindings: { ENVIRONMENT: "production", JWT_SECRET: secret, SERVICE_INTERNAL_TOKEN: secret },
+      d1Databases: { DB: "local-service-connectivity" },
+    }, {
       name: "service-member-role", modules: true, modulesRoot: join(output, "service"),
       scriptPath: join(output, "service/member-role.mjs"),
       compatibilityDate: "2024-01-01", compatibilityFlags: ["nodejs_compat"],
@@ -443,6 +458,10 @@ try {
   const controlDB = await mf.getD1Database("DB", "control");
   await migrate(controlDB, "control");
   const control = await mf.getWorker("control");
+  const scopeDB = await mf.getD1Database("DB", "control-connectivity");
+  const scopeServiceDB = await mf.getD1Database("DB", "service-connectivity");
+  await migrate(scopeDB, "control"); await migrate(scopeServiceDB, "service");
+  await verifyConnectivityScope({ control: await mf.getWorker("control-connectivity"), db: scopeDB, serviceDB: scopeServiceDB, jwt });
   await verifyDeviceRevocation({ db: controlDB, control: await mf.getWorker("control-device-revoke"), jwt });
   const corsDB = await mf.getD1Database("DB", "control-cors");
   await migrate(corsDB, "control");
