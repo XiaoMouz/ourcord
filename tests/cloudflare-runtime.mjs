@@ -20,10 +20,12 @@ import { verifyMessageRevisions } from "./cloudflare-message-revisions.mjs";
 import { verifyBackendHealthScan } from "./cloudflare-backend-health.mjs";
 import { verifyProfileNameLimit } from "./cloudflare-profile-limits.mjs";
 import { verifyFileListScan } from "./cloudflare-file-list.mjs";
+import { verifyDeviceRevocation } from "./cloudflare-device-revoke.mjs";
 import { verifyControlCors } from "./cloudflare-control-cors.mjs";
 import { verifyStatusCounts } from "./cloudflare-status-count.mjs";
 import { verifyUploadQuotaScans } from "./cloudflare-upload-quota.mjs";
 import { verifyBackendResolutionScans } from "./cloudflare-backend-resolution.mjs";
+import { createRevokeGate, verifyDeviceRotationRace } from "./cloudflare-device-rotation.mjs";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const require = createRequire(join(root, "control/package.json"));
@@ -35,6 +37,7 @@ const limits = Object.fromEntries([5, 10, 20, 30, 60, 120].map((n) => [
   `RATE_LIMIT_${n}`, { simple: { limit: n, period: 60 } },
 ]));
 let mf;
+const revokeGate = createRevokeGate();
 const sockets = [];
 
 function sqlStatements(sql) {
@@ -104,6 +107,7 @@ try {
   writeFileSync(join(output, "service/file-list.mjs"),
     readFileSync(join(root, "tests/cloudflare-file-list-worker.mjs"), "utf8"));
   writeFileSync(join(output, "control/control-under-test.mjs"), readFileSync(join(output, "control/index.js"), "utf8"));
+  writeFileSync(join(output, "control/device-revoke.mjs"), readFileSync(join(root, "tests/cloudflare-device-revoke-worker.mjs"), "utf8"));
   writeFileSync(join(output, "control/status-count.mjs"), readFileSync(join(root, "tests/cloudflare-status-count-worker.mjs"), "utf8"));
   writeFileSync(join(output, "service/upload-quota.mjs"),
     readFileSync(join(root, "tests/cloudflare-upload-quota-worker.mjs"), "utf8"));
@@ -120,6 +124,13 @@ try {
         ? { durableObjects: { SIGNAL: { className: "SignalDO", useSQLite: true } } }
         : { r2Buckets: ["FILES"], unsafeDirectSockets: [{ host: "127.0.0.1", port: 0 }] }),
     })), {
+      name: "control-device-revoke", modules: true, modulesRoot: join(output, "control"),
+      scriptPath: join(output, "control/device-revoke.mjs"),
+      compatibilityDate: "2024-01-01", compatibilityFlags: ["nodejs_compat"],
+      bindings: { ENVIRONMENT: "production", JWT_SECRET: secret },
+      d1Databases: { DB: "local-control" }, ratelimits: limits,
+      outboundService: () => revokeGate.fetch(),
+    }, {
       name: "control-cors", modules: true, modulesRoot: join(output, "control"),
       scriptPath: join(output, "control/index.js"),
       compatibilityDate: "2024-01-01", compatibilityFlags: ["nodejs_compat"],
@@ -418,6 +429,7 @@ try {
   const controlDB = await mf.getD1Database("DB", "control");
   await migrate(controlDB, "control");
   const control = await mf.getWorker("control");
+  await verifyDeviceRevocation({ db: controlDB, control: await mf.getWorker("control-device-revoke"), jwt });
   const corsDB = await mf.getD1Database("DB", "control-cors");
   await migrate(corsDB, "control");
   await verifyControlCors({ control: await mf.getWorker("control-cors"), db: corsDB, kv: await mf.getKVNamespace("KV", "control-cors"), jwt });
@@ -426,6 +438,7 @@ try {
   await migrate(statusCountDB, "control");
   await verifyStatusCounts({ db: statusCountDB, control: await mf.getWorker("control-status-count"), jwt });
   await verifyProfileBatches({ control, controlDB, service, db, jwt });
+  await verifyDeviceRotationRace({ db: controlDB, control: await mf.getWorker("control-device-revoke"), gate: revokeGate, jwt });
   await verifyProfileNameLimit({ control, controlDB, jwt });
   const kv = await mf.getKVNamespace("KV", "control");
   const verifier = "v".repeat(43);
