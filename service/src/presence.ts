@@ -8,7 +8,7 @@ export const MEMBER_PRESENCE_TTL_SECONDS = 90;
 // one of those lobbies. Presence is account scoped: no device names or device
 // identifiers are exposed to other members.
 export async function updatePresence(request: Request, env: Env): Promise<Response> {
-  const tooBig = checkBodySize(request, 4 * 1024);
+  const tooBig = await checkBodySize(request, 4 * 1024);
   if (tooBig) return tooBig;
   const auth = await requireAuth(request, env);
   if (auth instanceof Response) return auth;
@@ -36,16 +36,28 @@ export async function updatePresence(request: Request, env: Env): Promise<Respon
   }
 
   const now = Math.floor(Date.now() / 1000);
-  await env.DB.prepare(
-    `INSERT INTO lobby_presence (lobby_id, user_id, last_seen, voice_room_id)
-     SELECT lm.lobby_id, lm.user_id, ?,
-            CASE WHEN lm.lobby_id = ? THEN ? ELSE NULL END
-       FROM lobby_members lm
-      WHERE lm.user_id = ?
-     ON CONFLICT(lobby_id, user_id) DO UPDATE SET
-       last_seen = excluded.last_seen,
-       voice_room_id = excluded.voice_room_id`,
-  ).bind(now, voiceLobbyID, voiceRoomID || null, auth.sub).run();
+  // Renew timestamps without rewriting the voice-room index on every heartbeat.
+  // Apply actual voice transitions in the same transaction so a failed change
+  // cannot publish a fresh timestamp with an obsolete room assignment.
+  await env.DB.batch([
+    env.DB.prepare(
+      `INSERT INTO lobby_presence (lobby_id, user_id, last_seen, voice_room_id)
+       SELECT lm.lobby_id, lm.user_id, ?,
+              CASE WHEN lm.lobby_id = ? THEN ? ELSE NULL END
+         FROM lobby_members lm
+        WHERE lm.user_id = ?
+       ON CONFLICT(lobby_id, user_id) DO UPDATE SET
+         last_seen = excluded.last_seen`,
+    ).bind(now, voiceLobbyID, voiceRoomID || null, auth.sub),
+    env.DB.prepare(
+      `UPDATE lobby_presence
+          SET voice_room_id = CASE WHEN lobby_id = ? THEN ? ELSE NULL END
+        WHERE (lobby_id, user_id) IN (
+          SELECT lobby_id, user_id FROM lobby_members WHERE user_id = ?
+        )
+          AND voice_room_id IS NOT CASE WHEN lobby_id = ? THEN ? ELSE NULL END`,
+    ).bind(voiceLobbyID, voiceRoomID || null, auth.sub, voiceLobbyID, voiceRoomID || null),
+  ]);
 
   return json({ online: true, expires_in: MEMBER_PRESENCE_TTL_SECONDS });
 }
@@ -55,7 +67,14 @@ export async function updatePresence(request: Request, env: Env): Promise<Respon
 export async function leavePresence(request: Request, env: Env): Promise<Response> {
   const auth = await requireAuth(request, env);
   if (auth instanceof Response) return auth;
-  await env.DB.prepare("DELETE FROM lobby_presence WHERE user_id = ?").bind(auth.sub).run();
+  // Membership is indexed by user; presence is keyed by (lobby, user). Its
+  // membership FK guarantees this also finds expired rows, without scanning
+  // every other account's retained presence or adding a heartbeat-write index.
+  await env.DB.prepare(
+    `DELETE FROM lobby_presence WHERE (lobby_id, user_id) IN (
+       SELECT lobby_id, user_id FROM lobby_members WHERE user_id = ?
+     )`,
+  ).bind(auth.sub).run();
   return json({ online: false });
 }
 

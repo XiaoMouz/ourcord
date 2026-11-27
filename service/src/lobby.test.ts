@@ -191,8 +191,7 @@ describe("createRoom", () => {
       JWT_SECRET: SECRET,
       DB: makeDB([
         { first: { role: "owner" } },        // membership
-        { first: { m: 2 } },                  // MAX(position)
-        { run: { meta: { changes: 1 } } },    // INSERT
+        { first: { position: 3 } },          // atomic INSERT ... RETURNING
       ]),
     } as Env;
     const req = jsonReq("https://x/api/lobbies/L1/rooms", "POST", token, { name: "chat", type: "text" });
@@ -212,8 +211,7 @@ describe("createRoom", () => {
       JWT_SECRET: SECRET,
       DB: makeDB([
         { first: { role: "admin" } },
-        { first: { m: 0 } },
-        { run: { meta: { changes: 1 } } },
+        { first: { position: 1 } },
       ]),
     } as Env;
     const req = jsonReq("https://x/api/lobbies/L1/rooms", "POST", token, { name: "huddle", type: "voice" });
